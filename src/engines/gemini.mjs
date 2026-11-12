@@ -11,7 +11,7 @@ export const meta = {
   color: '#4285f4',
   models: [['', '自动选择']],
   freeModel: true,
-  efforts: [['', '默认']],
+  efforts: ['', 'minimal', 'low', 'medium', 'high'], // thinkingLevel；接口不说哪个型号支持哪几档，选了不支持的会看到报错
   capabilities: '联网搜索（Google 搜索）；通过软件修改共享文件',
 };
 
@@ -57,7 +57,7 @@ export async function detect({ conn } = {}) {
   }
 }
 
-export async function runTurn({ system, prompt, model, conn, signal, onDelta, onActivity }) {
+export async function runTurn({ system, prompt, model, effort, conn, signal, onDelta, onActivity }) {
   if (!conn?.apiKey) throw new Error('还没有填写 Gemini API key（左下角“连接与登录”）');
   const name = model || pickDefault(await listModels(conn));
   if (!name) throw new Error('Gemini：没有可用的模型');
@@ -69,6 +69,7 @@ export async function runTurn({ system, prompt, model, conn, signal, onDelta, on
       systemInstruction: { parts: [{ text: system }] },
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       tools: [{ google_search: {} }],
+      ...(effort ? { generationConfig: { thinkingConfig: { thinkingLevel: effort.toUpperCase() } } } : {}),
     },
     signal,
   });

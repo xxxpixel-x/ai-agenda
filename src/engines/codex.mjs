@@ -12,7 +12,7 @@ export const meta = {
   color: '#10a37f',
   models: [['', '默认']],
   freeModel: true, // 允许手动填模型名
-  efforts: [['', '默认'], ['low', '快'], ['medium', '中'], ['high', '深']],
+  efforts: ['', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'], // 具体型号支持哪些，detect 时从 codex debug models 查
   capabilities: '读写共享文件、在共享文件夹内运行命令（沙箱）、联网搜索',
 };
 
@@ -45,7 +45,7 @@ export async function findBin(override) {
 export async function detect({ binOverride } = {}) {
   const bin = await findBin(binOverride);
   if (!bin) return { available: false, ready: false, note: '没有找到 Codex。安装 Codex 桌面版或 Codex 命令行后重新检测。' };
-  const [ver, login] = await Promise.all([capture(bin, ['--version']), capture(bin, ['login', 'status'])]);
+  const [ver, login, catalog] = await Promise.all([capture(bin, ['--version']), capture(bin, ['login', 'status']), capture(bin, ['debug', 'models'])]);
   const status = brief(login.stdout || login.stderr, 120);
   const loggedIn = login.ok && /logged in/i.test(status) && !/not logged in/i.test(status);
   return {
@@ -53,8 +53,21 @@ export async function detect({ binOverride } = {}) {
     ready: loggedIn,
     bin,
     version: brief(ver.stdout, 40),
+    ...modelsOf(catalog.stdout),
     note: loggedIn ? `已登录（${status}）` : `还没有登录（${status || '未知状态'}）。打开 Codex 桌面版登录，或在终端运行：`,
     command: loggedIn ? null : `& "${bin}" login`,
+  };
+}
+
+// codex debug models 输出的型号目录：可选的型号，以及每个型号支持的思考档位
+function modelsOf(json) {
+  let list;
+  try { list = JSON.parse(json).models; } catch { return {}; }
+  if (!Array.isArray(list)) return {};
+  const shown = list.filter((m) => m?.slug && m.visibility !== 'hide').sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99));
+  return {
+    models: shown.map((m) => [m.slug, m.display_name || m.slug]),
+    efforts: Object.fromEntries(shown.map((m) => [m.slug, (m.supported_reasoning_levels || []).map((l) => l.effort).filter(Boolean)])),
   };
 }
 
@@ -70,8 +83,8 @@ export async function runTurn({ system, prompt, model, effort, cwd, access = 'ed
   const bin = await findBin(binOverride);
   if (!bin) throw new Error('没有找到 Codex');
 
-  // Codex 的沙箱：只读档 = read-only；其余 = 只能写共享文件夹（它运行命令也被限制在这个沙箱里）
-  const sandbox = access === 'read' ? 'read-only' : 'workspace-write';
+  // Codex 的沙箱：只读档 = read-only；全部权限 = 不设沙箱；其余 = 只能写共享文件夹（它运行命令也被限制在这个沙箱里）
+  const sandbox = access === 'read' ? 'read-only' : access === 'full' ? 'danger-full-access' : 'workspace-write';
   const args = ['--search', 'exec', '--json', '--skip-git-repo-check', '--ephemeral', '-s', sandbox, '-C', cwd];
   if (model) args.push('-m', model);
   if (effort) args.push('-c', `model_reasoning_effort="${effort}"`);

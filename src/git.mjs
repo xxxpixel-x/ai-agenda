@@ -2,9 +2,9 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 
-const IDENTITY = (name) => ['-c', `user.name=${name}`, '-c', 'user.email=roundtable@localhost', '-c', 'core.quotepath=false'];
+const IDENTITY = (name) => ['-c', `user.name=${name}`, '-c', 'user.email=agenda@localhost', '-c', 'core.quotepath=false'];
 
-export function git(args, { cwd, input, author = '圆桌', allowFail = false, timeout = 120000 } = {}) {
+export function git(args, { cwd, input, author = 'Agenda', allowFail = false, timeout = 120000 } = {}) {
   return new Promise((resolve, reject) => {
     const child = execFile('git', [...IDENTITY(author), ...args], {
       cwd, timeout, windowsHide: true, maxBuffer: 64 * 1024 * 1024, encoding: 'utf8',

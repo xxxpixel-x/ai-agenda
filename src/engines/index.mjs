@@ -1,5 +1,7 @@
 // 引擎注册表：把各种 AI（本机命令行 / API）统一成同一套接口。
-//   detect(opts)  -> { available, ready, note, command?, bin?, models? }
+//   detect(opts)  -> { available, ready, note, command?, bin?, models?, efforts?, defaultModel? }
+//     models：查到的型号（字符串或 [型号, 显示名]）；efforts：{ 型号: [该型号支持的思考档位] }
+//     meta.models / meta.efforts 是写死的常用型号和这个 AI 的全部档位（查不到时用）
 //   runTurn(opts) -> { text, sessionId? }   流式内容通过 onDelta，工具动作通过 onActivity
 // 引擎的能力写在它自己模块的 meta 里：kind（'cli' | 'api'）、resume（能否续接会话）等，
 // 注册表只看 meta，不按具体 id 做判断。
@@ -76,7 +78,7 @@ export function createRegistry(settings, { mock: mockMode = false } = {}) {
     if (mockMode) {
       // 演示模式：外观照搬内置的几种 AI，实际都由演示引擎回答
       return ENGINES.filter((e) => e.builtin).flatMap((e) => e.instances(settings.get())).map((m) => ({
-        ...mock.meta, id: m.id, label: `演示 · ${m.defaultName}`, defaultName: m.defaultName, color: m.color,
+        ...mock.meta, id: m.id, label: `演示 · ${m.defaultName}`, defaultName: m.defaultName, color: m.color, models: m.models, efforts: m.efforts,
       }));
     }
     return ENGINES.flatMap((e) => e.instances(settings.get())).map((m) => ({ ...m }));

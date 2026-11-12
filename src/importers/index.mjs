@@ -15,8 +15,8 @@ const inside = (p, dir) => { const a = norm(p); const b = norm(dir); return !!a 
 
 /**
  * 三家的会话列表，最近更新的在前。
- *  exclude.ids    圆桌自己复制出来的会话（接续中的 Claude 成员）
- *  exclude.dir    圆桌的数据目录（里面的会话都是圆桌自己跑出来的）
+ *  exclude.ids    Agenda 自己复制出来的会话（接续中的 Claude 成员）
+ *  exclude.dir    Agenda 的数据目录（里面的会话都是 Agenda 自己跑出来的）
  * 系统临时文件夹里的会话（各种工具试跑留下的）也不列出。
  */
 export function listSessions({ exclude = {} } = {}) {

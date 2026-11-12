@@ -97,7 +97,7 @@ export class TaskRun extends EventEmitter {
         repo: pre.repo,
         sub: path.relative(pre.repo, host.workspacePath),
         baseBranch: pre.branch,
-        intBranch: `roundtable-${id}`,
+        intBranch: `agenda-${id}`,
       } : null,
       status: 'planning',
       planning: { messages: [] },
@@ -532,7 +532,7 @@ export class TaskRun extends EventEmitter {
     if (!approved.length) throw new Error('没有通过审查的子任务，不需要合并');
     const info = await G.repoInfo(g.repo);
     if (info.dirtyTracked) throw new Error(`你的项目（${info.branch} 分支）有 ${info.dirtyTracked} 个文件改了还没提交。请先提交或暂存，再合并。`);
-    const r = await G.merge(g.repo, g.intBranch, `圆桌任务：${d.objective.split('\n')[0].slice(0, 60)}`);
+    const r = await G.merge(g.repo, g.intBranch, `Agenda 任务：${d.objective.split('\n')[0].slice(0, 60)}`);
     if (!r.ok && r.conflicts.length) throw new Error(`合并冲突（${r.conflicts.join('、')}）。已放弃这次合并，你的项目没有变化。可以手动合并分支 ${g.intBranch}。`);
     if (!r.ok) throw new Error(`合并失败：${r.error || '未知错误'}。你的项目没有变化，可以稍后再试，或手动合并分支 ${g.intBranch}。`);
     d.merged = { at: Date.now(), branch: info.branch, head: r.head };

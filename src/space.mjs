@@ -9,10 +9,10 @@ import { Workspace } from './workspace.mjs';
 import { systemPrompt, turnPrompt, parseMarkers, mentionsIn, ACCESS } from './prompts.mjs';
 import { runAgentTurn } from './turn-runner.mjs';
 import { TaskRun, preflight, cleanupRunFiles, runDir } from './taskrun.mjs';
-import { importsBackground } from './imports.mjs';
+import { importsBackground, briefVersions, syncBriefs } from './imports.mjs';
 
 const MODEL_RE = /^[a-z0-9._:\-/[\]]{0,100}$/i;
-const EFFORTS = ['', 'low', 'medium', 'high', 'xhigh', 'max'];
+const EFFORTS = ['', 'none', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 const str = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
 const clampInt = (v, lo, hi, d) => { const n = parseInt(v, 10); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
 
@@ -169,7 +169,11 @@ export class Space extends EventEmitter {
       }
       this.data.members = next;
     }
-    if ('access' in patch && ACCESS[patch.access]) this.data.access = patch.access;
+    if ('access' in patch && ACCESS[patch.access] && patch.access !== this.data.access) {
+      this.data.access = patch.access;
+      // 续接的会话不会再收到系统提示，权限说明换了就开新会话（接续导入对话的 Claude 每次都重发，不用断开）
+      for (const [id, st] of Object.entries(this.data.memberState)) if (!st?.importId) delete this.data.memberState[id];
+    }
     if ('maxTurns' in patch) this.data.maxTurns = clampInt(patch.maxTurns, 1, 30, this.data.maxTurns);
     this.save();
     this.emitEvent({ type: 'snapshot', space: this.toJSON() });
@@ -308,7 +312,7 @@ export class Space extends EventEmitter {
         reason, api,
         files: api ? this.ws.snapshot() : null,
         since: resume ? state.seen : null,
-        background: importsBackground(this.data.messages, { from: resume ? state.seen : 0, excludeId: resume ? imported?.importId : null }),
+        background: importsBackground(this.data.messages, { from: resume ? state.seen : 0, excludeId: resume ? imported?.importId : null, briefs: resume ? state.briefs || {} : null }),
       }),
     });
 
@@ -363,9 +367,9 @@ export class Space extends EventEmitter {
         delete this.data.memberState[member.id];
         this.emitEvent({ type: 'notice', level: 'error', text: `${member.name} 接不上导入的原会话了，之后按普通成员发言。` });
       } else if (imported) {
-        this.data.memberState[member.id] = { ...imported, sessionId: r.sessionId || imported.sessionId, fork: false, seen: this.data.messages.length };
+        this.data.memberState[member.id] = { ...imported, sessionId: r.sessionId || imported.sessionId, fork: false, seen: this.data.messages.length, briefs: briefVersions(this.data.messages) };
       } else if (canResume) {
-        this.data.memberState[member.id] = { sessionId: r.sessionId, seen: this.data.messages.length };
+        this.data.memberState[member.id] = { sessionId: r.sessionId, seen: this.data.messages.length, briefs: briefVersions(this.data.messages) };
       }
     } catch (e) {
       if (e.aborted) {
@@ -469,7 +473,10 @@ export class Space extends EventEmitter {
   }
 
   // ---------- 其他 ----------
-  emitEvent(ev) { this.emit('event', ev); }
+  emitEvent(ev) {
+    this.emit('event', ev);
+    if (ev.type === 'files_changed' && ev.changes?.length) syncBriefs(this, ev.changes); // 主题简报被改了
+  }
 
   emitState() {
     this.emitEvent({ type: 'state', running: this.running, speaking: this.current?.msg.id || null, queue: this.queue.map((q) => q.memberId) });

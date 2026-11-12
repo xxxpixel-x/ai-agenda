@@ -11,8 +11,15 @@ export const meta = {
   vendor: 'Anthropic',
   defaultName: 'Claude',
   color: '#d97757',
-  models: [['', '默认'], ['opus', 'Opus'], ['sonnet', 'Sonnet'], ['haiku', 'Haiku'], ['fable', 'Fable']],
-  efforts: [['', '默认'], ['low', '快'], ['medium', '中'], ['high', '深']],
+  // 命令行列不出可用型号，只能写死；列表里没有的型号（含 opus / sonnet 这类别名）可以手填
+  models: [
+    ['', '默认'],
+    ['claude-opus-5-5', 'Opus 5.5'], ['claude-opus-5', 'Opus 5'], ['claude-opus-4-8', 'Opus 4.8'], ['claude-opus-4-7', 'Opus 4.7'],
+    ['claude-fable-5-2', 'Fable 5.2'], ['claude-fable-5-1', 'Fable 5.1'], ['claude-fable-5', 'Fable 5'],
+    ['claude-sonnet-5-5', 'Sonnet 5.5'], ['claude-sonnet-5', 'Sonnet 5'], ['claude-sonnet-4-6', 'Sonnet 4.6'],
+    ['claude-haiku-5-5', 'Haiku 5.5'], ['claude-haiku-4-5', 'Haiku 4.5'],
+  ],
+  efforts: ['', 'low', 'medium', 'high', 'xhigh', 'max'],
   capabilities: '读写共享文件、联网搜索',
 };
 
@@ -91,7 +98,19 @@ const TOOLS = {
   read: 'Read,Glob,Grep,WebSearch,WebFetch',
   edit: 'Read,Edit,Write,Glob,Grep,WebSearch,WebFetch',
   run: 'Read,Edit,Write,Glob,Grep,WebSearch,WebFetch,Bash,PowerShell',
+  full: null, // 不限工具
 };
+
+function accessArgs(access) {
+  if (access === 'full') return ['--dangerously-skip-permissions'];
+  const tools = TOOLS[access] || TOOLS.edit;
+  return [
+    '--tools', tools,
+    '--allowedTools', tools,
+    '--permission-mode', access === 'read' ? 'default' : 'acceptEdits',
+    '--permission-prompts', 'none', // 没人能回答弹窗：未放行的操作直接拒绝
+  ];
+}
 
 function activityOf(block, cwd) {
   const i = block.input || {};
@@ -119,14 +138,13 @@ function friendly(text, bin) {
 /**
  * 平时每次发言都是一次性的（不保存会话）。
  * sessionId：接续导入的 Claude Code 对话。fork 为 true 时先复制一份再接（原会话不动），返回新的会话 ID。
- * 接续时用 --system-prompt-snapshot off，否则会一直沿用原会话第一次记下的系统提示，圆桌的规则传不进去。
+ * 接续时用 --system-prompt-snapshot off，否则会一直沿用原会话第一次记下的系统提示，Agenda 的规则传不进去。
  */
 export async function runTurn({ system, prompt, model, effort, cwd, access = 'edit', signal, onDelta, onActivity, onRaw, binOverride, sessionId, fork = false }) {
   const bin = findBin(binOverride);
   if (!bin) throw new Error('没有找到 Claude Code');
   const sysFile = path.join(os.tmpdir(), `rt-sys-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`);
   fs.writeFileSync(sysFile, system, 'utf8');
-  const tools = TOOLS[access] || TOOLS.edit;
 
   const args = [
     '-p',
@@ -134,10 +152,7 @@ export async function runTurn({ system, prompt, model, effort, cwd, access = 'ed
     '--verbose',
     '--include-partial-messages',
     '--append-system-prompt-file', sysFile,
-    '--tools', tools,
-    '--allowedTools', tools,
-    '--permission-mode', access === 'read' ? 'default' : 'acceptEdits',
-    '--permission-prompts', 'none', // 没人能回答弹窗：未放行的操作直接拒绝
+    ...accessArgs(access),
     '--safe-mode',            // 不加载个人的 CLAUDE.md / 插件 / hooks / MCP
     '--strict-mcp-config',
   ];

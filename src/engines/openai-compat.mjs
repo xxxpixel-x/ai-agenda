@@ -12,7 +12,7 @@ export const meta = {
   color: '#7c3aed',
   models: [['', '接口默认模型']],
   freeModel: true,
-  efforts: [['', '默认']],
+  efforts: ['', 'minimal', 'low', 'medium', 'high', 'xhigh'], // reasoning_effort；各家支持的不一样，选了不支持的会看到报错
   capabilities: '通过软件修改共享文件（不能联网）',
 };
 
@@ -32,7 +32,7 @@ export async function detect({ conn } = {}) {
   }
 }
 
-export async function runTurn({ system, prompt, model, conn, signal, onDelta }) {
+export async function runTurn({ system, prompt, model, effort, conn, signal, onDelta }) {
   const base = baseOf(conn);
   if (!base) throw new Error('这个接口还没有填写地址');
   const name = model || conn.model;
@@ -44,6 +44,7 @@ export async function runTurn({ system, prompt, model, conn, signal, onDelta }) 
     body: {
       model: name,
       stream: true,
+      ...(effort ? { reasoning_effort: effort } : {}),
       messages: [{ role: 'system', content: system }, { role: 'user', content: prompt }],
     },
     signal,

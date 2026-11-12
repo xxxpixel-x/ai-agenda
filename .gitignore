@@ -1,9 +1,33 @@
+# Dependencies and generated output
 node_modules/
-data/
-data-mock/
-dist/
-out/
+/dist/
+/out/
+/build/
+/coverage/
+/Agenda.exe
+
+# Local application data, imported chats, and debug output
+/data/
+/data-*/
+/logs/
+/debug/
 *.log
+*.tmp
+
+# Local secrets and machine-specific configuration
 .env
+.env.*
+!.env.example
+!.env.*.example
+/.codex/
+/.claude/
+/.dsh/
+/.idea/
+/.vscode/
+*.pem
+*.key
+
+# Operating-system files
 Thumbs.db
 .DS_Store
+Desktop.ini

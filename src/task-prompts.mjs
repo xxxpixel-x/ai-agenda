@@ -1,6 +1,7 @@
 // 任务协作模式的提示词（参考 orca 的 worker dispatch preamble：任务自包含、只做自己的事、
 // 三句话报告、明确成功/失败、需要人决定时停下来问）。
 import { FILE_BLOCK_RULES, filesForPrompt } from './engines/file-blocks.mjs';
+import { canRun, newKey, said, keyRule } from './prompts.mjs';
 
 const RESULT_RE = /结果\s*[:：]\s*(完成|失败|需要确认)\s*[:：,，]?\s*(.*)$/;
 
@@ -12,7 +13,7 @@ const modeLine = (run) => (run.mode === 'git'
   ? '这是一个 git 项目：每个子任务在独立的副本（git worktree）里进行，互不影响，可以同时进行；用户审查通过后才合并。会改同一批文件的子任务要么合成一个，要么设依赖。'
   : '这不是 git 项目：子任务会按依赖顺序一个接一个执行，直接修改共享文件夹。');
 
-const accessLine = (space) => (space.access === 'run'
+const accessLine = (space) => (canRun(space.access)
   ? '成员可以在工作目录里运行命令（例如跑测试），spec 里可以要求用命令验证。'
   : '成员只能读写文件、不能运行命令，所以 spec 里不要要求“运行/测试来验证”，改成“检查代码/内容是否正确”。');
 
@@ -42,10 +43,13 @@ ${accessLine(space)}
 ${PLAN_FORMAT}`;
 }
 
-export function plannerPrompt(run, { feedback = [], previous = null } = {}) {
-  const parts = [`# 总目标\n${run.objective}`];
+/** 总目标是用户写的，带上发言人标记（见 prompts.mjs）。 */
+const objective = (run, key) => `# 总目标\n${said(key, '我', run.objective)}`;
+
+export function plannerPrompt(run, { feedback = [], previous = null, key = newKey() } = {}) {
+  const parts = [keyRule(key), objective(run, key)];
   if (previous) parts.push(`# 你之前给出的计划\n\`\`\`json\n${JSON.stringify({ tasks: previous }, null, 1)}\n\`\`\``);
-  if (feedback.length) parts.push(`# 意见\n${feedback.map((f) => `【${f.name}】\n${f.text}`).join('\n\n')}`);
+  if (feedback.length) parts.push(`# 意见\n${feedback.map((f) => said(key, f.name, f.text)).join('\n\n')}`);
   parts.push(previous ? '根据意见修改计划，重新给出完整计划。' : '请给出计划。');
   return parts.join('\n\n');
 }
@@ -63,8 +67,8 @@ ${modeLine(run)}
 从你的角度提意见：分工是否合理、依赖是否正确、有没有遗漏或多余的子任务、spec 是否说清楚了。一两段话即可。完全同意就只回复 [同意]。`;
 }
 
-export function reviewerPrompt(run, tasks) {
-  return `# 总目标\n${run.objective}\n\n# 计划\n${planText(tasks, null)}\n\n请提意见，没有意见只回复 [同意]。`;
+export function reviewerPrompt(run, tasks, { key = newKey() } = {}) {
+  return `${keyRule(key)}\n\n${objective(run, key)}\n\n# 计划\n${planText(tasks, null)}\n\n请提意见，没有意见只回复 [同意]。`;
 }
 
 function planText(tasks, members, mine) {
@@ -88,7 +92,7 @@ ${run.mode === 'git'
     ? `${api ? '' : `${cwd}\n`}这是专门给你这个子任务建的独立副本（git worktree），别人看不到你的改动；用户审查通过后才会合并。
 - 不要执行 git commit / push / checkout / 切换分支，软件会替你提交。`
     : `${api ? '' : `${cwd}\n`}这是大家共用的文件夹，你的改动会直接生效（用户可以撤销）。`}
-${space.access === 'run' ? '- 你可以在工作目录里运行命令（例如跑测试）来验证结果。' : '- 不要运行命令，只读写文件。'}
+${canRun(space.access) ? '- 你可以在工作目录里运行命令（例如跑测试）来验证结果。' : '- 不要运行命令，只读写文件。'}
 
 ## 规则
 - 遇到必须由用户决定才能继续的问题，不要猜：停下来，在报告最后写“结果：需要确认：你的问题”。
@@ -102,8 +106,8 @@ ${space.access === 'run' ? '- 你可以在工作目录里运行命令（例如�
 ${me.persona ? `\n## 你的额外设定\n${me.persona}\n` : ''}${api ? `\n${FILE_BLOCK_RULES}\n` : ''}`;
 }
 
-export function workerPrompt(space, run, task, { files = null, conflict = null } = {}) {
-  const parts = [`# 总目标\n${run.objective}`, `# 整体计划\n${planText(run.tasks, space.members, task.id)}`];
+export function workerPrompt(space, run, task, { files = null, conflict = null, key = newKey() } = {}) {
+  const parts = [keyRule(key), objective(run, key),`# 整体计划\n${planText(run.tasks, space.members, task.id)}`];
   if (files) parts.push(filesForPrompt(files));
   parts.push(`# 你的子任务 ${task.id}：${task.title}\n${task.spec}`);
   const deps = run.tasks.filter((t) => task.deps.includes(t.id));
@@ -116,8 +120,8 @@ export function workerPrompt(space, run, task, { files = null, conflict = null }
   }
   const prev = task.attempts.filter((a) => a.report || a.error);
   if (prev.length) parts.push(`# 你上一次的结果\n${prev.at(-1).report || prev.at(-1).error}\n（你上次的改动还在工作目录里，在此基础上继续。）`);
-  if (task.feedbacks?.length) parts.push(`# 用户的意见（请按意见修改）\n${task.feedbacks.map((f) => `- ${f.text}`).join('\n')}`);
-  if (task.question && task.answer) parts.push(`# 你之前的问题\n${task.question}\n# 用户的回答\n${task.answer}`);
+  if (task.feedbacks?.length) parts.push(`# 用户的意见（请按意见修改）\n${task.feedbacks.map((f) => said(key, '我', f.text)).join('\n')}`);
+  if (task.question && task.answer) parts.push(`# 你之前的问题\n${task.question}\n# 用户的回答\n${said(key, '我', task.answer)}`);
   if (conflict) parts.push(`# 合并冲突\n你的改动和已经通过的其他子任务冲突了。下面这些文件里有 <<<<<<< ======= >>>>>>> 冲突标记，请解决冲突（保留双方都需要的内容），删除所有冲突标记：\n${conflict.map((f) => `- ${f}`).join('\n')}`);
   parts.push('现在开始做。做完按规则报告。');
   return parts.join('\n\n');
@@ -150,11 +154,11 @@ export function summarySystem(space, me) {
 使用用户的语言。`;
 }
 
-export function summaryPrompt(space, run) {
-  return `# 总目标\n${run.objective}\n\n# 子任务\n${run.tasks.map((t) => {
+export function summaryPrompt(space, run, { key = newKey() } = {}) {
+  return `${keyRule(key)}\n\n${objective(run, key)}\n\n# 子任务\n${run.tasks.map((t) => {
     const who = space.members.find((m) => m.id === t.assigneeId)?.name || '?';
     const a = t.attempts.at(-1);
-    return `## ${t.id} ${t.title}（${who}，${STATUS_TEXT[t.status]}，做了 ${t.attempts.length} 次）\n${a?.report || a?.error || '（没有报告）'}${t.changes?.length ? `\n改动：${t.changes.map((c) => c.path).join('、')}` : ''}${t.feedbacks?.length ? `\n用户意见：${t.feedbacks.map((f) => f.text).join('；')}` : ''}`;
+    return `## ${t.id} ${t.title}（${who}，${STATUS_TEXT[t.status]}，做了 ${t.attempts.length} 次）\n${a?.report || a?.error || '（没有报告）'}${t.changes?.length ? `\n改动：${t.changes.map((c) => c.path).join('、')}` : ''}${t.feedbacks?.length ? `\n用户意见：\n${t.feedbacks.map((f) => said(key, '我', f.text)).join('\n')}` : ''}`;
   }).join('\n\n')}\n\n请写总结。`;
 }
 

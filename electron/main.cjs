@@ -1,10 +1,16 @@
 // 桌面版入口：在本机起一个只给自己用的服务，再用一个独立窗口显示界面。
 const { app, BrowserWindow, ipcMain, dialog, shell, net, safeStorage, Menu, nativeTheme } = require('electron');
+const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
 const ROOT = path.join(__dirname, '..');
 const MOCK = process.argv.includes('--mock');
+const DATA_DIR = path.join(ROOT, MOCK ? 'data-mock' : 'data');
+const UI_FILE = path.join(DATA_DIR, 'ui.json'); // 界面偏好（主题）
+const THEMES = ['system', 'light', 'dark'];
+const readUi = () => { try { return JSON.parse(fs.readFileSync(UI_FILE, 'utf8')); } catch { return {}; } };
+const windowBg = () => (nativeTheme.shouldUseDarkColors ? '#262624' : '#faf9f7');
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -19,9 +25,9 @@ function createWindow(url) {
     height: 900,
     minWidth: 900,
     minHeight: 560,
-    title: '圆桌',
+    title: 'Agenda',
     icon: path.join(__dirname, process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
-    backgroundColor: nativeTheme.shouldUseDarkColors ? '#262624' : '#faf9f7',
+    backgroundColor: windowBg(),
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -53,6 +59,8 @@ app.on('second-instance', () => {
 
 app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
+  const saved = readUi().theme;
+  nativeTheme.themeSource = THEMES.includes(saved) ? saved : 'system';
   const { setFetch } = await import(pathToFileURL(path.join(ROOT, 'src', 'engines', 'http.mjs')).href);
   setFetch((u, opts) => net.fetch(u, opts)); // 走系统代理
 
@@ -60,7 +68,7 @@ app.whenReady().then(async () => {
   const canEncrypt = safeStorage.isEncryptionAvailable();
   srv = await startServer({
     port: 0,
-    dataDir: path.join(ROOT, MOCK ? 'data-mock' : 'data'),
+    dataDir: DATA_DIR,
     mock: MOCK,
     hooks: {
       desktop: true,
@@ -75,10 +83,18 @@ app.whenReady().then(async () => {
     return r.canceled ? null : r.filePaths[0];
   });
 
-  console.log(`圆桌桌面版已启动：${srv.url}`);
+  ipcMain.handle('get-theme', () => nativeTheme.themeSource);
+  ipcMain.handle('set-theme', (_e, t) => {
+    if (!THEMES.includes(t) || nativeTheme.themeSource === t) return;
+    nativeTheme.themeSource = t; // 页面里的 prefers-color-scheme 也跟着变
+    win?.setBackgroundColor(windowBg());
+    try { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(UI_FILE, JSON.stringify({ ...readUi(), theme: t })); } catch { /* 记不住也不影响使用 */ }
+  });
+
+  console.log(`Agenda 桌面版已启动：${srv.url}`);
   createWindow(srv.url);
 }).catch((e) => {
-  dialog.showErrorBox('圆桌启动失败', String(e?.stack || e));
+  dialog.showErrorBox('Agenda 启动失败', String(e?.stack || e));
   app.quit();
 });
 

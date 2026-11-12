@@ -1,6 +1,6 @@
 // 读取外部 AI 会话记录的公共部分。
 // 每个来源模块导出：
-//   meta = { id, label, engine }          engine：圆桌里对应的 AI 类型
+//   meta = { id, label, engine }          engine：Agenda 里对应的 AI 类型
 //   list() -> [{ id, title, cwd, updatedAt }]
 //   read(id) -> { id, title, cwd, entries: [{ key, role: 'user'|'ai', text, acts: [string], ts }] }
 // 只读取，不改动任何记录文件。

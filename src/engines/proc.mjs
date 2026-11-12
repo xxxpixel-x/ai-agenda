@@ -109,7 +109,8 @@ export class AbortedError extends Error {
  *    之后即使进程迟迟不退出也会被结束（Codex 回合结束后进程还会逗留几十秒）。
  *  - 返回 { code, stderr, finished }；被 signal 中止时抛 AbortedError。
  */
-export function runJsonl({ cmd, args, env, cwd, input = '', signal, onEvent, onStderr, onRaw }) {
+// inputDelay：过这么多毫秒再写入 stdin（给子进程留出启动时间）
+export function runJsonl({ cmd, args, env, cwd, input = '', inputDelay = 0, signal, onEvent, onStderr, onRaw }) {
   return new Promise((resolve, reject) => {
     let child;
     try {
@@ -122,11 +123,13 @@ export function runJsonl({ cmd, args, env, cwd, input = '', signal, onEvent, onS
     let buf = '';
     let stderr = '';
     let graceTimer = null;
+    let inputTimer = null;
 
     const settle = (err, val) => {
       if (settled) return;
       settled = true;
       clearTimeout(graceTimer);
+      clearTimeout(inputTimer);
       signal?.removeEventListener('abort', onAbort);
       if (err) reject(err); else resolve(val);
     };
@@ -178,7 +181,8 @@ export function runJsonl({ cmd, args, env, cwd, input = '', signal, onEvent, onS
       settle(null, { code, stderr, finished });
     });
     child.stdin.on('error', () => { /* 进程提前退出时的 EPIPE */ });
-    child.stdin.end(input, 'utf8');
+    if (inputDelay > 0) inputTimer = setTimeout(() => child.stdin.end(input, 'utf8'), inputDelay);
+    else child.stdin.end(input, 'utf8');
   });
 }
 

@@ -1,4 +1,4 @@
-// 圆桌 —— 界面逻辑
+// Agenda —— 界面逻辑
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -8,6 +8,7 @@ const ACCESS = {
   read: { label: '只读', desc: '只能阅读，不能修改' },
   edit: { label: '可改文件', desc: '可以阅读和修改文件' },
   run: { label: '可运行命令', desc: '还能运行命令，适合代码项目' },
+  full: { label: '全部权限', desc: '不受限制，可以动电脑上任何地方' },
 };
 const svg = (d, z = 16) => `<svg viewBox="0 0 24 24" width="${z}" height="${z}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
@@ -18,6 +19,9 @@ const ICON = {
   close: svg('<path d="M6 6l12 12M18 6L6 18"/>', 15),
   back: svg('<path d="M15 5l-7 7 7 7"/>'),
   file: svg('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>', 14),
+  system: svg('<circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor"/>'),
+  light: svg('<circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6L7 7M17 17l1.4 1.4M5.6 18.4L7 17M17 7l1.4-1.4"/>'),
+  dark: svg('<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/>'),
 };
 const ACT_ICON = {
   read: svg('<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>', 13),
@@ -346,19 +350,38 @@ function showModal(html) {
 }
 
 // ---------------- 成员编辑器（新建空间 / 空间设置共用） ----------------
+// 型号候选：写死的常用型号 + 检测时查到的（字符串，或 [型号, 显示名]）
+function modelChoices(e) {
+  const seen = new Map();
+  for (const x of [...(e.models || []), ...(e.status?.models || [])]) {
+    const [v, l] = Array.isArray(x) ? x : [x, ''];
+    if (v && !seen.has(v)) seen.set(v, l && l !== v ? l : '');
+  }
+  return [...seen];
+}
+// 思考档位：查到了这个型号支持哪些就只列那些，否则列这个 AI 的全部档位
+function effortChoices(e, model) {
+  const known = e.status?.efforts?.[model || e.status?.defaultModel || ''];
+  return known ? ['', ...known] : e.efforts || [];
+}
+function effortSelect(e, m) {
+  const list = effortChoices(e, m.model);
+  if (list.length <= 1) return '<span data-k="effort"></span>';
+  return `<select data-k="effort" title="思考深度">${list.map((v) => `<option value="${esc(v)}" ${v === (m.effort || '') ? 'selected' : ''}>思考：${esc(v || '默认')}</option>`).join('')}</select>`;
+}
 function memberEditor(container, members) {
   const render = () => {
     container.innerHTML = `<div class="member-rows">${members.map((m, i) => {
       const e = engineOf(m.engine) || {};
-      const models = [...new Set([...(e.models || []).map(([v]) => v).filter(Boolean), ...(e.status?.models || [])])];
+      const models = modelChoices(e);
       const st = e.status || {};
       return `<div class="member-row" data-i="${i}" style="--c:${e.color || '#999'}">
         <div class="member-top">
           <input data-k="name" value="${esc(m.name)}" maxlength="20" placeholder="名字">
           <select data-k="engine">${state.engines.map((x) => `<option value="${esc(x.id)}" ${x.id === m.engine ? 'selected' : ''}>${esc(x.label)}${x.status?.ready ? '' : '（未就绪）'}</option>`).join('')}</select>
           <input data-k="model" value="${esc(m.model || '')}" list="models-${i}" placeholder="${esc(st.defaultModel ? `默认：${st.defaultModel}` : '默认模型')}">
-          <datalist id="models-${i}">${models.map((x) => `<option value="${esc(x)}">`).join('')}</datalist>
-          ${(e.efforts || []).length > 1 ? `<select data-k="effort" title="思考深度">${e.efforts.map(([v, l]) => `<option value="${v}" ${v === (m.effort || '') ? 'selected' : ''}>思考：${esc(l)}</option>`).join('')}</select>` : '<span></span>'}
+          <datalist id="models-${i}">${models.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('')}</datalist>
+          ${effortSelect(e, m)}
           <button class="icon-btn" type="button" data-act="del-member" title="移除" ${members.length <= 1 ? 'disabled' : ''}>${ICON.close}</button>
         </div>
         ${!st.ready ? `<div class="member-status warn">⚠ ${esc(st.note || '还不能用')}</div>` : ''}
@@ -380,6 +403,11 @@ function memberEditor(container, members) {
       m.effort = '';
       if (e && (!m.name || state.engines.some((x) => x.defaultName === m.name))) m.name = uniqueName(members, e.defaultName, m);
       render();
+    } else if (k === 'model') {
+      // 换型号：档位跟着换，原来的档位新型号不支持就回到默认（只换这一个下拉，输入框不丢焦点）
+      const e = engineOf(m.engine) || {};
+      if (!effortChoices(e, m.model).includes(m.effort || '')) m.effort = '';
+      row.querySelector('[data-k="effort"]').outerHTML = effortSelect(e, m);
     }
   });
   container.addEventListener('click', (ev) => {
@@ -414,6 +442,17 @@ async function openNewSpaceModal() {
   await refreshEngines();
   const members = defaultMembers();
   let imp = null; // 从一段对话开始时选中的对话
+  let autoFolder = ''; // 软件自动填的共享文件夹；你自己选过别的就不再跟着变
+  const subOf = (dir, parent) => samePath(dir.replace(/[\\/]+[^\\/]+[\\/]*$/, ''), parent);
+  const syncFolder = () => {
+    const f = $('#nsFolder', dlg);
+    if (!imp?.cwd || (f.value && f.value !== autoFolder)) return;
+    const box = $('#nsImport', dlg);
+    const topic = $('input[name=impMode]:checked', box)?.value === 'topic' ? safeName($('#impTopic', box).value) : '';
+    autoFolder = topic ? `${imp.cwd.replace(/[\\/]+$/, '')}\\${topic}` : imp.cwd;
+    f.value = autoFolder;
+    $('input[name=ws][value=folder]', dlg).checked = true;
+  };
   const dlg = showModal(`<div class="modal-inner">
     <div class="modal-head"><h3>新建空间</h3><button class="btn sm ghost" type="button" data-act="from-chat">从对话开始</button><button class="icon-btn" type="button" data-act="close">${ICON.close}</button></div>
     <div class="modal-body">
@@ -447,7 +486,7 @@ async function openNewSpaceModal() {
       if (!s) return;
       try { imp = await api(`/api/import/session?source=${s.source}&id=${encodeURIComponent(s.id)}`); } catch (e) { toast(e.message, 'error'); return; }
       $('#nsTitle', dlg).value = imp.title;
-      if (imp.cwd) { $('#nsFolder', dlg).value = imp.cwd; $('input[name=ws][value=folder]', dlg).checked = true; }
+      if (imp.cwd) { autoFolder = imp.cwd; $('#nsFolder', dlg).value = imp.cwd; $('input[name=ws][value=folder]', dlg).checked = true; }
       if (!members.some((m) => m.engine === imp.engine)) {
         const e = engineOf(imp.engine);
         members.unshift({ engine: imp.engine, name: uniqueName(members, e?.defaultName || imp.sourceLabel), model: '', effort: '', persona: '' });
@@ -458,7 +497,7 @@ async function openNewSpaceModal() {
       }
       $('#nsImport', dlg).innerHTML = `<div class="field"><div class="imp-pick"><b>${esc(imp.title)}</b><span class="hint">${esc(imp.sourceLabel)} · ${imp.count} 条 · ${wan(imp.chars)}</span>
         <button class="icon-btn" type="button" data-act="drop-import" title="不导入">${ICON.close}</button></div>${importOptionsHtml(imp)}</div>`;
-      bindImportOptions($('#nsImport', dlg));
+      bindImportOptions($('#nsImport', dlg), syncFolder);
     }
     if (b.dataset.act === 'drop-import') { imp = null; $('#nsImport', dlg).innerHTML = ''; }
     if (b.dataset.act === 'create') {
@@ -472,10 +511,14 @@ async function openNewSpaceModal() {
       };
       if (wsType === 'folder' && !body.workspace.path) { toast('请先选择文件夹', 'error'); return; }
       if (imp) {
-        if (!members.some((m) => m.engine === imp.engine)) { toast(`导入这段对话需要一个 ${imp.sourceLabel} 成员`, 'error'); return; }
-        const moved = imp.engine === 'claude-code' && imp.cwd && !(wsType === 'folder' && samePath(body.workspace.path, imp.cwd));
-        if (moved && !confirm('共享文件夹和原对话的不同，原对话里的文件路径可能对不上。继续吗？')) return;
         const { memberId, writerId, ...opts } = readImportOptions($('#nsImport', dlg), imp);
+        const topic = opts.mode === 'topic';
+        if (topic && !opts.topic) { toast('请填写主题', 'error'); $('#impTopic', dlg).focus(); return; }
+        const has = members.some((m) => m.engine === imp.engine);
+        if (!has && !topic) { toast(`导入这段对话需要一个 ${imp.sourceLabel} 成员`, 'error'); return; }
+        const folder = wsType === 'folder' ? body.workspace.path : '';
+        const moved = has && imp.engine === 'claude-code' && imp.cwd && !samePath(folder, imp.cwd) && !(topic && folder && subOf(folder, imp.cwd));
+        if (moved && !confirm('共享文件夹和原对话的不同，原对话里的文件路径可能对不上。继续吗？')) return;
         body.import = opts;
       }
       b.disabled = true;
@@ -565,6 +608,28 @@ function renderSpaceList() {
 }
 $('#newSpaceBtn').addEventListener('click', openNewSpaceModal);
 $('#enginesBtn').addEventListener('click', openEnginesModal);
+
+// ---------------- 主题：跟随系统 → 浅色 → 深色 ----------------
+const THEMES = { system: '跟随系统', light: '浅色', dark: '深色' };
+let theme = 'system';
+function applyTheme(t) {
+  theme = THEMES[t] ? t : 'system';
+  // 桌面版连窗口一起换，页面配色自动跟着走；浏览器里用 data-theme 盖过系统设置
+  if (window.desktop?.setTheme) window.desktop.setTheme(theme);
+  else {
+    if (theme === 'system') delete document.documentElement.dataset.theme;
+    else document.documentElement.dataset.theme = theme;
+    store('rt:theme', theme);
+  }
+  const b = $('#themeBtn');
+  b.innerHTML = ICON[theme];
+  b.title = `主题：${THEMES[theme]}`;
+  b.setAttribute('aria-label', b.title);
+}
+$('#themeBtn').addEventListener('click', () => {
+  const order = Object.keys(THEMES);
+  applyTheme(order[(order.indexOf(theme) + 1) % order.length]);
+});
 $('#welcomeView').addEventListener('click', (e) => {
   if (e.target.closest('[data-act=new]')) openNewSpaceModal();
   else if (e.target.closest('.engine-card')) openEnginesModal();
@@ -582,8 +647,8 @@ function showWelcome() {
   $('#spaceView').hidden = true;
   $('#filesPanel').hidden = true;
   $('#welcomeView').hidden = false;
-  $('#mobileTitle').textContent = '圆桌';
-  document.title = '圆桌';
+  $('#mobileTitle').textContent = 'Agenda';
+  document.title = 'Agenda';
   renderSpaceList();
 }
 
@@ -645,6 +710,7 @@ function handleEvent(ev) {
       if (i >= 0) sp.messages[i] = ev.message; else sp.messages.push(ev.message);
       pending.delete(ev.message.id);
       updateMessage(ev.message);
+      if (state.files.view?.type === 'briefdiff' && state.files.view.id === ev.message.id) renderFilesBody();
       refreshSpacesSoon();
       break;
     }
@@ -671,7 +737,7 @@ function handleEvent(ev) {
 
 function renderSpace() {
   const sp = state.space;
-  document.title = `${sp.title} · 圆桌`;
+  document.title = `${sp.title} · Agenda`;
   $('#mobileTitle').textContent = sp.title;
   $('#spaceTitle').textContent = sp.title;
   renderHeader();
@@ -765,7 +831,9 @@ function updateMessage(m) {
   const hidden = m.kind === 'ai' && !m.streaming && !m.text && !m.error && !m.passed && !m.changes?.length && !m.interrupted;
   if (!el) { if (!hidden) appendMessage(m); return; }
   if (hidden) { el.remove(); return; }
+  const open = m.kind === 'import' && el.querySelector('details.imp')?.open; // 导入块更新后保持展开
   el.outerHTML = messageHtml(m);
+  if (open) document.querySelector(`#m-${m.id} details.imp`).open = true;
   if (stick) scrollToBottom();
 }
 const pending = new Set();
@@ -829,7 +897,7 @@ async function loadFiles() {
     state.files.root = r.root;
     state.files.truncated = r.truncated;
   } catch (e) { toast(e.message, 'error'); }
-  if (state.files.tab === 'files' && !state.files.view) renderFilesBody();
+  if (state.files.tab === 'files' && !state.files.view && document.activeElement?.id !== 'newFileName') renderFilesBody();
 }
 async function loadHistory() {
   if (!state.space) return;
@@ -855,6 +923,7 @@ function renderFilesBody() {
   if (v?.type === 'taskdiff') return renderTaskDiff(body, v);
   if (v?.type === 'file') return renderEditor(body, v);
   if (v?.type === 'change') return renderChange(body, v);
+  if (v?.type === 'briefdiff') return renderBriefDiff(body, v);
   if (state.files.tab === 'history') {
     const list = state.files.history;
     body.innerHTML = list.length ? `<div class="history-list">${list.map((h) => {
@@ -972,6 +1041,8 @@ $('#filesPanel').addEventListener('click', async (e) => {
   if (row) { openFile(row.dataset.path); return; }
   const h = e.target.closest('.h-row');
   if (h) { openChange(h.dataset.change); return; }
+  const ba = e.target.closest('[data-brief-act]');
+  if (ba && state.files.view?.type === 'briefdiff') { briefAction(state.files.view.id, ba.dataset.briefAct); return; }
   const b = e.target.closest('[data-act]');
   if (!b) return;
   const v = state.files.view;
@@ -985,14 +1056,29 @@ $('#filesPanel').addEventListener('click', async (e) => {
     case 'open-file': state.files.tab = 'files'; openFile(b.dataset.path); break;
     case 'undo': undoChange(v); break;
     case 'new-file': {
-      const name = prompt('新文件名（可以带子文件夹，例如 notes/计划.md）', '新文档.md');
-      if (!name) return;
-      if (state.files.list.some((f) => f.path === name.trim())) { openFile(name.trim()); return; }
-      try { await api(`/api/spaces/${state.space.id}/file`, { method: 'PUT', body: { path: name.trim(), content: '' } }); openFile(name.trim()); } catch (err) { toast(err.message, 'error'); }
+      // 桌面版（Electron）不支持 prompt()，就地换成一个输入框
+      const tools = b.closest('.file-tools');
+      tools.innerHTML = '<input id="newFileName" value="新文档.md" spellcheck="false" placeholder="notes/计划.md">';
+      const inp = $('#newFileName', tools);
+      let done = false;
+      inp.focus();
+      inp.setSelectionRange(0, 3);
+      inp.addEventListener('keydown', (ev) => {
+        if (ev.isComposing || ev.keyCode === 229) return;
+        if (ev.key === 'Escape') { done = true; renderFilesBody(); }
+        if (ev.key === 'Enter') { ev.preventDefault(); done = true; createFile(inp.value); }
+      });
+      inp.addEventListener('blur', () => { if (!done) renderFilesBody(); });
       break;
     }
   }
 });
+async function createFile(name) {
+  const p = name.trim();
+  if (!p) { renderFilesBody(); return; }
+  if (state.files.list.some((f) => f.path === p)) { openFile(p); return; }
+  try { await api(`/api/spaces/${state.space.id}/file`, { method: 'PUT', body: { path: p, content: '' } }); openFile(p); } catch (err) { toast(err.message, 'error'); renderFilesBody(); }
+}
 $('#closeFilesBtn').addEventListener('click', () => { state.files.open = false; store('rt:filesOpen', false); renderFilesPanel(); if (state.space) renderHeader(); });
 $('#refreshFilesBtn').addEventListener('click', () => { loadFiles(); loadHistory(); });
 $('#openFolderBtn').addEventListener('click', () => api('/api/open-path', { method: 'POST', body: { path: state.space.workspacePath } }).catch((e) => toast(e.message, 'error')));
@@ -1407,7 +1493,8 @@ $('#filesBody').addEventListener('click', (e) => {
 }, true);
 
 // ---------------- 导入外部 AI 对话 ----------------
-const MODE_LABEL = { full: '全部原文', from: '从某一条开始', summary: '早期压成摘要', handoff: '写交接文档' };
+const MODE_LABEL = { full: '全部原文', from: '从某一条开始', summary: '早期压成摘要', handoff: '写交接文档', topic: '按主题' };
+const safeName = (s) => String(s || '').replace(/[\\/:*?"<>|\s]+/g, ' ').trim().slice(0, 40);
 const samePath = (a, b) => !!a && !!b && a.replace(/[\\/]+$/, '').toLowerCase() === b.replace(/[\\/]+$/, '').toLowerCase();
 const folderName = (p) => String(p || '').split(/[\\/]/).filter(Boolean).pop() || '';
 const wan = (n) => (n < 10000 ? `${n} 字` : `${(n / 10000).toFixed(1)} 万字`);
@@ -1459,33 +1546,46 @@ function openSessionPicker({ cwd } = {}) {
 function importOptionsHtml(d, { members = null, cwd = '' } = {}) {
   const claude = d.engine === 'claude-code';
   const modes = Object.keys(MODE_LABEL).map((k) => `<label class="choice"><input type="radio" name="impMode" value="${k}" ${k === d.auto ? 'checked' : ''}>
-    <span><b>${MODE_LABEL[k]}</b>${k === 'from' ? `<select id="impFrom">${d.starts.map((s) => `<option value="${s.i}">${esc(s.text)}</option>`).join('')}</select>` : ''}</span></label>`).join('');
+    <span><b>${MODE_LABEL[k]}</b>${k === 'from' ? `<select id="impFrom">${d.starts.map((s) => `<option value="${s.i}">${esc(s.text)}</option>`).join('')}</select>` : ''}${k === 'topic' ? '<input id="impTopic" maxlength="40" placeholder="例如：剧本">' : ''}</span></label>`).join('');
   let extra = '';
   if (members) {
     const busy = (m) => claude && !!state.space?.memberState?.[m.id]?.importId;
     const same = members.filter((m) => m.engine === d.engine && !busy(m));
     const label = engineOf(d.engine)?.defaultName || d.sourceLabel;
-    extra += `<div class="field"><div class="label">对应成员</div><select id="impMember">${same.map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}<option value="">新加一个 ${esc(label)}</option></select></div>`;
-    if (!claude) {
-      const others = [...members.filter((m) => m.engine !== d.engine), ...members.filter((m) => m.engine === d.engine)];
-      extra += `<div class="field" id="impWriterRow"><div class="label">由谁整理</div><select id="impWriter">${others.map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></div>`;
-    }
+    extra += `<div class="field"><div class="label">对应成员</div><select id="impMember">${same.map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}<option value="">新加一个 ${esc(label)}</option><option value="none">不加</option></select></div>`;
+    const others = [...members.filter((m) => m.engine !== d.engine), ...members.filter((m) => m.engine === d.engine)];
+    if (others.length) extra += `<div class="field" id="impWriterRow" data-claude="${claude ? 1 : ''}"><div class="label">由谁整理</div><select id="impWriter">${others.map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></div>`;
   }
   const warn = members && claude && d.cwd && !samePath(d.cwd, cwd)
     ? `<div class="note warn">原对话在 ${esc(d.cwd)}，和共享文件夹不同，原对话里的文件路径可能对不上。</div>` : '';
   return `<div class="field"><div class="choices">${modes}</div></div>${extra}${warn}`;
 }
 
-function bindImportOptions(root) {
+function bindImportOptions(root, onChange) {
   const sync = () => {
     const mode = $('input[name=impMode]:checked', root)?.value;
+    const topic = mode === 'topic';
+    const sel = $('#impMember', root);
+    const none = sel && $('option[value=none]', sel);
+    if (none) {
+      none.hidden = none.disabled = !topic; // “不加”只在按主题时可选
+      if (!topic && sel.value === 'none') sel.selectedIndex = 0;
+    }
     const w = $('#impWriterRow', root);
-    if (w) w.hidden = !(mode === 'summary' || mode === 'handoff');
+    // Claude 接续时由它自己整理；不加它（按主题）时才要选
+    if (w) w.hidden = w.dataset.claude ? !(topic && sel?.value === 'none') : !(mode === 'summary' || mode === 'handoff' || topic);
+    onChange?.();
   };
   root.addEventListener('change', (e) => {
     if (e.target.id === 'impFrom') $('input[name=impMode][value=from]', root).checked = true;
     sync();
   });
+  root.addEventListener('focusin', (e) => {
+    if (e.target.id !== 'impTopic') return;
+    $('input[name=impMode][value=topic]', root).checked = true;
+    sync();
+  });
+  root.addEventListener('input', (e) => { if (e.target.id === 'impTopic') onChange?.(); });
   sync();
 }
 
@@ -1496,6 +1596,7 @@ function readImportOptions(root, d) {
     sessionId: d.id,
     mode,
     fromIndex: mode === 'from' ? $('#impFrom', root).value : undefined,
+    topic: mode === 'topic' ? $('#impTopic', root).value.trim() : undefined,
     memberId: $('#impMember', root)?.value ?? '',
     writerId: $('#impWriter', root)?.value,
   };
@@ -1521,9 +1622,11 @@ async function openImportModal() {
     if (!b) return;
     if (b.dataset.act === 'close') dlg.close();
     if (b.dataset.act === 'go') {
+      const opts = readImportOptions(dlg, d);
+      if (opts.mode === 'topic' && !opts.topic) { toast('请填写主题', 'error'); $('#impTopic', dlg).focus(); return; }
       b.disabled = true;
       try {
-        await api(`/api/spaces/${sp.id}/imports`, { method: 'POST', body: readImportOptions(dlg, d) });
+        await api(`/api/spaces/${sp.id}/imports`, { method: 'POST', body: opts });
         dlg.close();
       } catch (e) { toast(e.message, 'error'); b.disabled = false; }
     }
@@ -1536,29 +1639,49 @@ const actKind = (label) => ACT_KIND.find(([re]) => re.test(label))?.[1] || 'tool
 function importHtml(m) {
   const color = memberOf(m.memberId)?.color || engineOf(m.source)?.color || '#888';
   const fresh = !m.parentId && m.status === 'ready' && importNew[m.id];
+  const topic = m.mode === 'topic';
+  const pend = m.briefPending;
   const foot = [
     m.status === 'writing' ? '<span class="typing"><i></i><i></i><i></i>&nbsp;正在整理</span>' : '',
-    fresh ? `<button type="button" class="btn sm" data-imp="refresh" data-id="${m.id}">补导 ${importNew[m.id]} 条新内容</button>` : '',
+    pend ? `<span class="imp-pend">${briefChange(pend)}</span>
+      <button type="button" class="btn sm" data-imp="diff" data-id="${m.id}">看对比</button>
+      <button type="button" class="btn sm primary" data-imp="accept" data-id="${m.id}">采用</button>
+      <button type="button" class="btn sm" data-imp="revert" data-id="${m.id}">撤销</button>` : '',
+    topic && m.brief && m.briefText == null && m.status === 'ready' ? '<span class="hint">简报文件已删除</span>' : '',
+    fresh && !pend ? `<button type="button" class="btn sm" data-imp="refresh" data-id="${m.id}">补导 ${importNew[m.id]} 条新内容</button>` : '',
     m.error ? `<span class="err">${esc(m.error)}</span><button type="button" class="btn sm" data-imp="retry" data-id="${m.id}" data-mode="${m.mode}">重试</button>` : '',
   ].join('');
+  const head = topic
+    ? `<span class="imp-src">主题</span><b>${esc(m.topic)}</b><span class="m">${esc(m.sourceLabel)} · ${m.total} 条 · ${clock(m.ts)}</span>`
+    : `<span class="imp-src">${esc(m.parentId ? '补导' : m.sourceLabel)}</span><b>${esc(m.title)}</b><span class="m">${m.parentId ? m.entries.length : m.total} 条 · ${clock(m.ts)}</span>`;
   return `<div class="msg import" id="m-${m.id}" style="--c:${color}">
     <details class="imp" data-import="${m.id}">
-      <summary><span class="imp-src">${esc(m.parentId ? '补导' : m.sourceLabel)}</span><b>${esc(m.title)}</b><span class="m">${m.parentId ? m.entries.length : m.total} 条 · ${clock(m.ts)}</span></summary>
+      <summary>${head}</summary>
       <div class="imp-body"></div>
     </details>${foot ? `<div class="imp-foot">${foot}</div>` : ''}
   </div>`;
 }
 
+function entriesHtml(m) {
+  return m.entries.map((e) => {
+    const acts = e.acts.map((label) => ({ kind: actKind(label), label }));
+    return `<div class="imp-e ${e.role}"><div class="n">${e.role === 'user' ? '我' : esc(m.name)}</div>${activitiesHtml(acts, false)}${e.text ? `<div class="md">${md(e.text)}</div>` : ''}</div>`;
+  }).join('');
+}
+
 function importBodyHtml(m) {
+  if (m.mode === 'topic') {
+    const parts = [];
+    if (m.brief) parts.push(`<button type="button" class="change-chip" data-open-file="${esc(m.brief)}">${ICON.file}${esc(m.brief)}</button>`);
+    if (m.briefText) parts.push(`<div class="imp-summary md">${md(m.briefText)}</div>`);
+    parts.push(`<details class="imp-raw" data-raw="${m.id}"><summary>原对话「${esc(m.title)}」· ${m.total} 条</summary><div></div></details>`);
+    return parts.join('');
+  }
   const parts = [];
   if (m.summary) parts.push(`<div class="imp-summary md">${md(m.summary)}</div>`);
   if (m.handoff) parts.push(`<button type="button" class="change-chip" data-open-file="${esc(m.handoff)}">${ICON.file}${esc(m.handoff)}</button>`);
   if (m.skipped && !m.summary && !m.handoff && m.status !== 'writing') parts.push(`<div class="note">前面 ${m.skipped} 条没有导入</div>`);
-  for (const e of m.entries) {
-    const acts = e.acts.map((label) => ({ kind: actKind(label), label }));
-    parts.push(`<div class="imp-e ${e.role}"><div class="n">${e.role === 'user' ? '我' : esc(m.name)}</div>${activitiesHtml(acts, false)}${e.text ? `<div class="md">${md(e.text)}</div>` : ''}</div>`);
-  }
-  return parts.join('');
+  return parts.join('') + entriesHtml(m);
 }
 
 /** 打开空间后，看看导入的原对话有没有新内容。 */
@@ -1576,6 +1699,30 @@ function checkImports() {
   }
 }
 
+const briefChange = (p) => `${p.by === '外部修改' ? '有人在软件外' : `${esc(p.by)} `}${p.after == null ? '删除' : '改'}了简报`;
+
+async function briefAction(id, action) {
+  try { await api(`/api/spaces/${state.space.id}/imports/${id}/brief`, { method: 'POST', body: { action } }); } catch (e) { toast(e.message, 'error'); }
+}
+
+function openBriefDiff(id) {
+  state.files.view = { type: 'briefdiff', id };
+  if (!state.files.open) { state.files.open = true; store('rt:filesOpen', true); renderHeader(); }
+  renderFilesPanel();
+}
+
+/** 简报上待确认的修改：确认过的版本 → 文件现在的内容。 */
+function renderBriefDiff(body, v) {
+  const m = findMsg(v.id);
+  const p = m?.briefPending;
+  if (!p) { state.files.view = null; renderFilesBody(); return; } // 采用或撤销后回到文件列表
+  body.innerHTML = `<div class="diff-view">
+    <div class="editor-head"><button class="icon-btn" type="button" data-act="back" title="返回">${ICON.back}</button>
+      <span class="ep">${briefChange(p)} · ${esc(m.brief)}</span>
+      <button class="btn sm primary" type="button" data-brief-act="accept">采用</button><button class="btn sm" type="button" data-brief-act="revert">撤销</button></div>
+    <div class="diff">${diffHtml(m.briefText, p.after ?? '')}</div></div>`;
+}
+
 function openSharedFile(p) {
   state.files.open = true;
   store('rt:filesOpen', true);
@@ -1588,7 +1735,9 @@ function openSharedFile(p) {
 // 展开时才渲染内容（长对话有几百条）
 $('#messages').addEventListener('toggle', (e) => {
   const d = e.target;
-  if (!(d instanceof HTMLDetailsElement) || !d.dataset.import || !d.open) return;
+  if (!(d instanceof HTMLDetailsElement) || !d.open) return;
+  if (d.dataset.raw) { const m = findMsg(d.dataset.raw); if (m) d.lastElementChild.innerHTML = entriesHtml(m); return; }
+  if (!d.dataset.import) return;
   const m = findMsg(d.dataset.import);
   if (m) $('.imp-body', d).innerHTML = importBodyHtml(m);
 }, true);
@@ -1598,6 +1747,8 @@ $('#messages').addEventListener('click', async (e) => {
   if (f) { openSharedFile(f.dataset.openFile); return; }
   const b = e.target.closest('[data-imp]');
   if (!b || !state.space) return;
+  if (b.dataset.imp === 'diff') { openBriefDiff(b.dataset.id); return; }
+  if (b.dataset.imp === 'accept' || b.dataset.imp === 'revert') { briefAction(b.dataset.id, b.dataset.imp); return; }
   const base = `/api/spaces/${state.space.id}/imports/${b.dataset.id}`;
   b.disabled = true;
   try {
@@ -1630,6 +1781,7 @@ setInterval(renderSpaceList, 60_000);
 (async () => {
   try { state.app = await api('/api/app'); } catch { state.app = {}; }
   $('#mockTag').hidden = !state.app.mock;
+  applyTheme(window.desktop?.getTheme ? await window.desktop.getTheme() : load('rt:theme'));
   await Promise.all([refreshEngines(), refreshSpaces()]);
   route();
 })();

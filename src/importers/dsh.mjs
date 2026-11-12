@@ -29,7 +29,7 @@ function files() {
 const idOf = (file) => path.basename(path.dirname(file));
 
 // 解压整份记录。列表时也要用到（标题、项目文件夹），按修改时间缓存。
-// 记录是一段段压缩后接起来的（多个 zstd frame）。Node 24.18 只解出第一段，圆桌用的 Electron 45（Node 24.22）能全部解出。
+// 记录是一段段压缩后接起来的（多个 zstd frame）。Node 24.18 只解出第一段，Agenda 用的 Electron 45（Node 24.22）能全部解出。
 const cache = new Map(); // file -> { mtime, lines }
 function load(file) {
   const mtime = fs.statSync(file).mtimeMs;

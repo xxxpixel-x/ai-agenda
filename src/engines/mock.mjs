@@ -11,7 +11,7 @@ export const meta = {
   defaultName: '演示',
   color: '#64748b',
   models: [['', '默认']],
-  efforts: [['', '默认']],
+  efforts: [''],
   capabilities: '模拟发言与改文件',
 };
 
@@ -51,6 +51,9 @@ export async function runTurn({ system, prompt, cwd, access, signal, onDelta, on
   if (system.includes('请你审阅计划')) return stream('[同意]', onDelta, signal);
   // ---- 整理导入的对话 ----
   if (prompt.includes('Markdown 交接文档')) return stream('## 讨论到哪\n（演示）讨论到了导入功能。\n\n## 已经定下的\n- 演示内容\n\n## 还没解决的\n- 无\n\n## 下一步\n- 继续讨论\n\n## 涉及的文件\n- 无', onDelta, signal);
+  if (prompt.includes('原对话之后又有了下面这些新内容')) return stream('[无需修改]', onDelta, signal);
+  const topic = prompt.match(/只整理和「([^」]+)」这个主题有关的内容/);
+  if (topic) return stream(`# ${topic[1]}\n\n## 背景\n（演示）一个小游戏，${topic[1]}交给其他成员来写。\n\n## 已经定下的\n- 演示内容\n\n## 约束和接口\n- 对话写成 JSON：{ "speaker": "", "text": "" }\n\n## 待讨论\n- 结局有几个\n\n相关原文：1, 2`, onDelta, signal);
   if (prompt.includes('把这段对话写成摘要')) return stream('（演示）较早的部分讨论了导入功能的需求，定下了按篇幅自动选择导入方式。', onDelta, signal);
   if (system.includes('写一份简洁的总结')) return stream('### 完成了什么\n三个子任务都已完成（演示）。\n\n### 需要你注意的地方\n这是演示模式的模拟结果。', onDelta, signal);
   const sub = system.match(/做被分派给你的子任务 ([A-Za-z0-9-]+)/);

@@ -8,7 +8,7 @@ import { Space } from './space.mjs';
 import { createSettings } from './settings.mjs';
 import { createRegistry, CLI_ENGINE_IDS } from './engines/index.mjs';
 import { listSessions } from './importers/index.mjs';
-import { sessionDetail, forkedSessionIds, importSession, checkImport, refreshImport, recompressImport } from './imports.mjs';
+import { sessionDetail, forkedSessionIds, importSession, checkImport, refreshImport, recompressImport, resolveBrief, topicFolder } from './imports.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PUBLIC = path.join(ROOT, 'public');
@@ -149,6 +149,7 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
 
     if (p === '/api/spaces' && method === 'POST') {
       const body = await readJson(req);
+      if (body.import?.mode === 'topic' && body.workspace?.type === 'folder') topicFolder(body.workspace.path, body.import);
       const space = Space.create(body, deps);
       spaces.set(space.id, space);
       let importError;
@@ -185,6 +186,7 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
       if (sub === '/imports' && method === 'POST' && !arg) return sendJson(res, 201, importSession(space, await readJson(req)));
       if (sub === '/imports' && method === 'GET' && arg && tail === '/check') return sendJson(res, 200, checkImport(space, arg));
       if (sub === '/imports' && method === 'POST' && arg && tail === '/refresh') return sendJson(res, 200, refreshImport(space, arg));
+      if (sub === '/imports' && method === 'POST' && arg && tail === '/brief') return sendJson(res, 200, resolveBrief(space, arg, (await readJson(req)).action));
       if (sub === '/imports' && method === 'POST' && arg && tail === '/recompress') return sendJson(res, 200, recompressImport(space, arg, (await readJson(req)).mode));
       if (sub === '/messages' && method === 'POST') return sendJson(res, 201, space.userMessage((await readJson(req)).text));
       if (sub === '/control' && method === 'POST') {
