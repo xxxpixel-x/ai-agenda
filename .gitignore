@@ -1,0 +1,9 @@
+node_modules/
+data/
+data-mock/
+dist/
+out/
+*.log
+.env
+Thumbs.db
+.DS_Store

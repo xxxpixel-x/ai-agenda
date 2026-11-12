@@ -1,0 +1,507 @@
+// 一个“空间”：一组 AI 成员 + 一个共享文件夹 + 一串聊天记录。
+// 发言规则：依次发言（同一时间只有一个 AI 在说话、改文件）；被 @ 的成员优先；
+// 所有成员连续表示“没有补充”，或者达到每轮来回上限，就停下来等你。
+import { EventEmitter } from 'node:events';
+import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { Workspace } from './workspace.mjs';
+import { systemPrompt, turnPrompt, parseMarkers, mentionsIn, ACCESS } from './prompts.mjs';
+import { runAgentTurn } from './turn-runner.mjs';
+import { TaskRun, preflight, cleanupRunFiles, runDir } from './taskrun.mjs';
+import { importsBackground } from './imports.mjs';
+
+const MODEL_RE = /^[a-z0-9._:\-/[\]]{0,100}$/i;
+const EFFORTS = ['', 'low', 'medium', 'high', 'xhigh', 'max'];
+const str = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+const clampInt = (v, lo, hi, d) => { const n = parseInt(v, 10); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
+
+export function normalizeMembers(input, engines) {
+  const byId = new Map(engines.map((e) => [e.id, e]));
+  const names = new Set();
+  const list = (Array.isArray(input) ? input : []).slice(0, 8).map((m, i) => {
+    const engine = byId.get(m?.engine);
+    if (!engine) throw new Error(`第 ${i + 1} 个成员的 AI 类型无效`);
+    const name = str(m.name, 20).replace(/[@\s]/g, '') || engine.defaultName;
+    if (name === '我') throw new Error('成员不能叫「我」');
+    if (names.has(name)) throw new Error(`成员名「${name}」重复了，给它们起不同的名字`);
+    names.add(name);
+    const model = str(m.model, 100);
+    if (!MODEL_RE.test(model)) throw new Error(`成员「${name}」的模型名不合法`);
+    return {
+      id: typeof m.id === 'string' && /^[a-z0-9-]{4,40}$/i.test(m.id) ? m.id : randomUUID().slice(0, 8),
+      name,
+      engine: engine.id,
+      engineLabel: engine.label,
+      model,
+      effort: EFFORTS.includes(m.effort) ? m.effort : '',
+      persona: str(m.persona, 2000),
+      color: /^#[0-9a-f]{6}$/i.test(m.color) ? m.color : engine.color,
+    };
+  });
+  if (!list.length) throw new Error('至少需要一个 AI 成员');
+  return list;
+}
+
+export class Space extends EventEmitter {
+  constructor(data, { registry, store, dataDir }) {
+    super();
+    this.setMaxListeners(100);
+    this.data = data;
+    this.registry = registry;
+    this.store = store;
+    this.dir = path.join(dataDir, 'spaces', data.id);
+    data.memberState ||= {};
+    data.status = 'idle';
+    for (const m of data.messages) {
+      if (m.streaming) { m.streaming = false; m.interrupted = true; }
+    }
+    this.ws = new Workspace(this.workspacePath, path.join(this.dir, 'history.json'));
+    this.running = false;
+    this.queue = [];
+    this.current = null;
+    data.runs ||= [];
+    this.runHost = this.createRunHost();
+    const open = data.runs.filter((r) => !r.closed).at(-1);
+    this.run = open ? this.attachRun(new TaskRun(this.runHost, open)) : null;
+  }
+
+  /** 任务协作看到的空间：只暴露它需要的这些，不把整个 Space 交出去。 */
+  createRunHost() {
+    const space = this;
+    return {
+      get members() { return space.data.members; },
+      get access() { return space.data.access; },
+      get workspacePath() { return space.workspacePath; },
+      get workspaceType() { return space.data.workspace.type; },
+      get dir() { return space.dir; },
+      get registry() { return space.registry; },
+      get ws() { return space.ws; },
+      get chatRunning() { return space.running; },
+      emit: (ev) => space.emitEvent(ev),
+      save: () => space.save(),
+    };
+  }
+
+  attachRun(run) {
+    run.on('done', () => this.postRunSummary(run));
+    return run;
+  }
+
+  static create(input, deps) {
+    const engines = deps.registry.list();
+    const id = randomUUID();
+    let workspace;
+    if (input.workspace?.type === 'folder') {
+      const p = str(input.workspace.path, 1000);
+      if (!p || !path.isAbsolute(p)) throw new Error('请选择一个文件夹');
+      if (!fs.existsSync(p) || !fs.statSync(p).isDirectory()) throw new Error('这个文件夹不存在');
+      workspace = { type: 'folder', path: path.resolve(p) };
+    } else {
+      workspace = { type: 'managed', path: path.join(deps.dataDir, 'spaces', id, 'files') };
+    }
+    const title = str(input.title, 60) || '新的空间';
+    const now = Date.now();
+    const data = {
+      id,
+      title,
+      members: normalizeMembers(input.members, engines),
+      workspace,
+      access: ACCESS[input.access] ? input.access : 'edit',
+      maxTurns: clampInt(input.maxTurns, 1, 30, 6),
+      messages: [],
+      memberState: {},
+      createdAt: now,
+      updatedAt: now,
+    };
+    if (workspace.type === 'managed') {
+      fs.mkdirSync(workspace.path, { recursive: true });
+      fs.writeFileSync(path.join(workspace.path, '共享文档.md'), `# ${title}\n\n`, 'utf8');
+    }
+    const space = new Space(data, deps);
+    space.save();
+    return space;
+  }
+
+  get id() { return this.data.id; }
+  get workspacePath() { return this.data.workspace.path; }
+
+  toJSON() {
+    const { runs, ...rest } = this.data;
+    return {
+      ...rest,
+      run: this.run ? this.run.publicView() : null,
+      pastRuns: runs.filter((r) => r.closed).map((r) => ({
+        id: r.id, objective: r.objective, status: r.status, mode: r.mode, createdAt: r.createdAt, finishedAt: r.finishedAt,
+        tasks: r.tasks.length, approved: r.tasks.filter((t) => t.status === 'approved').length, merged: r.merged,
+        branch: r.mode === 'git' && !r.merged && r.tasks.some((t) => t.status === 'approved') ? r.git?.intBranch : null,
+      })).reverse(),
+      workspacePath: this.workspacePath,
+      speaking: this.current?.msg.id || null,
+      queue: this.queue.map((q) => q.memberId),
+      running: this.running,
+    };
+  }
+
+  listItem() {
+    const d = this.data;
+    const last = [...d.messages].reverse().find((m) => m.text);
+    return {
+      id: d.id, title: d.title, updatedAt: d.updatedAt, running: this.running,
+      members: d.members.map((m) => ({ name: m.name, color: m.color })),
+      preview: last ? `${last.kind === 'user' ? '我' : last.name}：${last.text.slice(0, 40)}` : '',
+      workspaceType: d.workspace.type,
+    };
+  }
+
+  // ---------- 修改设置 ----------
+  update(patch) {
+    if (this.running) throw new Error('请先停止当前讨论再修改设置');
+    if (this.run?.active && 'members' in patch) throw new Error('任务协作进行中，不能修改成员');
+    if ('title' in patch) this.data.title = str(patch.title, 60) || this.data.title;
+    if ('members' in patch) {
+      const next = normalizeMembers(patch.members, this.registry.list());
+      // 成员换了引擎或设定后，之前的会话不再适用（接续导入对话的 Claude 只在换引擎时断开）
+      for (const m of next) {
+        const old = this.data.members.find((o) => o.id === m.id);
+        const imported = !!this.data.memberState[m.id]?.importId;
+        if (!old || old.engine !== m.engine || (old.persona !== m.persona && !imported)) delete this.data.memberState[m.id];
+      }
+      this.data.members = next;
+    }
+    if ('access' in patch && ACCESS[patch.access]) this.data.access = patch.access;
+    if ('maxTurns' in patch) this.data.maxTurns = clampInt(patch.maxTurns, 1, 30, this.data.maxTurns);
+    this.save();
+    this.emitEvent({ type: 'snapshot', space: this.toJSON() });
+  }
+
+  // ---------- 对外操作 ----------
+  assertChatAllowed() {
+    if (this.run?.blocksChat) throw new Error('任务协作进行中，聊天先暂停（避免和正在干活的 AI 冲突）。可以在任务面板里给子任务提意见。');
+    if (this.importing) throw new Error('正在整理导入的对话，稍等一下');
+  }
+
+  userMessage(text) {
+    text = str(text, 20000);
+    if (!text) throw new Error('消息不能为空');
+    this.assertChatAllowed();
+    const msg = { id: randomUUID(), kind: 'user', name: '我', text, ts: Date.now() };
+    this.data.messages.push(msg);
+    this.emitEvent({ type: 'message', message: msg });
+    this.save();
+
+    const mentioned = this.mentionsOfUser(text);
+    this.turns = 0;
+    this.passesInRow = 0;
+    if (mentioned.length) {
+      // 点名了：只让被点名的人回应（他们之间再互相 @ 会继续）
+      this.queue = [...mentioned.map((id) => ({ memberId: id, reason: 'mention' })), ...(this.running ? this.queue : [])];
+      if (!this.running) this.onlyQueued = true;
+    } else if (!this.running) {
+      this.onlyQueued = false;
+      this.queue = this.rotation({ includeLast: true });
+    } else {
+      this.onlyQueued = false; // 进行中插话：下一位就会看到并回应
+    }
+    this.emitState();
+    this.pump();
+    return msg;
+  }
+
+  continueDiscussion() {
+    if (this.running) return;
+    this.assertChatAllowed();
+    this.turns = 0;
+    this.passesInRow = 0;
+    this.onlyQueued = false;
+    this.queue = this.rotation({ includeLast: this.data.members.length === 1 });
+    this.pump();
+  }
+
+  /** 让某个成员发言（点头像旁的“让 TA 说”）。 */
+  ask(memberId) {
+    if (!this.data.members.some((m) => m.id === memberId)) throw new Error('没有这个成员');
+    this.assertChatAllowed();
+    this.queue = [{ memberId, reason: 'mention' }, ...this.queue.filter((q) => q.memberId !== memberId)];
+    if (!this.running) { this.turns = 0; this.passesInRow = 0; this.onlyQueued = true; }
+    this.emitState();
+    this.pump();
+  }
+
+  stop() {
+    this.stopRequested = true;
+    this.queue = [];
+    this.current?.controller.abort();
+    this.emitState();
+  }
+
+  skip() {
+    this.current?.controller.abort();
+  }
+
+  // ---------- 调度 ----------
+  mentionsOfUser(text) {
+    return mentionsIn(text, this.data.members, null);
+  }
+
+  /** 从上一位发言者之后开始，轮一圈。 */
+  rotation({ includeLast = false } = {}) {
+    const ms = this.data.members;
+    const lastAi = [...this.data.messages].reverse().find((m) => m.kind === 'ai' && !m.error);
+    const lastIdx = lastAi ? ms.findIndex((m) => m.id === lastAi.memberId) : -1;
+    const order = ms.map((_, i) => ms[(lastIdx + 1 + i) % ms.length]);
+    const list = includeLast || ms.length === 1 ? order : order.filter((m) => m.id !== lastAi?.memberId);
+    return list.map((m) => ({ memberId: m.id, reason: 'turn' }));
+  }
+
+  async pump() {
+    if (this.running) return;
+    this.running = true;
+    this.stopRequested = false;
+    this.emitState();
+    const n = this.data.members.length;
+    try {
+      while (!this.stopRequested) {
+        if (!this.queue.length) {
+          if (this.onlyQueued || n === 1) break;
+          if (this.passesInRow >= n) break;
+          this.queue = this.rotation();
+          if (!this.queue.length) break;
+        }
+        if (this.turns >= this.data.maxTurns) break;
+        const item = this.queue.shift();
+        const member = this.data.members.find((m) => m.id === item.memberId);
+        if (!member) continue;
+        const r = await this.runTurn(member, item.reason);
+        this.turns++;
+        if (r.error) break;                       // 出错就停下，等你处理
+        if (r.passed || r.done) this.passesInRow++;
+        else this.passesInRow = 0;
+        if (this.passesInRow >= n) break;
+        if (r.mentions.length) {
+          // AI 点名了别人：被点名的人接着说
+          const rest = this.queue.filter((q) => !r.mentions.includes(q.memberId));
+          this.queue = [...r.mentions.map((id) => ({ memberId: id, reason: 'mention' })), ...rest];
+        }
+        this.emitState();
+      }
+    } finally {
+      this.running = false;
+      this.queue = [];
+      this.onlyQueued = false;
+      this.save();
+      this.emitState();
+    }
+  }
+
+  async runTurn(member, reason) {
+    const api = this.registry.isApi(member.engine);
+    const state = this.data.memberState[member.id] || {};
+    const imported = state.importId ? state : null; // 接续导入对话的 Claude
+    const canResume = this.registry.supportsResume(member.engine) || !!imported;
+    const outside = this.ws.begin();
+    if (outside.length) this.emitEvent({ type: 'files_changed', changes: outside });
+
+    const build = (resume) => ({
+      system: systemPrompt(this.toJSON(), member, { api }) + (resume && imported?.note ? `\n${imported.note}\n` : ''),
+      prompt: turnPrompt(this.data, member, {
+        reason, api,
+        files: api ? this.ws.snapshot() : null,
+        since: resume ? state.seen : null,
+        background: importsBackground(this.data.messages, { from: resume ? state.seen : 0, excludeId: resume ? imported?.importId : null }),
+      }),
+    });
+
+    const msg = { id: randomUUID(), kind: 'ai', memberId: member.id, name: member.name, engine: member.engine, text: '', ts: Date.now(), streaming: true, activities: [] };
+    if (member.model) msg.model = member.model;
+    const controller = new AbortController();
+    this.current = { msg, controller, member };
+    this.data.messages.push(msg);
+    this.emitEvent({ type: 'message', message: msg });
+    this.emitState();
+
+    const started = Date.now();
+    const result = { passed: false, done: false, mentions: [], error: false };
+    const call = (resume) => {
+      const { system, prompt } = build(resume);
+      return runAgentTurn(this.registry, member, {
+        system,
+        prompt,
+        cwd: this.workspacePath,
+        access: this.data.access,
+        sessionId: resume ? state.sessionId : undefined,
+        fork: resume && !!imported?.fork,
+        signal: controller.signal,
+        sink: msg,
+        ws: this.ws,
+        onDelta: (t) => this.emitEvent({ type: 'delta', id: msg.id, text: t }),
+        onActivity: (a) => this.emitEvent({ type: 'activity', id: msg.id, activity: a }),
+      });
+    };
+
+    try {
+      const resume = canResume && !!state.sessionId && state.seen != null;
+      let r;
+      let fellBack = false;
+      try {
+        r = await call(resume);
+      } catch (e) {
+        if (!resume || !e.resumeFailed) throw e;
+        msg.text = '';
+        fellBack = true;
+        r = await call(false); // 旧会话失效：开新会话重来
+      }
+      const mk = parseMarkers(r.text);
+      msg.text = mk.text;
+      msg.passed = mk.passed;
+      msg.done = mk.done;
+      if (r.model && !member.model) msg.model = r.model;
+      result.passed = mk.passed;
+      result.done = mk.done;
+      result.mentions = mk.passed ? [] : mentionsIn(mk.text, this.data.members, member.id);
+      if (imported && fellBack) {
+        delete this.data.memberState[member.id];
+        this.emitEvent({ type: 'notice', level: 'error', text: `${member.name} 接不上导入的原会话了，之后按普通成员发言。` });
+      } else if (imported) {
+        this.data.memberState[member.id] = { ...imported, sessionId: r.sessionId || imported.sessionId, fork: false, seen: this.data.messages.length };
+      } else if (canResume) {
+        this.data.memberState[member.id] = { sessionId: r.sessionId, seen: this.data.messages.length };
+      }
+    } catch (e) {
+      if (e.aborted) {
+        msg.interrupted = true;
+        msg.text = msg.text.trim();
+      } else {
+        msg.error = e.message;
+        result.error = true;
+        this.emitEvent({ type: 'notice', level: 'error', text: `${member.name}：${e.message}` });
+      }
+      if (!imported) delete this.data.memberState[member.id]; // 下次开新会话（接续导入对话的保留，下次接着试）
+    } finally {
+      // 就算出错或被打断，它已经改了的文件也要记下来
+      const changes = this.ws.commit(member.name, msg.id);
+      if (changes.length) {
+        msg.changes = changes;
+        this.emitEvent({ type: 'files_changed', changes });
+      }
+      msg.streaming = false;
+      msg.durationMs = Date.now() - started;
+      this.current = null;
+      this.emitEvent({ type: 'message_done', message: msg });
+      this.save();
+    }
+    return result;
+  }
+
+  // ---------- 文件 ----------
+  writeFile(rel, content) {
+    const changes = this.ws.write(rel, String(content ?? ''), '我');
+    if (changes.length) this.emitEvent({ type: 'files_changed', changes });
+    return changes;
+  }
+
+  undo(changeId, opts) {
+    if (this.running) throw new Error('讨论进行中，先停止再撤销');
+    const changes = this.ws.undo(changeId, opts);
+    if (changes.length) this.emitEvent({ type: 'files_changed', changes });
+    return changes;
+  }
+
+  // ---------- 任务协作 ----------
+  async taskPreflight() {
+    return preflight(this.runHost);
+  }
+
+  async startRun(opts) {
+    if (this.running) throw new Error('聊天里的讨论还在进行，先停止');
+    if (this.run && !this.run.data.closed) throw new Error('还有一个任务没结束');
+    const pre = await preflight(this.runHost);
+    const run = this.attachRun(TaskRun.create(this.runHost, opts, pre));
+    this.data.runs.push(run.data);
+    this.run = run;
+    this.save();
+    run.plan(); // 后台进行，进度通过事件推送
+    return run.publicView();
+  }
+
+  async runAction(action, body = {}) {
+    const run = this.run;
+    if (!run) throw new Error('没有进行中的任务');
+    const actions = {
+      'approve-plan': () => run.approvePlan(body.tasks),
+      replan: () => run.replan(body.feedback),
+      resume: () => run.resume(),
+      'approve-task': () => run.approveTask(body.taskId),
+      'reject-task': () => run.rejectTask(body.taskId, body.feedback),
+      'retry-task': () => run.retryTask(body.taskId),
+      'stop-task': () => run.stopTask(body.taskId),
+      'skip-task': () => run.skipTask(body.taskId),
+      'undo-task': () => run.undoTask(body.taskId),
+      reassign: () => run.reassign(body.taskId, body.memberId),
+      answer: () => run.answer(body.taskId, body.answer),
+      merge: () => run.mergeIntoProject(),
+      cancel: () => run.cancel(),
+      close: async () => {
+        await run.close();
+        this.run = null;
+        this.save();
+        this.emitEvent({ type: 'snapshot', space: this.toJSON() });
+      },
+    };
+    if (!actions[action]) throw new Error(`未知操作：${action}`);
+    const r = await actions[action]();
+    return r ?? { ok: true };
+  }
+
+  /** 任务结束后，把协调者的总结也发到聊天里。 */
+  postRunSummary(run) {
+    const coord = run.coordinator;
+    const s = run.data.summary;
+    const done = run.data.tasks.filter((t) => t.status === 'approved').length;
+    const msg = {
+      id: randomUUID(), kind: 'ai', memberId: coord.id, name: coord.name, engine: coord.engine, ts: Date.now(), runId: run.id,
+      text: `**任务完成：${run.data.objective.split('\n')[0].slice(0, 80)}**（${done}/${run.data.tasks.length} 个子任务通过）\n\n${s?.text || s?.error || ''}`,
+      activities: [],
+    };
+    this.data.messages.push(msg);
+    this.emitEvent({ type: 'message', message: msg });
+    this.save();
+  }
+
+  // ---------- 其他 ----------
+  emitEvent(ev) { this.emit('event', ev); }
+
+  emitState() {
+    this.emitEvent({ type: 'state', running: this.running, speaking: this.current?.msg.id || null, queue: this.queue.map((q) => q.memberId) });
+  }
+
+  save() {
+    this.data.updatedAt = Date.now();
+    try { this.store.save(this.data); } catch (e) { console.error('保存失败：', e.message); }
+  }
+
+  async remove() {
+    this.stop();
+    for (const r of this.data.runs) {
+      await cleanupRunFiles(r, runDir(this.runHost, r.id), { keepIntegration: false }).catch(() => {});
+    }
+    this.run?.removeAllListeners();
+    this.removeAllListeners();
+    this.store.remove(this.id);
+    // 软件内的共享文件夹属于这个空间，一起删除；你自己选的文件夹绝不动
+    fs.rmSync(this.dir, { recursive: true, force: true });
+  }
+
+  toMarkdown() {
+    const d = this.data;
+    const lines = [`# ${d.title}`, '', `- 成员：${d.members.map((m) => `${m.name}（${m.engineLabel}）`).join('、')}`, `- 共享文件夹：${this.workspacePath}`, '', '---', ''];
+    for (const m of d.messages) {
+      if (m.passed || (!m.text && !m.changes?.length)) continue;
+      const time = new Date(m.ts).toLocaleString('zh-CN', { hour12: false });
+      lines.push(`### ${m.kind === 'user' ? '我' : m.name}　<small>${time}</small>`, '');
+      if (m.text) lines.push(m.text, '');
+      if (m.changes?.length) lines.push(`> 修改了：${m.changes.map((c) => c.path).join('、')}`, '');
+    }
+    return lines.join('\n');
+  }
+}

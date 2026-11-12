@@ -1,0 +1,19 @@
+{
+  "name": "roundtable",
+  "productName": "圆桌",
+  "version": "0.2.0",
+  "private": true,
+  "description": "本地桌面应用：让 Claude Code、Codex、DeepSeek、Gemini 等 AI 在同一个空间里自由讨论、共同编辑文档",
+  "type": "module",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "mock": "electron . --mock"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "electron": "^45.3.0"
+  }
+}
