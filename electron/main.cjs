@@ -1,5 +1,5 @@
 // 桌面版入口：在本机起一个只给自己用的服务，再用一个独立窗口显示界面。
-const { app, BrowserWindow, ipcMain, dialog, shell, net, safeStorage, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, net, safeStorage, Menu, nativeTheme } = require('electron');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
@@ -20,7 +20,8 @@ function createWindow(url) {
     minWidth: 900,
     minHeight: 560,
     title: '圆桌',
-    backgroundColor: '#f5f6f8',
+    icon: path.join(__dirname, process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#262624' : '#faf9f7',
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),

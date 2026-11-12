@@ -67,6 +67,29 @@ const clock = (ts) => new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit'
 const sizeText = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
 const engineOf = (id) => state.engines.find((e) => e.id === id);
 
+// 各 AI 的图标（public/icons）。单色的跟随文字颜色，用遮罩画；彩色的直接用图片。
+const MONO_LOGO = new Set(['codex', 'openai', 'ollama', 'kimi']);
+const LOGO_OF = { 'claude-code': 'claude', codex: 'codex', dsh: 'deepseek', gemini: 'gemini' };
+const LOGO_HINT = [[/deepseek/i, 'deepseek'], [/qwen|dashscope|通义|千问/i, 'qwen'], [/kimi|moonshot/i, 'kimi'], [/zhipu|bigmodel|智谱|glm/i, 'zhipu'],
+  [/ollama|:11434/i, 'ollama'], [/claude|anthropic/i, 'claude'], [/gemini/i, 'gemini'], [/openai|gpt/i, 'openai']];
+function logoKey(engineId, hint = '') {
+  if (LOGO_OF[engineId]) return LOGO_OF[engineId];
+  const e = engineOf(engineId);
+  const text = `${hint} ${e?.label || ''}`;
+  return LOGO_HINT.find(([re]) => re.test(text))?.[1] || null;
+}
+const logoHtml = (k) => (MONO_LOGO.has(k) ? `<i class="logo mono" style="--logo:url(/icons/${k}.svg)"></i>` : `<img class="logo" src="/icons/${k}.svg" alt="">`);
+/** 成员头像：有图标用图标，没有就用名字的第一个字。 */
+function avatarHtml(engineId, name) {
+  const k = logoKey(engineId);
+  return k ? `<span class="avatar has-logo">${logoHtml(k)}</span>` : `<span class="avatar">${esc(initial(name))}</span>`;
+}
+/** 连接列表里的小标记：有图标用图标，没有就用颜色圆点。 */
+function markHtml(engineId, color, hint) {
+  const k = logoKey(engineId, hint);
+  return k ? logoHtml(k) : `<span class="swatch" style="--c:${color}"></span>`;
+}
+
 // 简洁、安全的 Markdown 渲染（先转义再加格式）
 function md(src) {
   const inline = (s) => esc(s)
@@ -198,7 +221,7 @@ function renderEngineDots() {
 function renderWelcome() {
   const none = !state.engines.some((e) => e.status?.ready);
   $('#engineSummary').innerHTML = !none ? '' : state.engines.map((e) => `
-    <div class="engine-card"><div class="n"><span class="swatch" style="--c:${e.color}"></span>${esc(e.label)} ${engineBadge(e)}</div>
+    <div class="engine-card"><div class="n">${markHtml(e.id, e.color)}${esc(e.label)} ${engineBadge(e)}</div>
     <div class="s">${esc(e.status?.note || '')}</div></div>`).join('');
 }
 
@@ -220,7 +243,7 @@ async function openEnginesModal() {
   const providerHtml = (p, i) => {
     const e = engineOf(`openai:${p.id}`);
     return `<div class="conn" data-i="${i}">
-      <div class="conn-head"><span class="swatch" style="--c:#7c3aed"></span><b>${esc(p.name || '新接口')}</b>${e ? engineBadge(e) : ''}
+      <div class="conn-head">${markHtml(`openai:${p.id}`, '#7c3aed', `${p.name || ''} ${p.baseUrl || ''}`)}<b>${esc(p.name || '新接口')}</b>${e ? engineBadge(e) : ''}
         <button class="icon-btn" type="button" data-act="del-provider" title="删除">${ICON.close}</button></div>
       ${e?.status?.note ? `<div class="note">${esc(e.status.note)}</div>` : ''}
       <div class="grid">
@@ -236,14 +259,14 @@ async function openEnginesModal() {
     <div class="modal-body">
       <div class="section-title">本机 AI 应用</div>
       ${cli.map((e) => `<div class="conn" data-engine="${e.id}">
-        <div class="conn-head"><span class="swatch" style="--c:${e.color}"></span><b>${esc(e.label)}</b>${engineBadge(e)}</div>
+        <div class="conn-head">${markHtml(e.id, e.color)}<b>${esc(e.label)}</b>${engineBadge(e)}</div>
         <div class="note">${esc(e.status?.note || '')}${e.status?.version ? `（${esc(e.status.version)}）` : ''}</div>
         ${e.status?.command ? `<span class="cmd">${esc(e.status.command)}</span>` : ''}
         <div class="grid"><label class="wide">程序位置<input data-path="${e.id}" value="${esc(settings.paths[e.id] || '')}" placeholder="${esc(e.status?.bin || '自动查找')}"></label></div>
       </div>`).join('')}
       <div class="section-title">Gemini</div>
       <div class="conn" data-engine="gemini">
-        <div class="conn-head"><span class="swatch" style="--c:${gem?.color || '#4285f4'}"></span><b>Gemini API</b>${gem ? engineBadge(gem) : ''}</div>
+        <div class="conn-head">${markHtml('gemini')}<b>Gemini API</b>${gem ? engineBadge(gem) : ''}</div>
         <div class="note">${esc(gem?.status?.note || '')}</div>
         <div class="grid">
           <label class="wide">API key<input type="password" id="gemKey" placeholder="${settings.gemini.hasKey ? `已保存（${esc(settings.gemini.keyHint)}），留空表示不变` : '在 aistudio.google.com 创建'}"></label>
@@ -686,7 +709,7 @@ function renderMembersBar() {
     const ok = !e || e.status?.ready !== false;
     return `<span class="person ${speaking?.memberId === m.id ? 'speaking' : ''} ${ok ? '' : 'off'}" style="--c:${m.color}" data-id="${m.id}"
       title="${esc(m.engineLabel)}${m.model ? ` · ${esc(m.model)}` : ''}\n点一下让 ${esc(m.name)} 现在发言${ok ? '' : `\n⚠ ${esc(e.status?.note || '')}`}">
-      <span class="avatar">${esc(initial(m.name))}</span>${esc(m.name)}</span>`;
+      ${avatarHtml(m.engine, m.name)}${esc(m.name)}</span>`;
   }).join('');
 }
 
@@ -718,7 +741,7 @@ function messageHtml(m) {
   else body = m.text ? `<div class="md ${m.streaming ? 'cursor' : ''}">${md(m.text)}</div>` : '';
   const changes = m.changes?.length ? `<div class="changes">${m.changes.map((c) => `<button type="button" class="change-chip" data-change="${c.id}">${ICON.file}${esc(c.path)} ${c.created ? '<span class="plus">新建</span>' : c.deleted ? '<span class="minus">删除</span>' : `<span class="plus">+${c.added}</span><span class="minus">−${c.removed}</span>`}</button>`).join('')}</div>` : '';
   return `<div class="msg ai ${m.error ? 'error' : ''}" id="m-${m.id}" style="--c:${color}">
-    <span class="avatar">${esc(initial(m.name))}</span>
+    ${avatarHtml(mem?.engine || m.engine, m.name)}
     <div class="msg-main">
       <div class="msg-head"><span class="n">${esc(m.name)}</span><span class="m" title="${esc(meta.join(' · '))}">${clock(m.ts)}</span></div>
       <div class="bubble">${activitiesHtml(m.activities, m.streaming)}${body}
