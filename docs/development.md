@@ -8,6 +8,8 @@
 
 Node.js 最低版本为 22.12.0，与锁文件中的 `@electron/get`、`@electron-internal/extract-zip` 安装依赖要求一致。
 
+源码运行时数据在项目里的 `data/`；打包后程序目录只读，数据改放在 Electron 的 `userData` 目录（见 `electron/main.cjs`）。macOS / Linux 从图形界面启动时拿不到终端的 PATH，主进程启动时会向登录 shell 要一份补上，否则找不到命令行 AI。
+
 Electron 主进程启动仅监听 `127.0.0.1` 的 HTTP 服务，并以随机端口打开本机界面。界面通过 JSON API 操作空间，通过 SSE 接收消息、文件与任务进度。API 请求通过 Electron `net.fetch` 使用系统代理。
 
 ## 模块职责
@@ -60,10 +62,22 @@ GitHub Actions 在 Windows 和 Ubuntu、Node.js 22.12.0 和 24 上执行同样�
 
 涉及 UI 时用 `npm run mock` 检查相关流程。涉及真实引擎时，用对应账号验证登录、模型选择、一次发言、中止与权限，并在 PR 中记录验证范围。
 
+## 打包与发布
+
+`npm run dist` 用 electron-builder 打当前系统的安装包，输出到 `dist/`（Windows `.exe`，macOS 两种芯片的 `.dmg`，Linux `.AppImage` 和 `.deb`），配置在 `package.json` 的 `build` 字段。
+
+发布新版本：
+
+1. 改 `package.json` 里的版本号（`npm version <版本> --no-git-tag-version`），提交。
+2. 打标签并推送：`git tag -a v<版本> -m "Agenda v<版本>"`，`git push origin main v<版本>`。
+3. [`release.yml`](../.github/workflows/release.yml) 会在三个系统上各自跑检查、打包，把安装包上传到同名 release；release 不存在时自动新建，并按提交生成说明。也可以在 Actions 页面手动运行，给已有标签补打。
+
+安装包没有代码签名。要签名的话，按 electron-builder 文档在仓库 Secrets 里配置证书，再去掉 `mac.identity: null`。
+
 ## 数据布局
 
 ```text
-data/                           正常模式（已忽略）
+data/                           正常模式（已忽略；安装版在 userData 目录下）
   settings.json                 本机连接设置
   spaces/
     <空间 ID>.json              成员、消息、任务与导入状态

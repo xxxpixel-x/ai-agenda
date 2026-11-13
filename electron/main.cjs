@@ -4,9 +4,22 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
+const { execFileSync } = require('node:child_process');
+
 const ROOT = path.join(__dirname, '..');
 const MOCK = process.argv.includes('--mock');
-const DATA_DIR = path.join(ROOT, MOCK ? 'data-mock' : 'data');
+// 从源码运行时数据放在项目里的 data/；安装版的程序目录是只读的，放到系统的用户数据目录
+const DATA_DIR = path.join(app.isPackaged ? app.getPath('userData') : ROOT, MOCK ? 'data-mock' : 'data');
+
+// macOS / Linux 从程序坞或桌面打开时，拿不到终端里配置的 PATH，会找不到 claude、codex 等命令。向登录 shell 要一份补上
+if (process.platform !== 'win32') {
+  try {
+    const shellPath = execFileSync(process.env.SHELL || '/bin/sh', ['-ilc', 'printf "%s" "$PATH"'], { encoding: 'utf8', timeout: 5000 }).trim().split('\n').pop();
+    const dirs = new Set((process.env.PATH || '').split(path.delimiter).filter(Boolean));
+    for (const d of shellPath.split(path.delimiter)) if (d) dirs.add(d);
+    process.env.PATH = [...dirs].join(path.delimiter);
+  } catch { /* 拿不到就用原来的 PATH */ }
+}
 const UI_FILE = path.join(DATA_DIR, 'ui.json'); // 界面偏好（主题）
 const THEMES = ['system', 'light', 'dark'];
 const readUi = () => { try { return JSON.parse(fs.readFileSync(UI_FILE, 'utf8')); } catch { return {}; } };
@@ -63,7 +76,7 @@ function createWindow(url) {
   win.webContents.on('before-input-event', (e, input) => {
     if (input.type !== 'keyDown') return;
     if (input.key === 'F12') win.webContents.toggleDevTools();
-    if (input.control && input.key.toLowerCase() === 'r') win.webContents.reload();
+    if ((input.control || input.meta) && input.key.toLowerCase() === 'r') win.webContents.reload();
   });
   win.loadURL(url);
 }
@@ -73,7 +86,8 @@ app.on('second-instance', () => {
 });
 
 app.whenReady().then(async () => {
-  Menu.setApplicationMenu(null);
+  // macOS 没有菜单时复制、粘贴等快捷键也会失效，只保留最基本的应用和编辑菜单
+  Menu.setApplicationMenu(process.platform === 'darwin' ? Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'editMenu' }]) : null);
   const saved = readUi().theme;
   nativeTheme.themeSource = THEMES.includes(saved) ? saved : 'system';
   const { setFetch } = await import(pathToFileURL(path.join(ROOT, 'src', 'engines', 'http.mjs')).href);

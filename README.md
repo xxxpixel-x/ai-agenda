@@ -4,7 +4,7 @@
 
 在别的 AI 里做到一半的事，可以把对话带进来接着做；也可以只挑出其中一个主题，整理成简报，交给另一个 AI 接手。
 
-**桌面应用（Windows 实测，macOS / Linux 可从源码运行）· Electron · 原生 JavaScript · MIT**
+**桌面应用 · Windows / macOS / Linux · Electron · 原生 JavaScript · MIT**
 
 ## 能做什么
 
@@ -18,14 +18,33 @@
 
 ## 快速开始
 
-### 环境要求
+### 下载安装包
 
-- Windows 10 / 11 上实测。macOS / Linux 的路径和进程调用已做适配，CI 也在这两个系统上跑测试，但桌面使用未完整实测；`启动.cmd` 和 exe 启动器仅限 Windows。
+到 [Releases](https://github.com/xxxpixel-x/ai-agenda/releases) 下载对应系统的安装包：
+
+| 系统 | 文件 | 首次打开 |
+| --- | --- | --- |
+| Windows 10 / 11 | `Agenda-<版本>-win-x64.exe` | 安装包没有签名，SmartScreen 提示时点「更多信息 → 仍要运行」 |
+| macOS（Apple 芯片） | `Agenda-<版本>-mac-arm64.dmg` | 没有签名，见下方说明 |
+| macOS（Intel） | `Agenda-<版本>-mac-x64.dmg` | 同上 |
+| Linux | `.AppImage`（加执行权限后直接运行）或 `.deb` | — |
+
+macOS 上把 Agenda 拖进「应用程序」后，第一次请右键点它选「打开」；如果提示“已损坏”，在终端运行一次：
+
+```sh
+xattr -cr /Applications/Agenda.app
+```
+
+Windows 版已实测；macOS 和 Linux 安装包由 GitHub Actions 自动打出，还没有在真机上完整实测，遇到问题欢迎提 Issue。
+
+### 从源码运行
+
+- Windows 10 / 11、macOS 或 Linux；`启动.cmd` 和 exe 启动器仅限 Windows。
 - [Node.js](https://nodejs.org/) **22.12.0 或以上**，包含 npm。此下限与锁定的 Electron 安装依赖一致。
 - 使用 Git 项目的并行任务协作时，需要已加入 PATH 的 [Git](https://git-scm.com/)。
 - 真实 AI 调用需要相应 CLI 登录或 API key；演示模式不需要。
 
-从 [Releases](https://github.com/xxxpixel-x/ai-agenda/releases) 下载源码包或克隆仓库后，在项目根目录执行：
+克隆仓库后，在项目根目录执行：
 
 ```sh
 npm ci
@@ -42,7 +61,7 @@ npm run mock
 
 演示模式使用独立的 `data-mock/`，会真实写入你选择的共享文件夹。体验时可选“新建空文件夹”。
 
-### 双击打开（可选）
+### Windows 启动器（可选）
 
 装好依赖后运行 `npm run build:launcher`，会在项目根目录生成 `Agenda.exe`；加 `-- -DesktopShortcut` 同时创建桌面快捷方式。之后双击即可打开，不弹命令行窗口，再次打开会切回已有窗口。构建用 Windows 自带的 .NET Framework C# 编译器，不需要额外打包工具。
 
@@ -65,7 +84,7 @@ CLI 可用模型、账号额度及权限行为取决于本机安装和服务商�
 
 ## 数据与权限
 
-- 正常模式的数据在 `data/`，演示模式在 `data-mock/`；这些目录已从 Git 排除。
+- 安装版的数据在系统的用户数据目录：Windows `%APPDATA%\Agenda`，macOS `~/Library/Application Support/Agenda`，Linux `~/.config/Agenda`。从源码运行时在项目里的 `data/`，演示模式在 `data-mock/`，这些目录已从 Git 排除。
 - API key 存在本机 `settings.json`。桌面版在系统加密可用时使用 Electron safeStorage；不可用时回退到明文。
 - AI 请求会把相应聊天和文件上下文发送给你配置的引擎；“本地保存”不代表 AI 推理离线进行。
 - 权限档位通过各引擎的工具限制、沙箱或提示词实现，不能视为统一的操作系统级隔离。详见 [权限说明](docs/development.md#权限与数据边界)。
@@ -86,6 +105,7 @@ npm run verify
 | `npm run check` | 检查源码语法与包元数据一致性 |
 | `npm test` | 运行核心逻辑和本机接口测试 |
 | `npm run verify` | 运行全部自动检查 |
+| `npm run dist` | 打当前系统的安装包，输出到 `dist/` |
 
 ```text
 electron/       桌面入口、预加载与图标
@@ -96,7 +116,7 @@ src/            本机服务、空间调度、任务协作、存储
 scripts/        检查脚本与启动器构建
 test/           自动化测试
 docs/           使用指南、开发说明和需求记录
-.github/        CI、Issue 与 PR 模板
+.github/        CI、发布打包、Issue 与 PR 模板
 ```
 
 ## 文档
@@ -108,7 +128,7 @@ docs/           使用指南、开发说明和需求记录
 
 ## 当前限制
 
-- 暂无安装包，需要从源码运行；Windows 的 exe 启动器也要和装好依赖的项目文件夹一起使用。
+- 安装包没有代码签名；macOS 和 Linux 版尚未在真机上完整实测。
 - 命令审批卡片只覆盖聊天中的 Claude Code 和 Codex；Codex 这一路走的是标为实验性的 `codex app-server` 协议，Codex 升级后可能需要跟着调整。
 - 任务的终端视图是原始输出记录，不是可交互终端。
 - 文件改动历史主要跟踪 1 MiB 以下的文本文件，最多 3,000 个；大文件和二进制文件不具备同等撤销保障。

@@ -1,10 +1,16 @@
 {
   "name": "agenda",
   "productName": "Agenda",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "license": "MIT",
   "description": "多 AI 协作桌面应用：Claude Code、Codex、Gemini、DeepSeek 等在同一个空间里讨论、分工，一起修改同一个文件夹，可导入其他 AI 软件里的对话接着做",
+  "homepage": "https://github.com/xxxpixel-x/ai-agenda",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xxxpixel-x/ai-agenda.git"
+  },
+  "author": "xxxpixel-x",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
@@ -13,12 +19,78 @@
     "build:launcher": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-launcher.ps1",
     "check": "node scripts/check.mjs",
     "test": "node --test test/*.test.mjs",
-    "verify": "npm run check && npm test"
+    "verify": "npm run check && npm test",
+    "dist": "electron-builder --publish never"
   },
   "engines": {
     "node": ">=22.12.0"
   },
   "devDependencies": {
-    "electron": "^45.3.0"
+    "electron": "^45.3.0",
+    "electron-builder": "^26.18.0"
+  },
+  "build": {
+    "appId": "Agenda.Desktop",
+    "productName": "Agenda",
+    "artifactName": "Agenda-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**/*",
+      "!electron/launcher.cs",
+      "public/**/*",
+      "src/**/*",
+      "package.json"
+    ],
+    "publish": null,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "electron/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "icon": "electron/icon.png",
+      "category": "public.app-category.developer-tools",
+      "identity": null
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "electron/icon.png",
+      "category": "Development",
+      "maintainer": "xxxpixel-x <xxxpixel-x@users.noreply.github.com>"
+    }
   }
 }
