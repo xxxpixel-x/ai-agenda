@@ -1,5 +1,7 @@
 // OpenAI Codex 命令行（codex exec）。使用 Codex 自己的登录（ChatGPT 账号或其配置的服务商）。
 import { execFile } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { findOnPath, isFile, isWin, capture, runJsonl, brief } from './proc.mjs';
 
@@ -79,6 +81,17 @@ function shortCommand(cmd) {
   return brief(c.replace(/\s+/g, ' '), 70);
 }
 
+// 除了「全部权限」，不让 Codex 用上你账号和个人配置里的外部连接：
+// 应用连接器（Gmail、Slack、GitHub…）、插件、hooks、MCP 服务。型号、登录等其余设置照旧。
+export function isolationArgs(home = process.env.CODEX_HOME || path.join(os.homedir(), '.codex')) {
+  const args = ['--disable', 'apps', '--disable', 'plugins', '--disable', 'hooks', '-c', 'notify=[]'];
+  let config = '';
+  try { config = fs.readFileSync(path.join(home, 'config.toml'), 'utf8'); } catch { /* 没有个人配置 */ }
+  const names = new Set([...config.matchAll(/^\s*\[mcp_servers\.("[^"\n]+"|'[^'\n]+'|[\w-]+)\]/gm)].map((m) => m[1]));
+  for (const name of names) args.push('-c', `mcp_servers.${name}.enabled=false`);
+  return args;
+}
+
 export async function runTurn({ system, prompt, model, effort, cwd, access = 'edit', signal, onDelta, onActivity, onRaw, binOverride }) {
   const bin = await findBin(binOverride);
   if (!bin) throw new Error('没有找到 Codex');
@@ -86,6 +99,7 @@ export async function runTurn({ system, prompt, model, effort, cwd, access = 'ed
   // Codex 的沙箱：只读档 = read-only；全部权限 = 不设沙箱；其余 = 只能写共享文件夹（它运行命令也被限制在这个沙箱里）
   const sandbox = access === 'read' ? 'read-only' : access === 'full' ? 'danger-full-access' : 'workspace-write';
   const args = ['--search', 'exec', '--json', '--skip-git-repo-check', '--ephemeral', '-s', sandbox, '-C', cwd];
+  if (access !== 'full') args.push(...isolationArgs());
   if (model) args.push('-m', model);
   if (effort) args.push('-c', `model_reasoning_effort="${effort}"`);
   args.push('-');

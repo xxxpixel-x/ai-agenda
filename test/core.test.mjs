@@ -8,6 +8,7 @@ import { extractFileBlocks, filesForPrompt } from '../src/engines/file-blocks.mj
 import { extractPlan, normalizePlan, parseReport, workerPrompt, plannerPrompt } from '../src/task-prompts.mjs';
 import { importsBackground, briefVersions, resolveBrief } from '../src/imports.mjs';
 import { turnPrompt, systemPrompt, parseMarkers } from '../src/prompts.mjs';
+import { isolationArgs } from '../src/engines/codex.mjs';
 import { tempDir, makeSpace } from './helpers.mjs';
 
 test('settings persist protected keys without exposing them in public responses', (t) => {
@@ -139,6 +140,17 @@ test('requests from other AIs need the user\'s consent unless access is full', (
   assert.ok(full.includes('不用再问「我」'));
   assert.ok(full.includes('电脑上任何地方'));
   assert.ok(!systemPrompt({ ...base, access: 'full' }, members[0], { api: true }).includes('电脑上任何地方'));
+});
+
+test('codex runs without the user\'s connectors, plugins, hooks and MCP servers', (t) => {
+  const home = tempDir(t);
+  fs.writeFileSync(path.join(home, 'config.toml'), 'model = "x"\n[mcp_servers.node_repl]\ncommand = "a"\n[mcp_servers.node_repl.env]\nK = "v"\n[mcp_servers."my tools"]\ncommand = "b"\n');
+  const args = isolationArgs(home).join(' ');
+  for (const part of ['--disable apps', '--disable plugins', '--disable hooks', 'notify=[]', 'mcp_servers.node_repl.enabled=false', 'mcp_servers."my tools".enabled=false']) {
+    assert.ok(args.includes(part), part);
+  }
+  assert.ok(!args.includes('mcp_servers.node_repl.env'));
+  assert.ok(isolationArgs(path.join(home, 'missing')).includes('apps'));
 });
 
 test('imported background survives the recent-chat limit and excludes unfinished summaries', () => {
