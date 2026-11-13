@@ -1,7 +1,7 @@
 {
   "name": "agenda",
   "productName": "Agenda",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "license": "MIT",
   "description": "本地桌面应用：让 Claude Code、Codex、DeepSeek、Gemini 等 AI 在同一个空间里自由讨论、共同编辑文档",

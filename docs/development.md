@@ -25,7 +25,7 @@ Electron 主进程启动仅监听 `127.0.0.1` 的 HTTP 服务，并以随机端�
 | `src/git.mjs` | Git worktree、提交、对比与合并 |
 | `src/store.mjs` / `src/settings.mjs` | 空间持久化、连接配置、密钥编码与界面脱敏 |
 | `src/imports.mjs` | 导入方式、摘要、主题简报、补导和背景版本 |
-| `src/importers/` | 只读解析外部工具的会话记录 |
+| `src/importers/` | 只读解析外部工具的会话记录，以及粘贴文字和导出文件的整理（新增来源见 [importers.md](importers.md)） |
 | `src/engines/` | CLI / API 适配器与统一注册表 |
 | `public/` | 界面与静态素材 |
 
@@ -94,4 +94,4 @@ $env:RT_DEBUG_DIR = Join-Path $PWD 'debug'
 npm start
 ```
 
-`debug/` 已忽略。日志可能包含对话和文件内容，提交 Issue 前先脱敏。首次 Electron 下载失败时，可按 [安装排查](publishing.md#安装排查) 配置镜像后重试。
+`debug/` 已忽略。日志可能包含对话和文件内容，提交 Issue 前先脱敏。首次 Electron 下载失败时，设置环境变量 `ELECTRON_MIRROR`（例如 `https://npmmirror.com/mirrors/electron/`）后重新执行 `npm ci`。

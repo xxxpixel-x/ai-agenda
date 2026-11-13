@@ -8,7 +8,7 @@
 
 ## 能做什么
 
-- **导入对话**：把 Claude Code、Codex、DeepSeek Harness 里的对话带进来，Claude 能接着原会话继续；太长时自动压成摘要或交接文档，原对话有新内容时可以补导。
+- **导入对话**：把 Claude Code、Codex、DeepSeek Harness、Gemini CLI、WorkBuddy、ZCode 里的对话带进来，其他软件可以粘贴或选导出文件（ChatGPT、Claude.ai、Gemini 等）；Claude 能接着原会话继续；太长时自动压成摘要或交接文档，原对话有新内容时可以补导。
 - **按主题交接**：在 Claude Code 里做游戏，只想把剧本交给 Gemini？填“剧本”，只挑出相关内容写成简报（背景 / 已定的 / 约束和接口 / 待讨论 / 相关原文），存成共享文件夹里的 `主题-剧本.md`。其他成员只看简报，不看整段原对话，默认在原项目的主题子文件夹里工作。成员改了简报要你采用才生效；补导时只并入和主题相关的新内容。
 - **自由讨论**：成员依次发言、互相接话，支持 `@` 点名、插话、跳过、停止和轮次上限。
 - **一起改文件**：用软件新建的文件夹或现有项目。不管哪个 AI 用什么方式改，每次改动都记下是谁改的，可以对比、撤销。
@@ -18,12 +18,6 @@
 
 ## 快速开始
 
-### 双击打开
-
-本机已生成启动器时，双击项目文件夹中的 **`Agenda.exe`**，或桌面的 **「Agenda」快捷方式**，即可直接打开应用，不会弹出命令行窗口。再次打开会切回已有窗口。聊天记录和配置继续保存在原来的 `data/` 中。
-
-启动器与项目文件夹配套使用；请通过快捷方式从桌面打开，不要单独移动 exe。首次从源码安装的步骤见下方。
-
 ### 环境要求
 
 - Windows 10 / 11；当前桌面流程以 Windows 为目标，其他平台未做完整验证。
@@ -31,7 +25,7 @@
 - 使用 Git 项目的并行任务协作时，需要已加入 PATH 的 [Git](https://git-scm.com/)。
 - 真实 AI 调用需要相应 CLI 登录或 API key；演示模式不需要。
 
-下载或克隆仓库后，在项目根目录执行：
+从 [Releases](https://github.com/xxxpixel-x/ai-agenda/releases) 下载源码包或克隆仓库后，在项目根目录执行：
 
 ```sh
 npm ci
@@ -40,8 +34,6 @@ npm start
 
 Windows 也可以双击 [`启动.cmd`](启动.cmd)。首次运行按锁文件安装依赖，并默认通过国内镜像下载 Electron；已有 `ELECTRON_MIRROR` 设置时使用你的设置。
 
-安装依赖后，运行 `npm run build:launcher` 可在项目根目录生成 `Agenda.exe`。需要同时创建桌面快捷方式时，运行 `npm run build:launcher -- -DesktopShortcut`。构建使用 Windows 自带的 .NET Framework C# 编译器，不需要安装额外打包工具。日常打开只需双击图标。
-
 无需账号体验：
 
 ```sh
@@ -49,6 +41,12 @@ npm run mock
 ```
 
 演示模式使用独立的 `data-mock/`，会真实写入你选择的共享文件夹。体验时可选“新建空文件夹”。
+
+### 双击打开（可选）
+
+装好依赖后运行 `npm run build:launcher`，会在项目根目录生成 `Agenda.exe`；加 `-- -DesktopShortcut` 同时创建桌面快捷方式。之后双击即可打开，不弹命令行窗口，再次打开会切回已有窗口。构建用 Windows 自带的 .NET Framework C# 编译器，不需要额外打包工具。
+
+启动器要和装好依赖的项目文件夹配套使用，请通过快捷方式打开，不要单独移动 exe。
 
 ### 连接 AI
 
@@ -59,7 +57,8 @@ npm run mock
 | Claude Code | 自动查找本机 CLI；按界面提示登录，或手动指定路径 |
 | Codex | 自动查找本机 CLI；使用本机登录状态 |
 | DeepSeek Harness | 自动查找本机安装；使用已有账号配置 |
-| Gemini | 填写 Gemini API key |
+| Gemini CLI | 装了才出现；自动查找本机 CLI，使用它的 Google 账号登录 |
+| Gemini API | 填写 Gemini API key |
 | OpenAI 兼容接口 | 填写接口地址、API key 和模型；内置 DeepSeek、通义千问、Kimi、智谱、OpenAI、Ollama 预设 |
 
 CLI 可用模型、账号额度及权限行为取决于本机安装和服务商配置。完整操作说明见 [使用指南](docs/usage.md)。
@@ -94,7 +93,7 @@ public/         原生 HTML / CSS / JavaScript 界面
 src/            本机服务、空间调度、任务协作、存储
   engines/      CLI / API 引擎适配器
   importers/    外部会话读取器
-scripts/        开发检查脚本
+scripts/        检查脚本与启动器构建
 test/           自动化测试
 docs/           使用指南、开发说明和需求记录
 .github/        CI、Issue 与 PR 模板
@@ -105,8 +104,7 @@ docs/           使用指南、开发说明和需求记录
 - [使用指南](docs/usage.md)：讨论、文件、对话导入、任务协作和排查方法。
 - [开发说明](docs/development.md)：模块职责、引擎接口、测试与数据边界。
 - [贡献指南](CONTRIBUTING.md)：本地检查与提交约定。
-- [GitHub 发布步骤](docs/publishing.md)：首次推送和源码发布。
-- [需求与实现记录](docs/需求说明.md)、[对话导入设计](docs/需求-导入对话.md)。
+- [需求与实现记录](docs/需求说明.md)、[对话导入设计](docs/需求-导入对话.md)、[导入来源与新增方法](docs/importers.md)。
 
 ## 当前限制
 
