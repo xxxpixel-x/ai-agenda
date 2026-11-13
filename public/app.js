@@ -343,6 +343,7 @@ async function openEnginesModal() {
 
 function showModal(html) {
   const dlg = $('#modal');
+  dlg.close();
   const fresh = dlg.cloneNode(false); // 去掉旧的事件监听
   dlg.replaceWith(fresh);
   fresh.innerHTML = html;
@@ -567,17 +568,55 @@ async function openSpaceSettings() {
       } catch (e) { toast(e.message, 'error'); b.disabled = false; }
     }
     if (b.dataset.act === 'delete') {
-      const managed = sp.workspace.type === 'managed';
-      const ok = confirm(`确定删除「${sp.title}」吗？\n\n聊天记录和改动记录都会删除，无法恢复。\n${managed ? '软件建的共享文件夹（及里面的文件）也会一起删除。' : `你的文件夹 ${sp.workspacePath} 不会被删除。`}`);
-      if (!ok) return;
-      try {
-        await api(`/api/spaces/${sp.id}`, { method: 'DELETE', body: {} });
-        dlg.close();
-        toast('已删除');
-        state.space = null;
-        await refreshSpaces();
+      openDeleteSpaceModal(sp);
+    }
+  });
+}
+
+function openDeleteSpaceModal(sp) {
+  const managed = sp.workspace.type === 'managed';
+  const dlg = showModal(`<div class="modal-inner">
+    <div class="modal-head"><h3>删除「${esc(sp.title)}」？</h3></div>
+    <div class="modal-body">
+      <p>聊天记录、导入的对话和任务记录都会删除，无法恢复。正在进行的讨论和任务会先停止。</p>
+      <p>${managed ? '软件建的共享文件夹及里面的文件也会一起删除。' : '你的共享文件夹及里面的文件会保留。'}</p>
+      <span class="cmd">${esc(sp.workspacePath)}</span>
+      <p class="err" data-delete-error role="alert" hidden></p>
+    </div>
+    <div class="modal-foot"><span class="grow"></span><button class="btn" type="button" data-act="close" autofocus>取消</button>
+      <button class="btn danger" type="button" data-act="confirm-delete">确认删除</button></div>
+  </div>`);
+  let deleting = false;
+  dlg.addEventListener('cancel', (e) => { if (deleting) { e.preventDefault(); e.stopImmediatePropagation(); } }, true);
+  dlg.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-act]');
+    if (!b || deleting) return;
+    if (b.dataset.act === 'close') { dlg.close(); return; }
+    if (b.dataset.act !== 'confirm-delete') return;
+    deleting = true;
+    $$('button', dlg).forEach((button) => { button.disabled = true; });
+    b.textContent = '正在删除…';
+    $('[data-delete-error]', dlg).hidden = true;
+    try {
+      await api(`/api/spaces/${sp.id}`, { method: 'DELETE', body: {} });
+      if (state.space?.id === sp.id) {
+        closeStream();
+        state.files.view = null;
         location.hash = '#/';
-      } catch (e) { toast(e.message, 'error'); }
+        showWelcome();
+      }
+      state.spaces = state.spaces.filter((s) => s.id !== sp.id);
+      renderSpaceList();
+      dlg.close();
+      toast('空间已删除');
+      await refreshSpaces();
+    } catch (err) {
+      const error = $('[data-delete-error]', dlg);
+      error.textContent = err.message;
+      error.hidden = false;
+      deleting = false;
+      $$('button', dlg).forEach((button) => { button.disabled = false; });
+      b.textContent = '重试删除';
     }
   });
 }
@@ -602,12 +641,54 @@ function renderSpaceList() {
   const list = $('#spaceList');
   if (!state.spaces.length) { list.innerHTML = '<div class="empty-list">还没有空间</div>'; return; }
   list.innerHTML = state.spaces.map((s) => `
-    <a class="space-item ${s.id === state.space?.id ? 'active' : ''}" href="#/space/${s.id}">
+    <a class="space-item ${s.id === state.space?.id ? 'active' : ''}" href="#/space/${s.id}" data-space-id="${s.id}">
       <div class="t">${s.running ? '<span class="live-dot" title="讨论中"></span>' : ''}<span>${esc(s.title)}</span>
         <span class="dots">${s.members.map((m) => `<i style="background:${m.color}"></i>`).join('')}</span></div>
       <div class="p">${s.preview ? `${esc(plain(s.preview))} · ` : ''}${relTime(s.updatedAt)}</div>
     </a>`).join('');
 }
+function hideSpaceMenu() { $('#spaceMenu').hidden = true; }
+function openSpaceMenu(item, x, y) {
+  const menu = $('#spaceMenu');
+  menu.dataset.spaceId = item.dataset.spaceId;
+  menu.hidden = false;
+  menu.style.left = `${Math.max(8, Math.min(x, innerWidth - menu.offsetWidth - 8))}px`;
+  menu.style.top = `${Math.max(8, Math.min(y, innerHeight - menu.offsetHeight - 8))}px`;
+  $('button', menu).focus();
+}
+$('#spaceList').addEventListener('contextmenu', (e) => {
+  const item = e.target.closest('[data-space-id]');
+  if (!item) return;
+  e.preventDefault();
+  openSpaceMenu(item, e.clientX, e.clientY);
+});
+$('#spaceList').addEventListener('keydown', (e) => {
+  const item = e.target.closest('[data-space-id]');
+  if (!item || !(e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10'))) return;
+  e.preventDefault();
+  const rect = item.getBoundingClientRect();
+  openSpaceMenu(item, rect.left + 12, rect.bottom);
+});
+document.addEventListener('pointerdown', (e) => { if (!e.target.closest('#spaceMenu')) hideSpaceMenu(); });
+document.addEventListener('keydown', (e) => {
+  const menu = $('#spaceMenu');
+  if (menu.hidden || !['Escape', 'Tab'].includes(e.key)) return;
+  hideSpaceMenu();
+  $(`#spaceList [data-space-id="${menu.dataset.spaceId}"]`)?.focus();
+  if (e.key === 'Escape') e.preventDefault();
+});
+window.addEventListener('resize', hideSpaceMenu);
+window.addEventListener('blur', hideSpaceMenu);
+document.addEventListener('scroll', hideSpaceMenu, true);
+$('#spaceMenu').addEventListener('click', async (e) => {
+  if (!e.target.closest('button')) return;
+  const id = $('#spaceMenu').dataset.spaceId;
+  hideSpaceMenu();
+  try {
+    const sp = state.space?.id === id ? state.space : await api(`/api/spaces/${id}`);
+    openDeleteSpaceModal(sp);
+  } catch (err) { toast(err.message, 'error'); }
+});
 $('#newSpaceBtn').addEventListener('click', openNewSpaceModal);
 $('#enginesBtn').addEventListener('click', openEnginesModal);
 

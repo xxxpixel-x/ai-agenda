@@ -213,14 +213,15 @@ export function importSession(space, opts = {}) {
   messages.push(msg);
   space.save();
   space.emitEvent({ type: 'snapshot', space: space.toJSON() }); // 成员可能变了
-  if (mode === 'topic') writeTopic(space, msg, writer);
-  else if (msg.status === 'writing') digest(space, msg, mode === 'handoff' ? s.entries : early, writer);
+  if (mode === 'topic') space.track(writeTopic(space, msg, writer));
+  else if (msg.status === 'writing') space.track(digest(space, msg, mode === 'handoff' ? s.entries : early, writer));
   return msg;
 }
 
 /** 让 AI 写摘要 / handoff（后台进行，写好后更新折叠块）。 */
 async function digest(space, msg, entries, writer) {
   space.importing = true;
+  const controller = space.importController = new AbortController();
   const state = space.data.memberState[writer.id];
   const resume = state?.importId === msg.id && !!state.sessionId;
   const ask = DIGEST[msg.mode === 'handoff' ? 'handoff' : 'summary'];
@@ -239,10 +240,11 @@ async function digest(space, msg, entries, writer) {
   const sink = { text: '', activities: [] };
   try {
     const r = await runAgentTurn(space.registry, writer, {
-      system, prompt, cwd: space.workspacePath, access: 'read', sink,
+      system, prompt, cwd: space.workspacePath, access: 'read', sink, signal: controller.signal,
       sessionId: resume ? state.sessionId : undefined,
       fork: resume && state.fork,
     });
+    if (space.deleting) return;
     const text = String(r.text || '').trim();
     if (!text) throw new Error(`${writer.name} 没有写出内容`);
     if (resume && r.sessionId) Object.assign(state, { sessionId: r.sessionId, fork: false });
@@ -261,6 +263,7 @@ async function digest(space, msg, entries, writer) {
     space.emitEvent({ type: 'notice', level: 'error', text: msg.error });
   } finally {
     space.importing = false;
+    space.importController = null;
     space.save();
     space.emitEvent({ type: 'message_done', message: msg });
   }
@@ -317,6 +320,7 @@ function topicPath(space, topic) {
 /** 写主题简报（后台进行）。还没有简报时整理全部原文；已有简报时只把 briefCount 之后的新内容并进去。 */
 async function writeTopic(space, msg, writer) {
   space.importing = true;
+  const controller = space.importController = new AbortController();
   const state = space.data.memberState[writer.id];
   const resume = state?.importId === msg.id && !!state.sessionId;
   const update = msg.briefText != null && msg.briefCount > 0;
@@ -339,10 +343,11 @@ async function writeTopic(space, msg, writer) {
   const sink = { text: '', activities: [] };
   try {
     const r = await runAgentTurn(space.registry, writer, {
-      system, prompt, cwd: space.workspacePath, access: 'read', sink,
+      system, prompt, cwd: space.workspacePath, access: 'read', sink, signal: controller.signal,
       sessionId: resume ? state.sessionId : undefined,
       fork: resume && state.fork,
     });
+    if (space.deleting) return;
     const text = String(r.text || '').trim();
     if (!text) throw new Error(`${writer.name} 没有写出内容`);
     if (resume && r.sessionId) Object.assign(state, { sessionId: r.sessionId, fork: false });
@@ -367,6 +372,7 @@ async function writeTopic(space, msg, writer) {
     space.emitEvent({ type: 'notice', level: 'error', text: msg.error });
   } finally {
     space.importing = false;
+    space.importController = null;
     space.save();
     space.emitEvent({ type: 'message_done', message: msg });
   }
@@ -475,7 +481,7 @@ export function refreshImport(space, id) {
     Object.assign(root, { total: root.entries.length, lastKey: last.key, lastTs: last.ts, status: 'writing' });
     space.save();
     space.emitEvent({ type: 'message_done', message: root });
-    writeTopic(space, root, writerOf(space, root));
+    space.track(writeTopic(space, root, writerOf(space, root)));
     return { added: fresh.length, grown: false };
   }
   const msg = {
@@ -501,7 +507,7 @@ export function recompressImport(space, id, mode) {
     delete root.error;
     space.save();
     space.emitEvent({ type: 'message_done', message: root });
-    writeTopic(space, root, writerOf(space, root));
+    space.track(writeTopic(space, root, writerOf(space, root)));
     return root;
   }
   const chain = chainOf(space, root.id);
@@ -518,7 +524,7 @@ export function recompressImport(space, id, mode) {
   space.save();
   space.emitEvent({ type: 'snapshot', space: space.toJSON() });
   if (root.status === 'writing') {
-    digest(space, root, m === 'handoff' ? entries : early, writerOf(space, root));
+    space.track(digest(space, root, m === 'handoff' ? entries : early, writerOf(space, root)));
   }
   return root;
 }

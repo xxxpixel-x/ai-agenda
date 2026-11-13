@@ -166,6 +166,7 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
       const sub = m[2] || '';
       const arg = m[3];
       const tail = m[4] || '';
+      if (space.deleting && method !== 'GET' && method !== 'DELETE') return sendJson(res, 409, { error: '这个空间正在删除，请稍等' });
 
       if (sub === '' && method === 'GET') return sendJson(res, 200, space.toJSON());
       if (sub === '' && method === 'PATCH') { space.update(await readJson(req)); return sendJson(res, 200, space.toJSON()); }

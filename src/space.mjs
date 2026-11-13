@@ -60,6 +60,9 @@ export class Space extends EventEmitter {
     this.running = false;
     this.queue = [];
     this.current = null;
+    this.pendingOperations = new Set();
+    this.deleting = false;
+    this.deleted = false;
     data.runs ||= [];
     this.runHost = this.createRunHost();
     const open = data.runs.filter((r) => !r.closed).at(-1);
@@ -79,6 +82,8 @@ export class Space extends EventEmitter {
       get ws() { return space.ws; },
       get chatRunning() { return space.running; },
       get importBackground() { return importsBackground(space.data.messages); },
+      get deleting() { return space.deleting; },
+      track: (operation) => space.track(operation),
       emit: (ev) => space.emitEvent(ev),
       save: () => space.save(),
     };
@@ -209,7 +214,7 @@ export class Space extends EventEmitter {
       this.onlyQueued = false; // 进行中插话：下一位就会看到并回应
     }
     this.emitState();
-    this.pump();
+    this.track(this.pump());
     return msg;
   }
 
@@ -220,7 +225,7 @@ export class Space extends EventEmitter {
     this.passesInRow = 0;
     this.onlyQueued = false;
     this.queue = this.rotation({ includeLast: this.data.members.length === 1 });
-    this.pump();
+    this.track(this.pump());
   }
 
   /** 让某个成员发言（点头像旁的“让 TA 说”）。 */
@@ -230,7 +235,7 @@ export class Space extends EventEmitter {
     this.queue = [{ memberId, reason: 'mention' }, ...this.queue.filter((q) => q.memberId !== memberId)];
     if (!this.running) { this.turns = 0; this.passesInRow = 0; this.onlyQueued = true; }
     this.emitState();
-    this.pump();
+    this.track(this.pump());
   }
 
   stop() {
@@ -422,11 +427,12 @@ export class Space extends EventEmitter {
     if (this.importing) throw new Error('正在整理导入的对话，稍等一下再开始任务');
     if (this.run && !this.run.data.closed) throw new Error('还有一个任务没结束');
     const pre = await preflight(this.runHost);
+    if (this.deleting || this.deleted) throw new Error('这个空间正在删除');
     const run = this.attachRun(TaskRun.create(this.runHost, opts, pre));
     this.data.runs.push(run.data);
     this.run = run;
     this.save();
-    run.plan(); // 后台进行，进度通过事件推送
+    this.track(run.plan()); // 后台进行，进度通过事件推送
     return run.publicView();
   }
 
@@ -455,12 +461,13 @@ export class Space extends EventEmitter {
       },
     };
     if (!actions[action]) throw new Error(`未知操作：${action}`);
-    const r = await actions[action]();
+    const r = await this.track(actions[action]());
     return r ?? { ok: true };
   }
 
   /** 任务结束后，把协调者的总结也发到聊天里。 */
   postRunSummary(run) {
+    if (this.deleting || this.deleted) return;
     const coord = run.coordinator;
     const s = run.data.summary;
     const done = run.data.tasks.filter((t) => t.status === 'approved').length;
@@ -476,6 +483,7 @@ export class Space extends EventEmitter {
 
   // ---------- 其他 ----------
   emitEvent(ev) {
+    if (this.deleted) return;
     this.emit('event', ev);
     if (ev.type === 'files_changed' && ev.changes?.length) syncBriefs(this, ev.changes); // 主题简报被改了
   }
@@ -485,20 +493,44 @@ export class Space extends EventEmitter {
   }
 
   save() {
+    if (this.deleted) return;
     this.data.updatedAt = Date.now();
     try { this.store.save(this.data); } catch (e) { console.error('保存失败：', e.message); }
   }
 
-  async remove() {
-    this.stop();
-    for (const r of this.data.runs) {
-      await cleanupRunFiles(r, runDir(this.runHost, r.id), { keepIntegration: false }).catch(() => {});
+  track(operation) {
+    const promise = Promise.resolve(operation);
+    this.pendingOperations.add(promise);
+    const done = () => this.pendingOperations.delete(promise);
+    promise.then(done, done);
+    return promise;
+  }
+
+  remove() {
+    if (!this.removal) this.removal = this.removeData().finally(() => { this.removal = null; });
+    return this.removal;
+  }
+
+  async removeData() {
+    this.deleting = true;
+    try {
+      this.stop();
+      this.importController?.abort();
+      this.run?.stopForRemoval();
+      // 等发言、任务和导入的收尾写入结束，再删文件，避免后台把空间重新保存出来。
+      while (this.pendingOperations.size) await Promise.allSettled([...this.pendingOperations]);
+      for (const r of this.data.runs) {
+        await cleanupRunFiles(r, runDir(this.runHost, r.id), { keepIntegration: false }).catch(() => {});
+      }
+      // 软件内的共享文件夹属于这个空间；用户自己的文件夹绝不动。
+      await fs.promises.rm(this.dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      this.store.remove(this.id);
+      this.deleted = true;
+      this.run?.removeAllListeners();
+      this.removeAllListeners();
+    } finally {
+      this.deleting = false;
     }
-    this.run?.removeAllListeners();
-    this.removeAllListeners();
-    this.store.remove(this.id);
-    // 软件内的共享文件夹属于这个空间，一起删除；你自己选的文件夹绝不动
-    fs.rmSync(this.dir, { recursive: true, force: true });
   }
 
   toMarkdown() {

@@ -6,7 +6,7 @@
 //
 // 依赖的是一个很窄的“宿主”接口（见 space.mjs 的 runHost），不直接碰 Space：
 //   host.members / access / workspacePath / workspaceType / dir
-//   host.registry / ws / chatRunning / importBackground / emit(ev) / save()
+//   host.registry / ws / chatRunning / importBackground / deleting / track(promise) / emit(ev) / save()
 // 任务结束时发出 'done' 事件，由宿主决定要不要发到聊天里。
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
@@ -16,6 +16,7 @@ import path from 'node:path';
 import * as G from './git.mjs';
 import { Workspace } from './workspace.mjs';
 import { runAgentTurn } from './turn-runner.mjs';
+import { AbortedError } from './engines/proc.mjs';
 import { parseMarkers } from './prompts.mjs';
 import {
   plannerSystem, plannerPrompt, reviewerSystem, reviewerPrompt, workerSystem, workerPrompt,
@@ -146,6 +147,7 @@ export class TaskRun extends EventEmitter {
   }
 
   changed() {
+    if (this.host.deleting) return;
     this.data.updatedAt = Date.now();
     clearTimeout(this.timer);
     this.timer = setTimeout(() => {
@@ -157,6 +159,7 @@ export class TaskRun extends EventEmitter {
 
   // ---------- 调用 AI（统一处理流式、日志、文件块） ----------
   async call(member, { system, prompt, cwd, access, key, sink, wsForApi }) {
+    if (this.host.deleting) throw new AbortedError();
     const controller = new AbortController();
     this.controllers.set(key, controller);
     try {
@@ -242,7 +245,7 @@ export class TaskRun extends EventEmitter {
   replan(feedbackText) {
     if (this.data.status !== 'plan_review' && this.data.status !== 'failed') throw new Error('现在不能重新规划');
     const fb = str(feedbackText, 4000);
-    this.plan({ feedback: fb ? [{ name: '我', text: fb }] : [{ name: '我', text: '请重新考虑分工和拆分方式。' }] });
+    this.host.track(this.plan({ feedback: fb ? [{ name: '我', text: fb }] : [{ name: '我', text: '请重新考虑分工和拆分方式。' }] }));
   }
 
   /** 你确认（可能改过的）计划后开始执行。 */
@@ -270,7 +273,7 @@ export class TaskRun extends EventEmitter {
   // ---------- 调度 ----------
   tick() {
     const d = this.data;
-    if (d.status !== 'executing' || d.paused) return;
+    if (this.host.deleting || d.status !== 'executing' || d.paused) return;
     for (const t of d.tasks) {
       if (t.status === 'pending' && t.deps.every((id) => SATISFIED.has(d.tasks.find((x) => x.id === id)?.status))) t.status = 'ready';
     }
@@ -282,9 +285,9 @@ export class TaskRun extends EventEmitter {
       if (t.status !== 'ready' || busy.has(t.assigneeId)) continue;
       busy.add(t.assigneeId);
       running.push(t);
-      this.dispatch(t);
+      this.host.track(this.dispatch(t));
     }
-    if (d.tasks.every((t) => SETTLED.has(t.status))) this.summarize();
+    if (d.tasks.every((t) => SETTLED.has(t.status))) this.host.track(this.summarize());
     this.changed();
   }
 
@@ -401,7 +404,7 @@ export class TaskRun extends EventEmitter {
         this.merging.delete(t.id);
       }
       if (r.conflict) {
-        this.dispatch(t, { conflict: r.files });
+        this.host.track(this.dispatch(t, { conflict: r.files }));
         return { conflict: true, files: r.files };
       }
       if (r.skipped) return { ok: false }; // 排队期间被跳过/取消了
@@ -446,7 +449,7 @@ export class TaskRun extends EventEmitter {
     if (!text) throw new Error('请写下要怎么改');
     this.data.paused = false;
     t.feedbacks.push({ ts: Date.now(), text });
-    this.dispatch(t);
+    this.host.track(this.dispatch(t));
   }
 
   retryTask(taskId) {
@@ -454,7 +457,7 @@ export class TaskRun extends EventEmitter {
     if (!['failed', 'ready', 'review'].includes(t.status)) throw new Error('这个子任务现在不能重试');
     if (this.data.status !== 'executing') throw new Error('任务不在执行中');
     this.data.paused = false;
-    this.dispatch(t);
+    this.host.track(this.dispatch(t));
   }
 
   answer(taskId, text) {
@@ -463,7 +466,7 @@ export class TaskRun extends EventEmitter {
     t.answer = str(text, 4000);
     if (!t.answer) throw new Error('请写下回答');
     this.data.paused = false;
-    this.dispatch(t);
+    this.host.track(this.dispatch(t));
   }
 
   reassign(taskId, memberId) {
@@ -547,6 +550,12 @@ export class TaskRun extends EventEmitter {
   /** 删除副本和临时分支。 */
   cleanup(opts) {
     return cleanupRunFiles(this.data, this.dir, opts);
+  }
+
+  stopForRemoval() {
+    this.data.paused = true;
+    for (const c of this.controllers.values()) c.abort();
+    clearTimeout(this.timer);
   }
 
   async cancel() {
