@@ -12,6 +12,12 @@ const THEMES = ['system', 'light', 'dark'];
 const readUi = () => { try { return JSON.parse(fs.readFileSync(UI_FILE, 'utf8')); } catch { return {}; } };
 const windowBg = () => (nativeTheme.shouldUseDarkColors ? '#262624' : '#faf9f7');
 
+// 窗口其实由 electron.exe 打开。给它自己的应用身份和图标，任务栏才显示 Agenda，固定到任务栏后也从 Agenda.exe 重新打开
+const APP_ID = 'Agenda.Desktop';
+const ICON = path.join(__dirname, process.platform === 'win32' ? 'icon.ico' : 'icon.png');
+const LAUNCHER = path.join(ROOT, 'Agenda.exe');
+if (process.platform === 'win32') app.setAppUserModelId(APP_ID);
+
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 }
@@ -26,7 +32,7 @@ function createWindow(url) {
     minWidth: 900,
     minHeight: 560,
     title: 'Agenda',
-    icon: path.join(__dirname, process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
+    icon: ICON,
     backgroundColor: windowBg(),
     autoHideMenuBar: true,
     webPreferences: {
@@ -36,6 +42,14 @@ function createWindow(url) {
       sandbox: true,
     },
   });
+  if (process.platform === 'win32') {
+    win.setAppDetails({
+      appId: APP_ID,
+      appIconPath: ICON,
+      relaunchDisplayName: 'Agenda',
+      ...(fs.existsSync(LAUNCHER) ? { relaunchCommand: `"${LAUNCHER}"` } : {}),
+    });
+  }
   // 外部链接用系统浏览器打开；窗口本身只显示本软件
   win.webContents.setWindowOpenHandler(({ url: target }) => {
     if (/^https?:\/\//i.test(target) && !target.startsWith(url)) shell.openExternal(target);
