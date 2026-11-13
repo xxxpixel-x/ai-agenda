@@ -28,6 +28,7 @@ const SATISFIED = new Set(['approved', 'skipped']);
 const SETTLED = new Set(['approved', 'skipped', 'cancelled']);
 const MAX_LOG = 600;
 const str = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+const realPath = (p) => { try { return fs.realpathSync.native(p); } catch { return path.resolve(p); } };
 
 /** 开始前检查：是不是 git 项目、有没有未提交的改动。 */
 export async function preflight(host) {
@@ -96,7 +97,9 @@ export class TaskRun extends EventEmitter {
       mode: pre.mode,
       git: pre.mode === 'git' ? {
         repo: pre.repo,
-        sub: path.relative(pre.repo, host.workspacePath),
+        // git 给的仓库路径是真实路径；共享文件夹可能经过链接（macOS 的 /var → /private/var、
+        // Windows 的短文件名或目录联接），两边都换成真实路径再算相对位置
+        sub: path.relative(realPath(pre.repo), realPath(host.workspacePath)),
         baseBranch: pre.branch,
         intBranch: `agenda-${id}`,
       } : null,

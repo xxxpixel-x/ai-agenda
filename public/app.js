@@ -1225,7 +1225,7 @@ function renderEditor(body, v) {
       $('[data-act=save-file]', body).disabled = v.draft === v.content;
     }
   });
-  ta?.addEventListener('keydown', (e) => { if (e.ctrlKey && e.key.toLowerCase() === 's') { e.preventDefault(); saveFile(); } });
+  ta?.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); saveFile(); } });
 }
 
 async function saveFile() {
