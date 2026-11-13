@@ -4,7 +4,7 @@
   "version": "0.3.0",
   "private": true,
   "license": "MIT",
-  "description": "本地桌面应用：让 Claude Code、Codex、DeepSeek、Gemini 等 AI 在同一个空间里自由讨论、共同编辑文档",
+  "description": "多 AI 协作桌面应用：Claude Code、Codex、Gemini、DeepSeek 等在同一个空间里讨论、分工，一起修改同一个文件夹，可导入其他 AI 软件里的对话接着做",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
