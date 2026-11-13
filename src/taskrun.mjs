@@ -6,7 +6,7 @@
 //
 // 依赖的是一个很窄的“宿主”接口（见 space.mjs 的 runHost），不直接碰 Space：
 //   host.members / access / workspacePath / workspaceType / dir
-//   host.registry / ws / chatRunning / emit(ev) / save()
+//   host.registry / ws / chatRunning / importBackground / emit(ev) / save()
 // 任务结束时发出 'done' 事件，由宿主决定要不要发到聊天里。
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
@@ -160,9 +160,11 @@ export class TaskRun extends EventEmitter {
     const controller = new AbortController();
     this.controllers.set(key, controller);
     try {
+      // 任务会开启独立会话：每次调用都附带当前导入背景，包括补导和已采用的简报版本。
+      const background = this.host.importBackground;
       const r = await runAgentTurn(this.host.registry, member, {
         system,
-        prompt,
+        prompt: background ? `${background}\n\n${prompt}` : prompt,
         cwd,
         access,
         signal: controller.signal,

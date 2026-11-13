@@ -78,6 +78,7 @@ export class Space extends EventEmitter {
       get registry() { return space.registry; },
       get ws() { return space.ws; },
       get chatRunning() { return space.running; },
+      get importBackground() { return importsBackground(space.data.messages); },
       emit: (ev) => space.emitEvent(ev),
       save: () => space.save(),
     };
@@ -418,6 +419,7 @@ export class Space extends EventEmitter {
 
   async startRun(opts) {
     if (this.running) throw new Error('聊天里的讨论还在进行，先停止');
+    if (this.importing) throw new Error('正在整理导入的对话，稍等一下再开始任务');
     if (this.run && !this.run.data.closed) throw new Error('还有一个任务没结束');
     const pre = await preflight(this.runHost);
     const run = this.attachRun(TaskRun.create(this.runHost, opts, pre));

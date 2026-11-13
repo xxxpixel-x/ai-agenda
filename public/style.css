@@ -385,6 +385,10 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .seg-dot.wait { background: var(--warn); }
 .task-view { flex: 1; overflow-y: auto; padding: 18px 16px; }
 .tv-inner { max-width: 920px; margin: 0 auto; }
+.task-imports { margin-bottom: 18px; }
+.task-imports-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px 12px; margin-bottom: 8px; }
+.task-imports-head h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.task-imports .msg { max-width: none; margin-bottom: 8px; }
 .card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; margin-bottom: 12px; }
 .card h3 { margin: 0 0 10px; font-size: 14px; font-weight: 600; }
 .mode-note { font-size: 13px; padding: 8px 12px; border-radius: 8px; background: var(--panel-2); margin: 8px 0 12px; }

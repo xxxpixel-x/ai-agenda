@@ -59,7 +59,15 @@
         </header>
         <div class="members-bar" id="membersBar"></div>
         <div class="messages" id="messages"></div>
-        <div class="task-view" id="taskView" hidden></div>
+        <div class="task-view" id="taskView" hidden>
+          <div class="tv-inner">
+            <section class="task-imports" id="taskImports" aria-labelledby="taskImportsTitle" hidden>
+              <div class="task-imports-head"><h3 id="taskImportsTitle">导入的对话</h3><span class="hint">与聊天共享，作为任务背景</span></div>
+              <div id="taskImportList"></div>
+            </section>
+            <div id="taskContent"></div>
+          </div>
+        </div>
         <footer class="composer" id="composer">
           <div class="composer-box">
             <textarea id="input" rows="1" placeholder="说点什么，@名字 点名"></textarea>

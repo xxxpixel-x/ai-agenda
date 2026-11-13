@@ -750,6 +750,7 @@ function renderSpace() {
   const shown = sp.messages.filter((m) => !(m.kind === 'ai' && !m.streaming && !m.text && !m.error && !m.passed && !m.changes?.length));
   for (const m of shown) box.insertAdjacentHTML('beforeend', messageHtml(m));
   box.scrollTop = box.scrollHeight;
+  renderTaskImports();
   renderSpaceList();
   renderFilesPanel();
   applyView();
@@ -826,17 +827,18 @@ const scrollToBottom = () => { const b = $('#messages'); b.scrollTop = b.scrollH
 function appendMessage(m) {
   const stick = nearBottom() || m.kind === 'user';
   $('#messages').insertAdjacentHTML('beforeend', messageHtml(m));
+  if (m.kind === 'import') updateTaskImport(m);
   if (stick) scrollToBottom();
 }
 function updateMessage(m) {
+  if (m.kind === 'import') updateTaskImport(m);
   const el = document.getElementById(`m-${m.id}`);
   const stick = nearBottom();
   const hidden = m.kind === 'ai' && !m.streaming && !m.text && !m.error && !m.passed && !m.changes?.length && !m.interrupted;
   if (!el) { if (!hidden) appendMessage(m); return; }
   if (hidden) { el.remove(); return; }
-  const open = m.kind === 'import' && el.querySelector('details.imp')?.open; // 导入块更新后保持展开
-  el.outerHTML = messageHtml(m);
-  if (open) document.querySelector(`#m-${m.id} details.imp`).open = true;
+  if (m.kind === 'import') replaceImport(el, m);
+  else el.outerHTML = messageHtml(m);
   if (stick) scrollToBottom();
 }
 const pending = new Set();
@@ -1195,7 +1197,7 @@ function keepInputs(root, render) {
 
 function renderTaskView(force = false) {
   const sp = state.space;
-  const box = $('#taskView');
+  const box = $('#taskContent');
   if (!sp) return;
   const r = sp.run;
   const key = r ? `${r.id}:${r.status}` : 'none';
@@ -1204,9 +1206,9 @@ function renderTaskView(force = false) {
   if (!force && !r && box.dataset.key === key) return;
   box.dataset.key = key;
   keepInputs(box, () => {
-    if (!r) box.innerHTML = `<div class="tv-inner">${startFormHtml()}${pastRunsHtml()}</div>`;
-    else if (r.status === 'planning' || r.status === 'plan_review' || (r.status === 'failed' && !r.tasks.length)) box.innerHTML = `<div class="tv-inner">${runBarHtml(r)}${planningHtml(r)}</div>`;
-    else box.innerHTML = `<div class="tv-inner">${runBarHtml(r)}${boardHtml(r)}${r.summary ? summaryHtml(r) : ''}</div>`;
+    if (!r) box.innerHTML = `${startFormHtml()}${pastRunsHtml()}`;
+    else if (r.status === 'planning' || r.status === 'plan_review' || (r.status === 'failed' && !r.tasks.length)) box.innerHTML = `${runBarHtml(r)}${planningHtml(r)}`;
+    else box.innerHTML = `${runBarHtml(r)}${boardHtml(r)}${r.summary ? summaryHtml(r) : ''}`;
   });
   if (!r) loadTaskCheck();
 }
@@ -1674,7 +1676,7 @@ async function openImportModal() {
 const ACT_KIND = [[/^读取/, 'read'], [/^(修改|写入|新建|删除)/, 'edit'], [/^(搜索|打开网页)/, 'search'], [/^运行/, 'command']];
 const actKind = (label) => ACT_KIND.find(([re]) => re.test(label))?.[1] || 'tool';
 
-function importHtml(m) {
+function importHtml(m, prefix = 'm') {
   const color = memberOf(m.memberId)?.color || engineOf(m.source)?.color || '#888';
   const fresh = !m.parentId && m.status === 'ready' && importNew[m.id];
   const topic = m.mode === 'topic';
@@ -1692,12 +1694,41 @@ function importHtml(m) {
   const head = topic
     ? `<span class="imp-src">主题</span><b>${esc(m.topic)}</b><span class="m">${esc(m.sourceLabel)} · ${m.total} 条 · ${clock(m.ts)}</span>`
     : `<span class="imp-src">${esc(m.parentId ? '补导' : m.sourceLabel)}</span><b>${esc(m.title)}</b><span class="m">${m.parentId ? m.entries.length : m.total} 条 · ${clock(m.ts)}</span>`;
-  return `<div class="msg import" id="m-${m.id}" style="--c:${color}">
+  return `<div class="msg import" id="${prefix}-${m.id}" style="--c:${color}">
     <details class="imp" data-import="${m.id}">
       <summary>${head}</summary>
       <div class="imp-body"></div>
     </details>${foot ? `<div class="imp-foot">${foot}</div>` : ''}
   </div>`;
+}
+
+// 两个视图共用同一条导入记录，任务推送只更新任务区，不打断正在阅读的对话。
+function renderTaskImports() {
+  const imports = state.space.messages.filter((m) => m.kind === 'import');
+  $('#taskImportList').innerHTML = imports.map((m) => importHtml(m, 'task-m')).join('');
+  $('#taskImports').hidden = !imports.length;
+}
+
+function updateTaskImport(m) {
+  const el = document.getElementById(`task-m-${m.id}`);
+  if (el) replaceImport(el, m, 'task-m');
+  else $('#taskImportList').insertAdjacentHTML('beforeend', importHtml(m, 'task-m'));
+  $('#taskImports').hidden = false;
+}
+
+function replaceImport(el, m, prefix = 'm') {
+  const open = $('details.imp', el)?.open;
+  const rawOpen = $('details.imp-raw', el)?.open;
+  const scroll = $('.imp-body', el)?.scrollTop || 0;
+  el.outerHTML = importHtml(m, prefix);
+  if (!open) return;
+  const next = document.getElementById(`${prefix}-${m.id}`);
+  const details = $('details.imp', next);
+  details.open = true;
+  fillImportBody(details, m);
+  const raw = $('details.imp-raw', next);
+  if (rawOpen && raw) { raw.open = true; raw.lastElementChild.innerHTML = entriesHtml(m); }
+  $('.imp-body', next).scrollTop = scroll;
 }
 
 function entriesHtml(m) {
@@ -1771,16 +1802,23 @@ function openSharedFile(p) {
 }
 
 // 展开时才渲染内容（长对话有几百条）
-$('#messages').addEventListener('toggle', (e) => {
+function fillImportBody(details, m) {
+  const body = $('.imp-body', details);
+  if (body.dataset.loaded) return;
+  body.innerHTML = importBodyHtml(m);
+  body.dataset.loaded = 'true';
+}
+
+$('#spaceView').addEventListener('toggle', (e) => {
   const d = e.target;
   if (!(d instanceof HTMLDetailsElement) || !d.open) return;
   if (d.dataset.raw) { const m = findMsg(d.dataset.raw); if (m) d.lastElementChild.innerHTML = entriesHtml(m); return; }
   if (!d.dataset.import) return;
   const m = findMsg(d.dataset.import);
-  if (m) $('.imp-body', d).innerHTML = importBodyHtml(m);
+  if (m) fillImportBody(d, m);
 }, true);
 
-$('#messages').addEventListener('click', async (e) => {
+$('#spaceView').addEventListener('click', async (e) => {
   const f = e.target.closest('[data-open-file]');
   if (f) { openSharedFile(f.dataset.openFile); return; }
   const b = e.target.closest('[data-imp]');
