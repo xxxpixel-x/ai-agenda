@@ -14,7 +14,7 @@
 
 | AI | 怎么接入 | 需要做什么 |
 | --- | --- | --- |
-| **Claude Code** | 本机命令行（Claude 桌面 app 自带的那份） | 登录一次：在 PowerShell 运行软件里“连接与登录”显示的命令 |
+| **Claude Code** | 本机命令行（Claude 桌面 app 自带的那份） | 登录一次：在终端运行软件里“连接与登录”显示的命令 |
 | **Codex** | 本机命令行（Codex 桌面版自带） | 在 Codex 桌面版登录过即可 |
 | **DeepSeek Harness** | 本机命令行（DeepSeek Harness 自带的 dsh） | 在 DeepSeek Harness 登录过即可 |
 | **Gemini CLI** | 本机命令行（装了才出现） | 在终端运行一次 `gemini`，选用 Google 账号登录 |
