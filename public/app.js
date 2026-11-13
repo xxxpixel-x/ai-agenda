@@ -19,6 +19,8 @@ const ICON = {
   close: svg('<path d="M6 6l12 12M18 6L6 18"/>', 15),
   back: svg('<path d="M15 5l-7 7 7 7"/>'),
   file: svg('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>', 14),
+  folder: svg('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>', 14),
+  chevron: svg('<path d="M9 6l6 6-6 6"/>', 12),
   system: svg('<circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor"/>'),
   light: svg('<circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6L7 7M17 17l1.4 1.4M5.6 18.4L7 17M17 7l1.4-1.4"/>'),
   dark: svg('<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/>'),
@@ -37,7 +39,7 @@ const state = {
   spaces: [],
   space: null,        // 当前空间（完整数据）
   es: null,
-  files: { open: load('rt:filesOpen') ?? true, tab: 'files', list: [], root: '', view: null, history: [] },
+  files: { open: load('rt:filesOpen') ?? true, tab: 'files', list: [], root: '', view: null, history: [], expanded: new Set(), flash: new Set() },
 };
 
 // ---------------- 工具 ----------------
@@ -661,6 +663,7 @@ function openSpace(id) {
     $('#messages').innerHTML = '';
     $('#spaceTitle').textContent = '加载中…';
     state.files.view = null;
+    state.files.expanded = new Set();
   }
   const es = new EventSource(`/api/spaces/${id}/events`);
   state.es = es;
@@ -940,11 +943,38 @@ function renderFilesBody() {
   const files = state.files.list;
   body.innerHTML = `<div class="file-tools"><button class="btn sm" type="button" data-act="new-file">＋ 新建文件</button>
       ${state.files.truncated ? '<span class="hint">文件太多，只显示一部分</span>' : ''}</div>
-    ${files.length ? `<div class="file-list">${files.map((f) => {
-      const i = f.path.lastIndexOf('/');
-      const dir = i >= 0 ? f.path.slice(0, i + 1) : '';
-      return `<div class="file-row" data-path="${esc(f.path)}">${ICON.file}<span class="fp">${dir ? `<small>${esc(dir)}</small>` : ''}${esc(f.path.slice(i + 1))}</span><span class="fs">${sizeText(f.size)}</span></div>`;
-    }).join('')}</div>` : '<div class="empty-files">文件夹是空的</div>'}`;
+    ${files.length ? `<div class="file-list">${treeHtml(fileTree(files))}</div>` : '<div class="empty-files">文件夹是空的</div>'}`;
+  state.files.flash.clear();
+}
+
+// 文件夹树：文件夹在前，名字按自然顺序（9 在 10 前），子文件夹默认收起
+const byName = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' }).compare;
+function fileTree(list) {
+  const root = { dirs: new Map(), files: [] };
+  for (const f of list) {
+    const parts = f.path.split('/');
+    let node = root;
+    for (const d of parts.slice(0, -1)) {
+      if (!node.dirs.has(d)) node.dirs.set(d, { dirs: new Map(), files: [] });
+      node = node.dirs.get(d);
+    }
+    node.files.push({ ...f, name: parts.at(-1) });
+  }
+  return root;
+}
+function treeHtml(node, prefix = '', depth = 0) {
+  const dirs = [...node.dirs.keys()].sort(byName).map((name) => {
+    const p = `${prefix}${name}/`;
+    const open = state.files.expanded.has(p);
+    return `<div class="dir-row${open ? ' open' : ''}" data-dir="${esc(p)}" style="--d:${depth}">${ICON.chevron}${ICON.folder}<span class="fp">${esc(name)}</span></div>${open ? treeHtml(node.dirs.get(name), p, depth + 1) : ''}`;
+  });
+  const files = node.files.sort((a, b) => byName(a.name, b.name)).map((f) => `<div class="file-row${state.files.flash.has(f.path) ? ' flash' : ''}" data-path="${esc(f.path)}" style="--d:${depth}">${ICON.file}<span class="fp">${esc(f.name)}</span><span class="fs">${sizeText(f.size)}</span></div>`);
+  return dirs.join('') + files.join('');
+}
+/** 展开到这个文件所在的文件夹。 */
+function revealFile(p) {
+  const parts = p.split('/');
+  for (let i = 1; i < parts.length; i++) state.files.expanded.add(`${parts.slice(0, i).join('/')}/`);
 }
 
 async function openFile(p) {
@@ -1025,6 +1055,7 @@ async function undoChange(c) {
 }
 
 function onFilesChanged(changes) {
+  for (const c of changes) if (!c.deleted) { revealFile(c.path); state.files.flash.add(c.path); }
   loadFiles();
   loadHistory();
   const v = state.files.view;
@@ -1037,6 +1068,13 @@ function onFilesChanged(changes) {
 $('#filesPanel').addEventListener('click', async (e) => {
   const tab = e.target.closest('.tab');
   if (tab) { state.files.tab = tab.dataset.tab; state.files.view = null; renderFilesPanel(); return; }
+  const dir = e.target.closest('.dir-row');
+  if (dir) {
+    const p = dir.dataset.dir;
+    if (!state.files.expanded.delete(p)) state.files.expanded.add(p);
+    renderFilesBody();
+    return;
+  }
   const row = e.target.closest('.file-row');
   if (row) { openFile(row.dataset.path); return; }
   const h = e.target.closest('.h-row');

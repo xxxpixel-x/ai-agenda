@@ -283,11 +283,13 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .file-tools { display: flex; gap: 6px; padding: 8px 10px; align-items: center; min-height: 44px; }
 #newFileName { height: 28px; padding: 3px 9px; font-size: 13px; }
 .file-list { padding: 0 6px 10px; }
-.file-row { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 6px; cursor: pointer; font-size: 13px; }
-.file-row svg { color: var(--muted); }
-.file-row:hover { background: var(--hover); }
-.file-row .fp { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.file-row .fp small { color: var(--muted); font-size: 12px; }
+.file-row, .dir-row { display: flex; align-items: center; gap: 6px; padding: 4px 8px 4px calc(8px + var(--d, 0) * 14px); border-radius: 6px; cursor: pointer; font-size: 13px; user-select: none; }
+.file-row { padding-left: calc(26px + var(--d, 0) * 14px); }
+.file-row svg, .dir-row svg { color: var(--muted); flex: none; }
+.file-row:hover, .dir-row:hover { background: var(--hover); }
+.dir-row > svg:first-child { transition: transform .12s; }
+.dir-row.open > svg:first-child { transform: rotate(90deg); }
+.file-row .fp, .dir-row .fp { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .file-row .fs { color: var(--muted); font-size: 11.5px; flex: none; font-variant-numeric: tabular-nums; }
 .file-row.flash { animation: flash 1.6s ease-out; }
 @keyframes flash { from { background: color-mix(in srgb, var(--info) 18%, transparent); } }
