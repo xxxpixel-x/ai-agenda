@@ -7,7 +7,7 @@ const initial = (name) => [...(name || '?')][0];
 const ACCESS = {
   read: { label: '只读', desc: '只能阅读，不能修改' },
   edit: { label: '可改文件', desc: '可以阅读和修改文件' },
-  run: { label: '可运行命令', desc: '还能运行命令，适合代码项目' },
+  run: { label: '可运行命令', desc: '还能运行命令，每条命令先问你' },
   full: { label: '全部权限', desc: '不受限制，可以动电脑上任何地方' },
 };
 const svg = (d, z = 16) => `<svg viewBox="0 0 24 24" width="${z}" height="${z}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
@@ -542,12 +542,15 @@ async function openSpaceSettings() {
   if (!sp) return;
   await refreshEngines();
   const members = sp.members.map((m) => ({ ...m }));
+  const allowed = [...(sp.allowedPrograms || [])];
+  const allowedHtml = () => allowed.map((p) => `<span class="allowed-chip"><code>${esc(p)}</code><button type="button" class="icon-btn" data-act="unallow" data-p="${esc(p)}" title="移除" aria-label="移除 ${esc(p)}">${ICON.close}</button></span>`).join('');
   const dlg = showModal(`<div class="modal-inner">
     <div class="modal-head"><h3>空间设置</h3><button class="icon-btn" type="button" data-act="close">${ICON.close}</button></div>
     <div class="modal-body">
       <div class="field"><label>名字</label><input id="ssTitle" maxlength="60" value="${esc(sp.title)}"></div>
       <div class="field"><div class="label">成员</div><div id="ssMembers"></div></div>
       <div class="field"><div class="label">AI 的权限</div><div class="choices">${accessChoices(sp.access)}</div></div>
+      ${allowed.length ? `<div class="field"><div class="label">运行前不再问的程序</div><div class="allowed-list" id="ssAllowed">${allowedHtml()}</div></div>` : ''}
       <div class="field"><label>每次最多来回几次</label><input id="ssTurns" type="number" min="1" max="30" value="${sp.maxTurns}" style="width:100px"></div>
       <div class="field"><div class="label">共享文件夹</div><span class="cmd">${esc(sp.workspacePath)}</span></div>
     </div>
@@ -559,10 +562,14 @@ async function openSpaceSettings() {
     const b = ev.target.closest('[data-act]');
     if (!b) return;
     if (b.dataset.act === 'close') dlg.close();
+    if (b.dataset.act === 'unallow') {
+      allowed.splice(allowed.indexOf(b.dataset.p), 1);
+      $('#ssAllowed', dlg).innerHTML = allowedHtml() || '<span class="hint">（无）</span>';
+    }
     if (b.dataset.act === 'save') {
       b.disabled = true;
       try {
-        await api(`/api/spaces/${sp.id}`, { method: 'PATCH', body: { title: $('#ssTitle', dlg).value, members, access: $('input[name=access]:checked', dlg).value, maxTurns: $('#ssTurns', dlg).value } });
+        await api(`/api/spaces/${sp.id}`, { method: 'PATCH', body: { title: $('#ssTitle', dlg).value, members, access: $('input[name=access]:checked', dlg).value, maxTurns: $('#ssTurns', dlg).value, allowedPrograms: allowed } });
         dlg.close();
         refreshSpaces();
       } catch (e) { toast(e.message, 'error'); b.disabled = false; }
@@ -640,11 +647,14 @@ const plain = (s) => String(s)
 function renderSpaceList() {
   const list = $('#spaceList');
   if (!state.spaces.length) { list.innerHTML = '<div class="empty-list">还没有空间</div>'; return; }
+  // 右上角：需要你的事优先（等你确认 > 任务待处理），否则显示最后一条消息的时间
+  const side = (s) => (s.waiting ? '<b class="tag wait">等你确认</b>'
+    : s.needsYou ? '<b class="tag">任务待处理</b>'
+      : `<span class="when">${relTime(s.lastAt || s.updatedAt)}</span>`);
   list.innerHTML = state.spaces.map((s) => `
     <a class="space-item ${s.id === state.space?.id ? 'active' : ''}" href="#/space/${s.id}" data-space-id="${s.id}">
-      <div class="t">${s.running ? '<span class="live-dot" title="讨论中"></span>' : ''}<span>${esc(s.title)}</span>
-        <span class="dots">${s.members.map((m) => `<i style="background:${m.color}"></i>`).join('')}</span></div>
-      <div class="p">${s.preview ? `${esc(plain(s.preview))} · ` : ''}${relTime(s.updatedAt)}</div>
+      <div class="t">${s.running ? '<span class="live-dot" title="正在发言"></span>' : ''}<span class="title">${esc(s.title)}</span>${side(s)}</div>
+      <div class="p">${s.preview ? esc(plain(s.preview)) : '还没有消息'}</div>
     </a>`).join('');
 }
 function hideSpaceMenu() { $('#spaceMenu').hidden = true; }
@@ -813,6 +823,23 @@ function handleEvent(ev) {
     case 'run':
       onRunEvent(ev.run);
       break;
+    case 'approval': {
+      const m = findMsg(ev.id);
+      if (!m) return;
+      const list = (m.approvals ||= []);
+      const i = list.findIndex((a) => a.id === ev.approval.id);
+      if (i >= 0) list[i] = ev.approval; else list.push(ev.approval);
+      if (ev.allowedPrograms) sp.allowedPrograms = ev.allowedPrograms;
+      if (ev.approval.status !== 'pending') denyDrafts.delete(ev.approval.id);
+      scheduleUpdate(m.id);
+      break;
+    }
+    case 'members':
+      if (!sp) return;
+      sp.members = ev.members;
+      renderMembersBar();
+      if (!$('#memberPop').hidden) renderMemberPop();
+      break;
     case 'notice':
       toast(ev.text, ev.level);
       break;
@@ -821,6 +848,7 @@ function handleEvent(ev) {
 
 function renderSpace() {
   const sp = state.space;
+  hideMemberPop();
   document.title = `${sp.title} · Agenda`;
   $('#mobileTitle').textContent = sp.title;
   $('#spaceTitle').textContent = sp.title;
@@ -852,17 +880,114 @@ function renderHeader() {
     + icons.map(([a, l, on]) => `<button type="button" class="icon-btn ${on ? 'on' : ''}" data-act="${a}" title="${l}" aria-label="${l}">${ICON[a]}</button>`).join('');
 }
 
+// 「可运行命令」档下，没法在运行前先问你的命令行 AI 只能改文件
+const cannotRun = (m) => { const e = engineOf(m.engine); return state.space?.access === 'run' && e?.kind === 'cli' && !e.approvals; };
+
 function renderMembersBar() {
   const sp = state.space;
   const speaking = sp.speaking && findMsg(sp.speaking);
   $('#membersBar').innerHTML = sp.members.map((m) => {
     const e = engineOf(m.engine);
     const ok = !e || e.status?.ready !== false;
-    return `<span class="person ${speaking?.memberId === m.id ? 'speaking' : ''} ${ok ? '' : 'off'}" style="--c:${m.color}" data-id="${m.id}"
-      title="${esc(m.engineLabel)}${m.model ? ` · ${esc(m.model)}` : ''}\n点一下让 ${esc(m.name)} 现在发言${ok ? '' : `\n⚠ ${esc(e.status?.note || '')}`}">
-      ${avatarHtml(m.engine, m.name)}${esc(m.name)}</span>`;
+    return `<button type="button" class="person ${speaking?.memberId === m.id ? 'speaking' : ''} ${ok ? '' : 'off'}" style="--c:${m.color}" data-id="${m.id}"
+      title="${esc(m.engineLabel)}${m.model ? ` · ${esc(m.model)}` : ''}${ok ? '' : `\n⚠ ${esc(e.status?.note || '')}`}">
+      ${avatarHtml(m.engine, m.name)}${esc(m.name)}${cannotRun(m) ? '<small>不能运行命令</small>' : ''}</button>`;
   }).join('');
 }
+
+// ---- 点成员标签：换型号 / 思考档位，或者让 TA 现在发言 ----
+let popMember = null;
+function hideMemberPop() { $('#memberPop').hidden = true; popMember = null; }
+function openMemberPop(chip) {
+  const pop = $('#memberPop');
+  popMember = chip.dataset.id;
+  renderMemberPop();
+  pop.hidden = false;
+  const r = chip.getBoundingClientRect();
+  pop.style.left = `${Math.max(8, Math.min(r.left, innerWidth - pop.offsetWidth - 8))}px`;
+  pop.style.top = `${r.bottom + 6}px`;
+  $('select', pop)?.focus();
+}
+function renderMemberPop() {
+  const m = memberOf(popMember);
+  if (!m) { hideMemberPop(); return; }
+  const e = engineOf(m.engine) || {};
+  const st = e.status || {};
+  const models = modelChoices(e);
+  if (m.model && !models.some(([v]) => v === m.model)) models.unshift([m.model, '']);
+  $('#memberPop').innerHTML = `
+    <div class="mp-head">${avatarHtml(m.engine, m.name)}<b>${esc(m.name)}</b><span>${esc(m.engineLabel)}</span></div>
+    ${st.ready === false ? `<div class="member-status warn">⚠ ${esc(st.note || '还不能用')}</div>` : ''}
+    ${cannotRun(m) ? '<div class="hint">它没法在运行命令前先问你，所以这一档只能读写文件。</div>' : ''}
+    <select data-k="model" title="型号"><option value="">${esc(st.defaultModel ? `默认（${st.defaultModel}）` : '默认型号')}</option>
+      ${models.map(([v, l]) => `<option value="${esc(v)}" ${v === m.model ? 'selected' : ''}>${esc(l || v)}</option>`).join('')}</select>
+    ${effortSelect(e, m)}
+    <button class="btn sm block" type="button" data-act="ask">让 ${esc(m.name)} 现在发言</button>`;
+}
+$('#memberPop').addEventListener('change', async (e) => {
+  const k = e.target.dataset.k;
+  const m = memberOf(popMember);
+  if (!k || !m) return;
+  const body = { [k]: e.target.value };
+  if (k === 'model' && !effortChoices(engineOf(m.engine) || {}, body.model).includes(m.effort || '')) body.effort = '';
+  try { await api(`/api/spaces/${state.space.id}/members/${m.id}`, { method: 'PATCH', body }); } catch (err) { toast(err.message, 'error'); renderMemberPop(); }
+});
+$('#memberPop').addEventListener('click', async (e) => {
+  if (!e.target.closest('[data-act="ask"]')) return;
+  const id = popMember;
+  hideMemberPop();
+  try { await api(`/api/spaces/${state.space.id}/control`, { method: 'POST', body: { action: 'ask', memberId: id } }); } catch (err) { toast(err.message, 'error'); }
+});
+document.addEventListener('pointerdown', (e) => { if (!e.target.closest('#memberPop, .person')) hideMemberPop(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#memberPop').hidden) hideMemberPop(); });
+window.addEventListener('resize', hideMemberPop);
+
+// ---- 命令审批卡片 ----
+const denyDrafts = new Map(); // 正在写拒绝理由的卡片：id -> 理由
+const AP_DONE = { allowed: '已允许', always: '已允许，以后不再问', denied: '已拒绝', cancelled: '已取消' };
+function approvalHtml(a) {
+  if (a.status !== 'pending') {
+    const one = a.command.replace(/\s+/g, ' ');
+    return `<div class="ap-done ${a.status}"><span>${AP_DONE[a.status] || a.status}</span><code title="${esc(a.command)}">${esc(one)}</code>${a.reason ? `<span class="why">${esc(a.reason)}</span>` : ''}</div>`;
+  }
+  const denying = denyDrafts.has(a.id);
+  return `<div class="approval" data-ap="${a.id}">
+    <div class="ap-q">想运行</div>
+    <pre class="ap-cmd">${esc(a.command)}</pre>
+    ${denying
+    ? `<div class="ap-actions"><input data-apr placeholder="告诉它为什么（可不填）" value="${esc(denyDrafts.get(a.id))}">
+        <button class="btn sm danger" type="button" data-apd="deny">拒绝</button><button class="btn sm" type="button" data-apd="back">返回</button></div>`
+    : `<div class="ap-actions"><button class="btn sm primary" type="button" data-apd="allow">允许</button>
+        ${a.programs?.length ? `<button class="btn sm" type="button" data-apd="always">一直允许 ${esc(a.programs.join('、'))}</button>` : ''}
+        <button class="btn sm" type="button" data-apd="ask-why">拒绝</button></div>`}
+  </div>`;
+}
+const approvalsHtml = (m) => (m.approvals?.length ? `<div class="approvals">${m.approvals.map(approvalHtml).join('')}</div>` : '');
+async function decide(card, decision) {
+  const id = card.dataset.ap;
+  const msgId = card.closest('.msg')?.id.slice(2);
+  if (decision === 'ask-why' || decision === 'back') {
+    if (decision === 'ask-why') denyDrafts.set(id, ''); else denyDrafts.delete(id);
+    const m = findMsg(msgId);
+    if (m) updateMessage(m);
+    if (decision === 'ask-why') $(`[data-ap="${id}"] [data-apr]`)?.focus();
+    return;
+  }
+  $$('button', card).forEach((b) => { b.disabled = true; });
+  try {
+    await api(`/api/spaces/${state.space.id}/approvals/${id}`, { method: 'POST', body: { decision, reason: denyDrafts.get(id) || '' } });
+  } catch (err) { toast(err.message, 'error'); $$('button', card).forEach((b) => { b.disabled = false; }); }
+}
+$('#messages').addEventListener('input', (e) => {
+  const card = e.target.closest('[data-ap]');
+  if (card && e.target.matches('[data-apr]')) denyDrafts.set(card.dataset.ap, e.target.value);
+});
+$('#messages').addEventListener('keydown', (e) => {
+  const card = e.target.closest('[data-ap]');
+  if (!card || !e.target.matches('[data-apr]')) return;
+  if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); decide(card, 'deny'); }
+  if (e.key === 'Escape') { e.preventDefault(); decide(card, 'back'); }
+});
 
 function activitiesHtml(acts, streaming) {
   if (!acts?.length) return '';
@@ -895,7 +1020,7 @@ function messageHtml(m) {
     ${avatarHtml(mem?.engine || m.engine, m.name)}
     <div class="msg-main">
       <div class="msg-head"><span class="n">${esc(m.name)}</span><span class="m" title="${esc(meta.join(' · '))}">${clock(m.ts)}</span></div>
-      <div class="bubble">${activitiesHtml(m.activities, m.streaming)}${body}
+      <div class="bubble">${activitiesHtml(m.activities, m.streaming)}${approvalsHtml(m)}${body}
         ${m.interrupted ? '<div class="note">（发言被中断）</div>' : ''}
         ${m.note ? `<div class="note">${esc(m.note)}</div>` : ''}
         ${m.error ? `<div class="err">⚠ ${esc(m.error)}</div>` : ''}${changes}</div>
@@ -945,14 +1070,17 @@ $('#spaceActions').addEventListener('click', async (e) => {
   b.disabled = true;
   try { await api(`/api/spaces/${state.space.id}/control`, { method: 'POST', body: { action: act } }); } catch (err) { toast(err.message, 'error'); b.disabled = false; }
 });
-$('#membersBar').addEventListener('click', async (e) => {
+$('#membersBar').addEventListener('click', (e) => {
   const p = e.target.closest('.person');
   if (!p || !state.space) return;
-  try { await api(`/api/spaces/${state.space.id}/control`, { method: 'POST', body: { action: 'ask', memberId: p.dataset.id } }); } catch (err) { toast(err.message, 'error'); }
+  if (popMember === p.dataset.id) hideMemberPop(); else openMemberPop(p);
 });
+$('#membersBar').addEventListener('scroll', hideMemberPop);
 $('#messages').addEventListener('click', (e) => {
   const c = e.target.closest('[data-change]');
   if (c) openChange(c.dataset.change);
+  const d = e.target.closest('[data-apd]');
+  if (d) decide(d.closest('[data-ap]'), d.dataset.apd);
 });
 
 // ---------------- 输入框 ----------------
@@ -1226,6 +1354,7 @@ function applyView() {
   $$('#viewSeg button').forEach((b) => b.classList.toggle('active', b.dataset.view === state.view));
   if (task) renderTaskView(true);
   updateTaskDot();
+  renderTaskBar();
   updateComposerLock();
 }
 function updateTaskDot() {
@@ -1234,6 +1363,34 @@ function updateTaskDot() {
   dot.hidden = !r;
   if (r) dot.className = `seg-dot ${needsUser(r) ? 'wait' : ''}`;
 }
+// 聊天输入框上方：任务协作在等你的事（只说第一件，其余算个数），点一下去处理
+function renderTaskBar() {
+  const r = state.space?.run;
+  const bar = $('#taskBar');
+  const items = [];
+  if (r && needsUser(r)) {
+    if (r.status === 'plan_review') items.push(['等你确认计划']);
+    for (const t of r.tasks) {
+      if (t.status === 'blocked') items.push([`${memberName(t.assigneeId)} 在问你「${t.title}」的事`, t.id]);
+      else if (t.status === 'review') items.push([`等你审查「${t.title}」`, t.id]);
+      else if (t.status === 'failed') items.push([`「${t.title}」失败了，等你处理`, t.id]);
+    }
+    if (!items.length) items.push([r.paused ? '任务已暂停，等你继续' : '任务做完了，等你合并']);
+  }
+  bar.hidden = !items.length;
+  if (!items.length) return;
+  const [text, taskId] = items[0];
+  bar.innerHTML = `<span class="tb-dot"></span><span class="tb-text">任务协作：${esc(text)}${items.length > 1 ? `<span class="hint">（还有 ${items.length - 1} 件）</span>` : ''}</span>
+    <button class="btn sm" type="button" data-task="${esc(taskId || '')}">去处理</button>`;
+}
+$('#taskBar').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  state.view = 'task';
+  applyView();
+  const card = b.dataset.task && $(`#taskView .tcard[data-task="${CSS.escape(b.dataset.task)}"]`);
+  if (card) { card.scrollIntoView({ block: 'center' }); card.classList.add('flash'); setTimeout(() => card.classList.remove('flash'), 1600); }
+});
 function updateComposerLock() {
   const lock = runBlocksChat(state.space?.run);
   $('#composer').classList.toggle('locked', lock);
@@ -1249,7 +1406,7 @@ $('#viewSeg').addEventListener('click', (e) => {
 let taskRaf = 0;
 function scheduleTaskRender() {
   if (taskRaf) return;
-  taskRaf = requestAnimationFrame(() => { taskRaf = 0; if (state.view === 'task') renderTaskView(); updateTaskDot(); updateComposerLock(); });
+  taskRaf = requestAnimationFrame(() => { taskRaf = 0; if (state.view === 'task') renderTaskView(); updateTaskDot(); renderTaskBar(); updateComposerLock(); });
 }
 let detailTimer = null;
 function onRunEvent(run) {
@@ -1934,6 +2091,8 @@ window.addEventListener('beforeunload', (e) => {
   if (v?.type === 'file' && v.draft !== v.content) { e.preventDefault(); e.returnValue = ''; }
 });
 setInterval(renderSpaceList, 60_000);
+// 所有空间的状态变化（发言中、等你确认、任务等你）：侧栏跟着刷新
+new EventSource('/api/events').onmessage = refreshSpacesSoon;
 
 (async () => {
   try { state.app = await api('/api/app'); } catch { state.app = {}; }

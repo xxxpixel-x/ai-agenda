@@ -13,12 +13,13 @@ const MAX_LOG_LINE = 2000;
  * @param opts.ws           API 型 AI 的文件块写到哪个 Workspace；不给则不写入
  * @param opts.maxActivities / maxLog   保留的动作条数、日志行数
  * @param opts.onDelta / onActivity     sink 更新之后的回调（用于推送事件）
+ * @param opts.onApproval   运行命令前先问（只传给支持审批的引擎；不传就按权限直接运行）
  * @returns 引擎的返回值，其中 text 已去掉文件块
  */
 export async function runAgentTurn(registry, member, {
   system, prompt, cwd, access, sessionId, fork, signal,
   sink, ws = null, maxActivities = 60, maxLog = 600,
-  onDelta, onActivity,
+  onDelta, onActivity, onApproval,
 }) {
   sink.activities ||= [];
   const r = await registry.runTurn(member.engine, {
@@ -31,6 +32,7 @@ export async function runAgentTurn(registry, member, {
     sessionId,
     fork,
     signal,
+    onApproval,
     onDelta: (t) => { sink.text = (sink.text || '') + t; onDelta?.(t); },
     onActivity: (a) => {
       sink.activities.push(a);

@@ -108,9 +108,11 @@ export class AbortedError extends Error {
  *  - onEvent(obj, ctl)：每解析出一行 JSON 调一次；ctl.finish() 表示“这一轮已经结束”，
  *    之后即使进程迟迟不退出也会被结束（Codex 回合结束后进程还会逗留几十秒）。
  *  - 返回 { code, stderr, finished }；被 signal 中止时抛 AbortedError。
+ *  - keepInput：双向通信。input 是要先发的 JSON 对象数组，stdin 保持打开，之后用 ctl.send(obj) 继续发，
+ *    ctl.finish() 时关闭。用于运行中途要回答 AI 的请求（命令审批）。
  */
 // inputDelay：过这么多毫秒再写入 stdin（给子进程留出启动时间）
-export function runJsonl({ cmd, args, env, cwd, input = '', inputDelay = 0, signal, onEvent, onStderr, onRaw }) {
+export function runJsonl({ cmd, args, env, cwd, input = '', inputDelay = 0, keepInput = false, signal, onEvent, onStderr, onRaw }) {
   return new Promise((resolve, reject) => {
     let child;
     try {
@@ -138,9 +140,13 @@ export function runJsonl({ cmd, args, env, cwd, input = '', inputDelay = 0, sign
     signal?.addEventListener('abort', onAbort, { once: true });
 
     const ctl = {
+      send(obj) {
+        if (!child.stdin.writableEnded) child.stdin.write(`${JSON.stringify(obj)}\n`, 'utf8');
+      },
       finish() {
         if (finished) return;
         finished = true;
+        if (keepInput) child.stdin.end();
         // 给进程一点时间自己退出，否则强制结束
         graceTimer = setTimeout(() => { killTree(child); settle(null, { code: 0, stderr, finished: true }); }, 1500);
       },
@@ -181,7 +187,8 @@ export function runJsonl({ cmd, args, env, cwd, input = '', inputDelay = 0, sign
       settle(null, { code, stderr, finished });
     });
     child.stdin.on('error', () => { /* 进程提前退出时的 EPIPE */ });
-    if (inputDelay > 0) inputTimer = setTimeout(() => child.stdin.end(input, 'utf8'), inputDelay);
+    if (keepInput) for (const obj of input || []) ctl.send(obj);
+    else if (inputDelay > 0) inputTimer = setTimeout(() => child.stdin.end(input, 'utf8'), inputDelay);
     else child.stdin.end(input, 'utf8');
   });
 }

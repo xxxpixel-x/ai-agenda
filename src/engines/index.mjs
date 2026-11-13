@@ -3,6 +3,8 @@
 //     models：查到的型号（字符串或 [型号, 显示名]）；efforts：{ 型号: [该型号支持的思考档位] }
 //     meta.models / meta.efforts 是写死的常用型号和这个 AI 的全部档位（查不到时用）
 //   runTurn(opts) -> { text, sessionId? }   流式内容通过 onDelta，工具动作通过 onActivity
+//     meta.approvals 为 true 的引擎：opts.onApproval({ command }) 存在时，运行命令前先 await 它，
+//     得到 { allow, reason } 再决定运行还是拒绝（reason 转告 AI）
 // 引擎的能力写在它自己模块的 meta 里：kind（'cli' | 'api'）、resume（能否续接会话）等，
 // 注册表只看 meta，不按具体 id 做判断。
 // 以后要接新的 AI：在 engines/ 下加一个模块，再在下面 ENGINES 里加一行。
@@ -114,6 +116,8 @@ export function createRegistry(settings, { mock: mockMode = false } = {}) {
   // 演示模式下 moduleOf 拿到的是演示引擎（meta 里没有 kind / resume），自然都是 false
   const isApi = (engineId) => moduleOf(engineId)?.meta?.kind === 'api';
   const supportsResume = (engineId) => !!moduleOf(engineId)?.meta?.resume;
+  // 能不能在运行命令前停下来问你（runTurn 收到 onApproval 时）
+  const supportsApproval = (engineId) => !!moduleOf(engineId)?.meta?.approvals;
 
-  return { list, detect, detectAll, runTurn, isApi, supportsResume, invalidate: () => cache.clear() };
+  return { list, detect, detectAll, runTurn, isApi, supportsResume, supportsApproval, invalidate: () => cache.clear() };
 }

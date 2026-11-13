@@ -69,6 +69,7 @@
           </div>
         </div>
         <footer class="composer" id="composer">
+          <div class="task-bar" id="taskBar" hidden></div>
           <div class="composer-box">
             <textarea id="input" rows="1" placeholder="说点什么，@名字 点名"></textarea>
             <button class="send-btn" id="sendBtn" type="button" title="发送" aria-label="发送"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg></button>
@@ -99,6 +100,7 @@
   <div class="space-menu" id="spaceMenu" role="menu" aria-label="空间操作" hidden>
     <button type="button" role="menuitem">删除空间</button>
   </div>
+  <div class="member-pop" id="memberPop" role="dialog" hidden></div>
   <div class="toasts" id="toasts"></div>
   <script type="module" src="/app.js"></script>
 </body>

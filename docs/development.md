@@ -39,6 +39,7 @@ Electron 主进程启动仅监听 `127.0.0.1` 的 HTTP 服务，并以随机端�
 - `detect(opts)`：返回可用性、登录状态、说明，可附加动态模型、档位与默认模型。
 - `runTurn(opts)`：返回 `{ text, sessionId? }`；通过 `onDelta`、`onActivity`、`onRaw` 报告流式文本、动作与原始事件，并响应 `AbortSignal`。
 - API 引擎通过 `file-blocks.mjs` 约定的文件块修改共享文件，CLI 引擎在指定工作目录执行。
+- 命令审批：`meta.approvals` 为 `true` 的引擎，在 `access` 为 `run` 且收到 `onApproval({ command })` 时，运行命令前先 `await` 它，按返回的 `{ allow, reason }` 运行或拒绝，并把理由转告 AI。Claude Code 用 `--input-format stream-json --permission-prompts host --permission-prompt-tool stdio`，先发 `initialize` 握手，再回答 `can_use_tool` 请求；Codex 改走 `codex app-server`（JSON-RPC），回答 `item/commandExecution/requestApproval`，拒绝理由用 `turn/steer` 补发。不支持审批的 CLI 引擎，在这一档由 `Space` 降为 `edit`。放行规则见 `src/approvals.mjs`。任务协作不传 `onApproval`。
 
 调用方通过注册表判断能力，避免在空间和任务调度中散落特定厂商判断。
 

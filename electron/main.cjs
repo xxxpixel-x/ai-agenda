@@ -58,6 +58,7 @@ function createWindow(url) {
   win.webContents.on('will-navigate', (e, target) => {
     if (!target.startsWith(url)) { e.preventDefault(); if (/^https?:\/\//i.test(target)) shell.openExternal(target); }
   });
+  win.on('focus', () => win.flashFrame(false));
   // F12 打开开发者工具，Ctrl+R 刷新
   win.webContents.on('before-input-event', (e, input) => {
     if (input.type !== 'keyDown') return;
@@ -87,6 +88,8 @@ app.whenReady().then(async () => {
     hooks: {
       desktop: true,
       openPath: (p) => shell.openPath(p),
+      // 有命令等你确认：窗口不在前台时让任务栏图标闪烁，切回窗口就停
+      attention: () => { if (win && !win.isFocused()) win.flashFrame(true); },
       protect: (s) => (canEncrypt ? { enc: safeStorage.encryptString(s).toString('base64') } : { plain: s }),
       unprotect: (o) => (o?.enc ? safeStorage.decryptString(Buffer.from(o.enc, 'base64')) : o?.plain || ''),
     },

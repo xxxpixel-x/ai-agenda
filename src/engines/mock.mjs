@@ -13,6 +13,7 @@ export const meta = {
   models: [['', '默认']],
   efforts: [''],
   capabilities: '模拟发言与改文件',
+  approvals: true,
 };
 
 const sleep = (ms, signal) => new Promise((resolve, reject) => {
@@ -32,7 +33,7 @@ async function stream(text, onDelta, signal) {
   return { text };
 }
 
-export async function runTurn({ system, prompt, cwd, access, signal, onDelta, onActivity, onRaw }) {
+export async function runTurn({ system, prompt, cwd, access, signal, onDelta, onActivity, onRaw, onApproval }) {
   const me = (system.match(/你是「([^」]+)」/) || [])[1] || '演示';
   const members = [...system.matchAll(/^- @([^（\s]+)/gm)].map((m) => m[1]);
   onRaw?.(`{"type":"mock.start","me":"${me}"}`);
@@ -97,6 +98,16 @@ export async function runTurn({ system, prompt, cwd, access, signal, onDelta, on
     const old = fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '# 共享文档\n';
     fs.writeFileSync(f, `${old.replace(/\n*$/, '\n')}- ${me}：先明确目标，再做最小验证。\n`);
     text += '\n\n（我在 `共享文档.md` 里记了一条。）';
+  }
+  // 「可运行命令」档：先问能不能跑测试
+  if (access === 'run' && onApproval && myTurns === 0) {
+    const d = await onApproval({ command: 'npm test && git status' });
+    if (d.allow) {
+      onActivity?.({ kind: 'command', label: '运行 npm test && git status' });
+      text += '\n\n测试跑过了，全部通过。';
+    } else {
+      text += `\n\n好，先不跑测试${d.reason ? `（${d.reason}）` : ''}。`;
+    }
   }
   if (myTurns === 1) text += ' [结束]';
   return stream(text, onDelta, signal);

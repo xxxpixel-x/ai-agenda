@@ -21,6 +21,7 @@ export const meta = {
   ],
   efforts: ['', 'low', 'medium', 'high', 'xhigh', 'max'],
   capabilities: '读写共享文件、联网搜索',
+  approvals: true, // 运行命令前可以先问你
 };
 
 function compareVersions(a, b) {
@@ -101,16 +102,24 @@ const TOOLS = {
   full: null, // 不限工具
 };
 
-function accessArgs(access) {
+const COMMAND_TOOLS = new Set(['Bash', 'PowerShell']);
+
+// ask：运行命令要先问你。命令工具照常提供，但不预先放行，由软件回答 Claude 的权限请求
+function accessArgs(access, ask = false) {
   if (access === 'full') return ['--dangerously-skip-permissions'];
   const tools = TOOLS[access] || TOOLS.edit;
+  const allowed = ask ? tools.split(',').filter((t) => !COMMAND_TOOLS.has(t)).join(',') : tools;
   return [
     '--tools', tools,
-    '--allowedTools', tools,
+    '--allowedTools', allowed,
     '--permission-mode', access === 'read' ? 'default' : 'acceptEdits',
-    '--permission-prompts', 'none', // 没人能回答弹窗：未放行的操作直接拒绝
+    ...(ask
+      ? ['--permission-prompts', 'host', '--permission-prompt-tool', 'stdio']
+      : ['--permission-prompts', 'none']), // 没人能回答弹窗：未放行的操作直接拒绝
   ];
 }
+
+const refusal = (reason) => `「我」没有同意运行这条命令${reason ? `，理由：${reason}` : ''}。按这个调整做法，不要换一种写法绕过。`;
 
 function activityOf(block, cwd) {
   const i = block.input || {};
@@ -140,7 +149,8 @@ function friendly(text, bin) {
  * sessionId：接续导入的 Claude Code 对话。fork 为 true 时先复制一份再接（原会话不动），返回新的会话 ID。
  * 接续时用 --system-prompt-snapshot off，否则会一直沿用原会话第一次记下的系统提示，Agenda 的规则传不进去。
  */
-export async function runTurn({ system, prompt, model, effort, cwd, access = 'edit', signal, onDelta, onActivity, onRaw, binOverride, sessionId, fork = false }) {
+export async function runTurn({ system, prompt, model, effort, cwd, access = 'edit', signal, onDelta, onActivity, onRaw, onApproval, binOverride, sessionId, fork = false }) {
+  const ask = access === 'run' && !!onApproval;
   const bin = findBin(binOverride);
   if (!bin) throw new Error('没有找到 Claude Code');
   const sysFile = path.join(os.tmpdir(), `rt-sys-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`);
@@ -152,7 +162,8 @@ export async function runTurn({ system, prompt, model, effort, cwd, access = 'ed
     '--verbose',
     '--include-partial-messages',
     '--append-system-prompt-file', sysFile,
-    ...accessArgs(access),
+    ...(ask ? ['--input-format', 'stream-json'] : []),
+    ...accessArgs(access, ask),
     '--safe-mode',            // 不加载个人的 CLAUDE.md / 插件 / hooks / MCP
     '--strict-mcp-config',
   ];
@@ -170,16 +181,38 @@ export async function runTurn({ system, prompt, model, effort, cwd, access = 'ed
   let blocks = 0;
   const emit = (t) => { if (t) { text += t; onDelta?.(t); } };
 
+  // Claude 想用一个没预先放行的工具：命令交给你决定；其他（比如改共享文件夹以外的文件）照旧拒绝
+  async function answerPermission(msg, ctl) {
+    const { tool_name: tool, input = {} } = msg.request;
+    let response;
+    if (COMMAND_TOOLS.has(tool)) {
+      const d = await onApproval({ command: input.command || '' });
+      response = d.allow ? { behavior: 'allow', updatedInput: input } : { behavior: 'deny', message: refusal(d.reason) };
+    } else {
+      response = { behavior: 'deny', message: '超出了当前权限。' };
+    }
+    ctl.send({ type: 'control_response', response: { subtype: 'success', request_id: msg.request_id, response } });
+  }
+
   try {
     const r = await runJsonl({
       cmd: bin,
       args,
       cwd,
-      input: prompt,
+      // 双向通信时先握手（不握手 Claude 不会把权限请求发过来），再发这次的输入
+      input: ask
+        ? [
+          { type: 'control_request', request_id: 'init', request: { subtype: 'initialize' } },
+          { type: 'user', message: { role: 'user', content: prompt }, parent_tool_use_id: null, session_id: '' },
+        ]
+        : prompt,
+      keepInput: ask,
       signal,
       onRaw,
-      onEvent(msg) {
-        if (msg.type === 'stream_event') {
+      onEvent(msg, ctl) {
+        if (msg.type === 'control_request' && msg.request?.subtype === 'can_use_tool') {
+          answerPermission(msg, ctl);
+        } else if (msg.type === 'stream_event') {
           const ev = msg.event || {};
           if (ev.type === 'content_block_start' && ev.content_block?.type === 'text') {
             if (blocks++ > 0 && text && !text.endsWith('\n')) emit('\n\n');
@@ -193,6 +226,7 @@ export async function runTurn({ system, prompt, model, effort, cwd, access = 'ed
           }
         } else if (msg.type === 'result') {
           result = msg;
+          if (ask) ctl.finish();
         }
       },
     });

@@ -10,11 +10,17 @@ import { systemPrompt, turnPrompt, parseMarkers, mentionsIn, ACCESS } from './pr
 import { runAgentTurn } from './turn-runner.mjs';
 import { TaskRun, preflight, cleanupRunFiles, runDir } from './taskrun.mjs';
 import { importsBackground, briefVersions, syncBriefs } from './imports.mjs';
+import { isPreapproved, parseCommand, normalizeAllowed } from './approvals.mjs';
 
 const MODEL_RE = /^[a-z0-9._:\-/[\]]{0,100}$/i;
 const EFFORTS = ['', 'none', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 const str = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
 const clampInt = (v, lo, hi, d) => { const n = parseInt(v, 10); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
+
+/** 任务协作在等你：确认计划、审查、回答问题、处理失败、合并。 */
+export const runNeedsUser = (r) => !!r && !r.closed && (r.status === 'plan_review' || !!r.paused
+  || r.tasks.some((t) => ['review', 'blocked', 'failed'].includes(t.status))
+  || (r.status === 'done' && r.mode === 'git' && !r.merged && r.tasks.some((t) => t.status === 'approved')));
 
 export function normalizeMembers(input, engines) {
   const byId = new Map(engines.map((e) => [e.id, e]));
@@ -52,10 +58,13 @@ export class Space extends EventEmitter {
     this.store = store;
     this.dir = path.join(dataDir, 'spaces', data.id);
     data.memberState ||= {};
+    data.allowedPrograms = normalizeAllowed(data.allowedPrograms);
     data.status = 'idle';
     for (const m of data.messages) {
       if (m.streaming) { m.streaming = false; m.interrupted = true; }
+      for (const a of m.approvals || []) if (a.status === 'pending') a.status = 'cancelled';
     }
+    this.approvals = new Map(); // 等你确认的命令：id -> { ap, msg, resolve }
     this.ws = new Workspace(this.workspacePath, path.join(this.dir, 'history.json'));
     this.running = false;
     this.queue = [];
@@ -154,6 +163,9 @@ export class Space extends EventEmitter {
     const last = [...d.messages].reverse().find((m) => m.text);
     return {
       id: d.id, title: d.title, updatedAt: d.updatedAt, running: this.running,
+      waiting: this.approvals.size > 0,
+      needsYou: runNeedsUser(this.run?.data),
+      lastAt: last?.ts || null,
       members: d.members.map((m) => ({ name: m.name, color: m.color })),
       preview: last ? `${last.kind === 'user' ? '我' : last.name}：${last.text.slice(0, 40)}` : '',
       workspaceType: d.workspace.type,
@@ -181,8 +193,20 @@ export class Space extends EventEmitter {
       for (const [id, st] of Object.entries(this.data.memberState)) if (!st?.importId) delete this.data.memberState[id];
     }
     if ('maxTurns' in patch) this.data.maxTurns = clampInt(patch.maxTurns, 1, 30, this.data.maxTurns);
+    if ('allowedPrograms' in patch) this.data.allowedPrograms = normalizeAllowed(patch.allowedPrograms);
     this.save();
     this.emitEvent({ type: 'snapshot', space: this.toJSON() });
+  }
+
+  /** 换某个成员的型号 / 思考档位：讨论进行中也可以，下一次发言生效。 */
+  updateMember(memberId, patch = {}) {
+    const i = this.data.members.findIndex((m) => m.id === memberId);
+    if (i < 0) throw new Error('没有这个成员');
+    const next = this.data.members.map((m, k) => (k === i ? { ...m, model: patch.model ?? m.model, effort: patch.effort ?? m.effort } : m));
+    this.data.members = normalizeMembers(next, this.registry.list());
+    this.save();
+    this.emitEvent({ type: 'members', members: this.data.members });
+    return this.data.members[i];
   }
 
   // ---------- 对外操作 ----------
@@ -311,9 +335,12 @@ export class Space extends EventEmitter {
     const canResume = this.registry.supportsResume(member.engine) || !!imported;
     const outside = this.ws.begin();
     if (outside.length) this.emitEvent({ type: 'files_changed', changes: outside });
+    // 「可运行命令」档：能先问的 AI 每条命令先问你；问不了的只能改文件（API 型本来就不能运行命令，不受影响）
+    const asks = this.data.access === 'run' && !api && this.registry.supportsApproval(member.engine);
+    const access = this.data.access === 'run' && !api && !asks ? 'edit' : this.data.access;
 
     const build = (resume) => ({
-      system: systemPrompt(this.toJSON(), member, { api }) + (resume && imported?.note ? `\n${imported.note}\n` : ''),
+      system: systemPrompt(this.toJSON(), member, { api, access, approvals: asks }) + (resume && imported?.note ? `\n${imported.note}\n` : ''),
       prompt: turnPrompt(this.data, member, {
         reason, api,
         files: api ? this.ws.snapshot() : null,
@@ -338,7 +365,7 @@ export class Space extends EventEmitter {
         system,
         prompt,
         cwd: this.workspacePath,
-        access: this.data.access,
+        access,
         sessionId: resume ? state.sessionId : undefined,
         fork: resume && !!imported?.fork,
         signal: controller.signal,
@@ -346,6 +373,7 @@ export class Space extends EventEmitter {
         ws: this.ws,
         onDelta: (t) => this.emitEvent({ type: 'delta', id: msg.id, text: t }),
         onActivity: (a) => this.emitEvent({ type: 'activity', id: msg.id, activity: a }),
+        onApproval: asks ? (req) => this.requestApproval(msg, req, controller.signal) : undefined,
       });
     };
 
@@ -401,6 +429,43 @@ export class Space extends EventEmitter {
       this.save();
     }
     return result;
+  }
+
+  // ---------- 命令审批 ----------
+  /** AI 想运行命令：放行过的程序直接允许，否则在它的发言里出一张卡片，等你决定。 */
+  requestApproval(msg, { command }, signal) {
+    command = String(command || '').trim();
+    if (isPreapproved(command, this.data.allowedPrograms)) return Promise.resolve({ allow: true });
+    if (signal?.aborted) return Promise.resolve({ allow: false });
+    const ap = { id: randomUUID().slice(0, 8), command, programs: parseCommand(command).programs, status: 'pending', ts: Date.now() };
+    (msg.approvals ||= []).push(ap);
+    return new Promise((resolve) => {
+      this.approvals.set(ap.id, { ap, msg, resolve });
+      signal?.addEventListener('abort', () => this.settleApproval(ap.id, 'cancelled'), { once: true });
+      this.emitEvent({ type: 'approval', id: msg.id, approval: ap });
+    });
+  }
+
+  /** decision：allow / always（这些程序以后都不问）/ deny（可附理由） */
+  decideApproval(id, decision, reason) {
+    const p = this.approvals.get(id);
+    if (!p) throw new Error('这条请求已经处理过了');
+    if (!['allow', 'always', 'deny'].includes(decision)) throw new Error('未知的决定');
+    if (decision === 'always') this.data.allowedPrograms = normalizeAllowed([...this.data.allowedPrograms, ...p.ap.programs]);
+    const status = { allow: 'allowed', always: 'always', deny: 'denied' }[decision];
+    this.settleApproval(id, status, decision === 'deny' ? str(reason, 500) : '');
+    return p.ap;
+  }
+
+  settleApproval(id, status, reason = '') {
+    const p = this.approvals.get(id);
+    if (!p) return;
+    this.approvals.delete(id);
+    p.ap.status = status;
+    if (reason) p.ap.reason = reason;
+    this.emitEvent({ type: 'approval', id: p.msg.id, approval: p.ap, allowedPrograms: this.data.allowedPrograms });
+    this.save();
+    p.resolve({ allow: status === 'allowed' || status === 'always', reason });
   }
 
   // ---------- 文件 ----------

@@ -1,5 +1,6 @@
 // 桌面版内部的本机 HTTP 服务：给窗口里的界面提供接口与实时事件（SSE）。只监听 127.0.0.1。
 import http from 'node:http';
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,7 +27,8 @@ const TYPES = {
  * @param opts.port      0 表示随机端口
  * @param opts.dataDir   数据目录
  * @param opts.mock      演示模式
- * @param opts.hooks     { openPath(p), protect(s), unprotect(o), desktop: true }
+ * @param opts.hooks     { openPath(p), protect(s), unprotect(o), attention(), desktop: true }
+ *                       attention：有命令等你确认（桌面版让任务栏图标闪烁）
  */
 export async function startServer({ port = 3210, dataDir, mock = false, hooks = {} } = {}) {
   fs.mkdirSync(path.join(dataDir, 'spaces'), { recursive: true });
@@ -36,8 +38,23 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
   const deps = { registry, store, dataDir };
 
   const spaces = new Map();
+  // 侧栏要知道每个空间的状态（发言中、等你确认、任务等你），不只是当前打开的那个
+  const hub = new EventEmitter();
+  hub.setMaxListeners(100);
+  let hubTimer = null;
+  const LIST_EVENTS = new Set(['state', 'approval', 'run', 'message_done', 'snapshot']);
+  const addSpace = (space) => {
+    spaces.set(space.id, space);
+    space.on('event', (ev) => {
+      if (ev.type === 'approval' && ev.approval.status === 'pending') hooks.attention?.();
+      if (!LIST_EVENTS.has(ev.type)) return;
+      clearTimeout(hubTimer);
+      hubTimer = setTimeout(() => hub.emit('spaces'), 300);
+    });
+    return space;
+  };
   for (const data of store.loadAll()) {
-    try { spaces.set(data.id, new Space(data, deps)); } catch (e) { console.warn('跳过无法打开的空间：', e.message); }
+    try { addSpace(new Space(data, deps)); } catch (e) { console.warn('跳过无法打开的空间：', e.message); }
   }
 
   let actualPort = port;
@@ -93,6 +110,15 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
     req.on('close', () => { space.off('event', send); clearInterval(ping); });
   }
 
+  function openHubSse(req, res) {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+    res.write('retry: 2000\n\n');
+    const send = () => res.write(`data: ${JSON.stringify({ type: 'spaces' })}\n\n`);
+    hub.on('spaces', send);
+    const ping = setInterval(() => res.write(': ping\n\n'), 20000);
+    req.on('close', () => { hub.off('spaces', send); clearInterval(ping); });
+  }
+
   const getSpace = (id) => {
     const s = spaces.get(id);
     if (!s) throw Object.assign(new Error('这个空间不存在'), { status: 404 });
@@ -136,6 +162,7 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
       return sendJson(res, 200, { ok: true });
     }
 
+    if (p === '/api/events' && method === 'GET') return openHubSse(req, res);
     if (p === '/api/spaces' && method === 'GET') {
       return sendJson(res, 200, [...spaces.values()].map((s) => s.listItem()).sort((a, b) => b.updatedAt - a.updatedAt));
     }
@@ -151,7 +178,7 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
       const body = await readJson(req);
       if (body.import?.mode === 'topic' && body.workspace?.type === 'folder') topicFolder(body.workspace.path, body.import);
       const space = Space.create(body, deps);
-      spaces.set(space.id, space);
+      addSpace(space);
       let importError;
       if (body.import) {
         // 新建空间时从一段对话开始：对应的成员已在成员列表里，取第一个同类成员
@@ -189,6 +216,11 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
       if (sub === '/imports' && method === 'POST' && arg && tail === '/refresh') return sendJson(res, 200, refreshImport(space, arg));
       if (sub === '/imports' && method === 'POST' && arg && tail === '/brief') return sendJson(res, 200, resolveBrief(space, arg, (await readJson(req)).action));
       if (sub === '/imports' && method === 'POST' && arg && tail === '/recompress') return sendJson(res, 200, recompressImport(space, arg, (await readJson(req)).mode));
+      if (sub === '/approvals' && method === 'POST' && arg) {
+        const { decision, reason } = await readJson(req);
+        return sendJson(res, 200, space.decideApproval(arg, decision, reason));
+      }
+      if (sub === '/members' && method === 'PATCH' && arg) return sendJson(res, 200, space.updateMember(arg, await readJson(req)));
       if (sub === '/messages' && method === 'POST') return sendJson(res, 201, space.userMessage((await readJson(req)).text));
       if (sub === '/control' && method === 'POST') {
         const { action, memberId } = await readJson(req);
