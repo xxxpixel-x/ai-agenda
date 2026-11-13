@@ -1,20 +1,29 @@
-// 外部 AI 会话记录的来源注册表。要支持新的来源：在这个文件夹里加一个模块，再加到 SOURCES。
+// 外部 AI 会话记录的来源注册表。要支持新的来源：在这个文件夹里加一个模块，再加到 SOURCES（见 docs/importers.md）。
 import os from 'node:os';
 import path from 'node:path';
 import * as claude from './claude.mjs';
 import * as codex from './codex.mjs';
 import * as dsh from './dsh.mjs';
+import * as geminiCli from './gemini-cli.mjs';
+import * as workbuddy from './workbuddy.mjs';
+import * as zcode from './zcode.mjs';
+import * as pasted from './pasted.mjs';
 
-const SOURCES = [claude, codex, dsh];
+const SOURCES = [claude, codex, dsh, geminiCli, workbuddy, zcode, pasted];
 
 export const sourceOf = (id) => SOURCES.find((s) => s.meta.id === id) || null;
 export const sourceMetas = () => SOURCES.map((s) => s.meta);
 
-const norm = (p) => (p ? path.resolve(p).toLowerCase() : '');
+/** 启动时调用一次：粘贴的对话存在数据目录里。 */
+export const configureImporters = ({ dataDir }) => pasted.configure(dataDir);
+export const stagePasted = pasted.stage;
+
+// Windows、macOS 的路径不分大小写，Linux 分
+const norm = (p) => (p ? (process.platform === 'linux' ? path.resolve(p) : path.resolve(p).toLowerCase()) : '');
 const inside = (p, dir) => { const a = norm(p); const b = norm(dir); return !!a && !!b && (a === b || a.startsWith(b + path.sep)); };
 
 /**
- * 三家的会话列表，最近更新的在前。
+ * 各家的会话列表，最近更新的在前。
  *  exclude.ids    Agenda 自己复制出来的会话（接续中的 Claude 成员）
  *  exclude.dir    Agenda 的数据目录（里面的会话都是 Agenda 自己跑出来的）
  * 系统临时文件夹里的会话（各种工具试跑留下的）也不列出。

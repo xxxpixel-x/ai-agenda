@@ -9,7 +9,7 @@
 3. 用 `npm run mock` 体验不需要账号的演示模式，或用 `npm start` 接入本机 AI。
 4. 修改后执行 `npm run verify`；涉及界面时，手动检查相应操作。
 
-模块分工和测试范围见 [开发说明](docs/development.md)。
+模块分工和测试范围见 [开发说明](docs/development.md)。想让 Agenda 能导入某个 AI 软件的对话，见 [导入来源与新增方法](docs/importers.md)。
 
 ## 改动约定
 

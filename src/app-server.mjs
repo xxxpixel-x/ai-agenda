@@ -8,7 +8,7 @@ import { Store } from './store.mjs';
 import { Space } from './space.mjs';
 import { createSettings } from './settings.mjs';
 import { createRegistry, CLI_ENGINE_IDS } from './engines/index.mjs';
-import { listSessions } from './importers/index.mjs';
+import { listSessions, configureImporters, stagePasted } from './importers/index.mjs';
 import { sessionDetail, forkedSessionIds, importSession, checkImport, refreshImport, recompressImport, resolveBrief, topicFolder } from './imports.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -36,6 +36,7 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
   const registry = createRegistry(settings, { mock });
   const store = new Store(path.join(dataDir, 'spaces'));
   const deps = { registry, store, dataDir };
+  configureImporters({ dataDir });
 
   const spaces = new Map();
   // 侧栏要知道每个空间的状态（发言中、等你确认、任务等你），不只是当前打开的那个
@@ -64,12 +65,12 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
     res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
     res.end(JSON.stringify(body));
   };
-  const readJson = (req) => new Promise((resolve, reject) => {
+  const readJson = (req, max = 10_000_000) => new Promise((resolve, reject) => {
     let size = 0;
     const chunks = [];
     req.on('data', (c) => {
       size += c.length;
-      if (size > 10_000_000) { reject(Object.assign(new Error('请求体太大'), { status: 413 })); req.destroy(); return; }
+      if (size > max) { reject(Object.assign(new Error('请求体太大'), { status: 413 })); req.destroy(); return; }
       chunks.push(c);
     });
     req.on('end', () => {
@@ -169,6 +170,11 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
     // ---- 导入外部 AI 对话 ----
     if (p === '/api/import/sessions' && method === 'GET') {
       return sendJson(res, 200, listSessions({ exclude: { ids: forkedSessionIds(spaces.values()), dir: dataDir } }));
+    }
+    if (p === '/api/import/paste' && method === 'POST') {
+      // { text } 粘贴的文字；或 { data, name } 选择的文件（base64，可以是导出的 zip）
+      const b = await readJson(req, 300_000_000);
+      return sendJson(res, 200, stagePasted(b.data ? Buffer.from(String(b.data), 'base64') : String(b.text || ''), String(b.name || '')));
     }
     if (p === '/api/import/session' && method === 'GET') {
       return sendJson(res, 200, sessionDetail(url.searchParams.get('source'), url.searchParams.get('id')));

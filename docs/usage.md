@@ -17,10 +17,11 @@
 | **Claude Code** | 本机命令行（Claude 桌面 app 自带的那份） | 登录一次：在 PowerShell 运行软件里“连接与登录”显示的命令 |
 | **Codex** | 本机命令行（Codex 桌面版自带） | 在 Codex 桌面版登录过即可 |
 | **DeepSeek Harness** | 本机命令行（DeepSeek Harness 自带的 dsh） | 在 DeepSeek Harness 登录过即可 |
+| **Gemini CLI** | 本机命令行（装了才出现） | 在终端运行一次 `gemini`，选用 Google 账号登录 |
 | **Gemini** | Gemini API | 在“连接与登录”里填 API key（aistudio.google.com 创建） |
 | **任意 OpenAI 兼容接口** | API | 在“连接与登录”里添加：DeepSeek、通义千问、Kimi、智谱、OpenAI、本地 Ollama 都有预设 |
 
-前三个用的是各自软件的账号和额度，不需要 API key。软件会自动找到它们装在哪；找不到时可以在“连接与登录”里手动填路径。
+命令行这几个用的是各自软件的账号和额度，不需要 API key。软件会自动找到它们装在哪；找不到时可以在“连接与登录”里手动填路径。
 
 API key 保存在本机的 `data/settings.json`。桌面版在系统加密可用时使用 Electron safeStorage；系统加密不可用时会回退到明文，因此不要分享这个文件。
 
@@ -34,6 +35,7 @@ API key 保存在本机的 `data/settings.json`。桌面版在系统加密可用
   | Claude Code | 软件里写好的常用型号（Opus / Fable / Sonnet / Haiku 各版本） | low / medium / high / xhigh / max |
   | Codex | Codex 自己的型号目录（`codex debug models`） | 按型号，最多 low 到 ultra |
   | DeepSeek Harness | 用 commandcode 服务商时读它的官方型号目录（套餐能用的都列出）；其他服务商只显示当前型号 | 按型号，例如 off / low / high / max |
+  | Gemini CLI | 自动 / Pro / Flash / Flash-Lite（具体型号名可以手填） | 命令行没有这个参数，不能选 |
   | Gemini | Gemini API 的型号列表 | minimal / low / medium / high |
   | OpenAI 兼容接口 | 接口的 `/models` | minimal / low / medium / high / xhigh（各家支持的不同，不支持会报错） |
 
@@ -50,9 +52,9 @@ API key 保存在本机的 `data/settings.json`。桌面版在系统加密可用
     - **拒绝**：可以补一句理由，AI 会按理由调整做法。
     - 卡片没人处理就一直等；窗口不在前台时，任务栏图标会闪，侧栏里这个空间会标出“等你确认”。点“停止”会取消这张卡片。
     - Claude Code 和 Codex 能先问；DeepSeek Harness 和 Gemini CLI 没法先问，在这一档只能读写文件，不能运行命令。任务协作里的 AI 不弹卡片，按权限直接执行。
-  - **全部权限**：不受限制，可以读写电脑上任何地方、运行任何命令（Gemini 和 OpenAI 兼容接口仍只能改共享文件夹）。
+  - **全部权限**：不受限制，可以读写电脑上任何地方、运行任何命令（Gemini CLI 能运行任何命令，但它的改文件工具仍只能碰共享文件夹；Gemini API 和 OpenAI 兼容接口仍只能改共享文件夹）。
   - 一个 AI 让另一个 AI 做事时：前三档里，删文件、大范围改你没提过的内容、有风险的命令，会先在聊天里问你；全部权限下直接照做。
-  - 你账号上的外部连接（Codex 连的 Gmail、Slack、GitHub 等应用，以及插件、hooks、MCP 服务）：前三档里一律关掉，全部权限下照常可用。Claude Code 始终不加载你个人的插件、hooks 和 MCP。
+  - 你账号上的外部连接（Codex 连的 Gmail、Slack、GitHub 等应用，以及插件、hooks、MCP 服务）：前三档里一律关掉，全部权限下照常可用。Claude Code 始终不加载你个人的插件、hooks 和 MCP。Gemini CLI 前三档不加载你的扩展和 MCP 服务。
   - AI 冒充不了你：每次发言时，软件都会给每条消息加一个随机标记，只有你自己发的消息才会被标成“我”。
 - **发言规则**：
   - 你发一条消息后，成员依次发言，能看到前面所有人说的话、改的文件；
@@ -66,10 +68,17 @@ API key 保存在本机的 `data/settings.json`。桌面版在系统加密可用
 
 ## 导入别处的对话
 
-在 Claude Code app、Codex、DeepSeek Harness 里聊到一半，想拉别的 AI（比如 Gemini）一起参与时：
+在别的 AI 软件里聊到一半，想拉别的 AI 一起参与时：
 
 - **已有空间**：点空间顶部的「导入对话」图标，选一段对话；
 - **新建空间**：点「从对话开始」，共享文件夹会自动填上原对话的项目文件夹，对应的 AI 也会自动加进成员。
+
+列表里自动列出本机这些软件的对话：Claude Code、Codex、DeepSeek Harness、Gemini CLI、WorkBuddy、ZCode。其他软件（网页版的 Gemini、ChatGPT、豆包、Kimi，以及 Trae 等）点列表上方的「粘贴或选文件」：
+
+- **粘贴**：在聊天页面里全选复制，粘贴进来。带「You said / ChatGPT said」「我：/ 豆包：」这类说话人标记的会自动分出你和 AI；认不出时整段作为一条导入；
+- **选文件**（或直接拖进来）：ChatGPT、Claude.ai 的导出文件（整个 `.zip` 就行，里面有很多段时再选一段）、Google Takeout 的 Gemini 活动记录、`.md` / `.txt` / `.json`。
+
+各软件的记录位置和兼容情况见 [导入来源](importers.md)。
 
 导入的对话在「聊天」和「任务协作」里都能看到，折叠成一块，点开能看全部。两处共用同一份记录，补导、简报采用或撤销会同步更新。它会作为固定背景交给聊天成员，以及任务的规划、审阅、执行和总结成员（不占“最近 40 条聊天记录”的名额），所以会按长度自动选择导入方式，导入时可以改：
 
@@ -89,7 +98,7 @@ API key 保存在本机的 `data/settings.json`。桌面版在系统加密可用
 - 新建空间时选了按主题，共享文件夹默认是原项目里的主题子文件夹（比如 `F:\game\剧本`），没有就自动建，这样其他成员默认在这个主题文件夹里工作；这不是对本机文件的完整安全隔离。
 
 - **Claude Code 的对话**：对应的 Claude 成员会接着原会话继续，记得原来读过的文件、做过的操作。软件先把原会话复制一份再接着聊，app 里原来那段不会被改动。共享文件夹和原对话的文件夹不同时也能接续，但会先提醒你“原对话里的文件路径可能对不上”。
-- **Codex / DeepSeek Harness 的对话**：只导入文字（双方说的话 + 每轮操作的简短记录）。
+- **其他来源的对话**：只导入文字（双方说的话 + 每轮操作的简短记录）。Agenda 里有对应 AI 的（Codex、DeepSeek Harness、Gemini CLI），会让一个这种成员“认领”这段对话；没有的（WorkBuddy、粘贴的等）不加成员。粘贴和选文件导入的对话没有补导。
 - **补导**：之后你又在原软件里接着聊了，打开空间时折叠块下面会出现「补导 N 条新内容」。补导后如果内容超过了当前方式的长度上限，会问你要不要重新压缩。
 - 一个空间可以导入多段对话。导入完不会自动开始讨论，等你发话。
 

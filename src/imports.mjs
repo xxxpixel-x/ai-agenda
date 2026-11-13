@@ -183,8 +183,10 @@ export function importSession(space, opts = {}) {
   const mode = MODES.includes(opts.mode) ? opts.mode : autoMode(charsOf(s.entries));
   const topic = mode === 'topic' ? String(opts.topic || '').trim().slice(0, 40) : '';
   if (mode === 'topic' && !topic) throw new Error('请填写主题');
-  // 按主题导入可以不加对应成员：选了“不加”，或者新建空间时把它从成员里去掉了
-  const noMember = mode === 'topic' && (opts.memberId === 'none' || (opts.memberId == null && !space.data.members.some((m) => m.engine === s.engine)));
+  // 不加对应成员：来源在 Agenda 里没有对应的 AI 类型（粘贴的、Trae 等）；
+  // 或者按主题导入时选了“不加”，或者新建空间时把它从成员里去掉了
+  const noMember = !space.registry.list().some((e) => e.id === s.engine)
+    || (mode === 'topic' && (opts.memberId === 'none' || (opts.memberId == null && !space.data.members.some((m) => m.engine === s.engine))));
   const member = noMember ? null : pickMember(space, s.engine, opts.memberId);
   const resume = !!member && s.engine === 'claude-code';
   const members = space.data.members;

@@ -1,11 +1,36 @@
 // 读取外部 AI 会话记录的公共部分。
 // 每个来源模块导出：
-//   meta = { id, label, engine }          engine：Agenda 里对应的 AI 类型
+//   meta = { id, label, engine }          engine：Agenda 里对应的 AI 类型；没有对应的写 null（只导入文字）
 //   list() -> [{ id, title, cwd, updatedAt }]
 //   read(id) -> { id, title, cwd, entries: [{ key, role: 'user'|'ai', text, acts: [string], ts }] }
-// 只读取，不改动任何记录文件。
+// 只读取，不改动任何记录文件。要兼容 Windows / macOS / Linux：找文件夹用下面的 homeDir / appDataDir。
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { createRequire } from 'node:module';
+
+/** 用户主目录下的路径，比如 homeDir('.gemini')。三个系统都一样。 */
+export const homeDir = (...names) => path.join(os.homedir(), ...names);
+
+/**
+ * 桌面软件（Electron / VS Code 系）存数据的地方：
+ * Windows %APPDATA%，macOS ~/Library/Application Support，Linux $XDG_CONFIG_HOME 或 ~/.config。
+ */
+export function appDataDir(...names) {
+  const home = os.homedir();
+  const base = process.platform === 'win32' ? (process.env.APPDATA || path.join(home, 'AppData', 'Roaming'))
+    : process.platform === 'darwin' ? path.join(home, 'Library', 'Application Support')
+      : (process.env.XDG_CONFIG_HOME || path.join(home, '.config'));
+  return path.join(base, ...names);
+}
+
+/** 只读打开一个 SQLite 文件（Node 22.13 以上自带）。用完记得 close()。 */
+export function openSqlite(file) {
+  const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite');
+  return new DatabaseSync(file, { readOnly: true });
+}
+
+export const isDir = (p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } };
 
 export const brief = (s, max = 80) => {
   const t = String(s ?? '').replace(/\s+/g, ' ').trim();

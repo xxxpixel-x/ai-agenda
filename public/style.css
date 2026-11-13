@@ -533,6 +533,9 @@ button.person { font: inherit; font-size: 13px; color: inherit; }
 .picker-bar { display: flex; gap: 8px; padding: 0 20px 10px; align-items: center; }
 .picker-bar input { flex: 1; }
 .picker-list { display: flex; flex-direction: column; gap: 1px; flex: 1; }
+.pk-paste { display: flex; flex-direction: column; gap: 10px; flex: 1; }
+.pk-paste textarea { flex: 1; resize: none; min-height: 200px; font: inherit; font-size: 13px; }
+.pk-paste-foot { display: flex; justify-content: space-between; }
 .pk-row { display: flex; flex-direction: column; gap: 2px; text-align: left; border: none; background: none; color: var(--text); padding: 8px 10px; border-radius: 7px; cursor: pointer; font: inherit; }
 .pk-row:hover { background: var(--hover); }
 .pk-row b { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

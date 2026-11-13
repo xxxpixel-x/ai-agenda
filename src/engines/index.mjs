@@ -11,6 +11,7 @@
 import * as claudeCode from './claude-code.mjs';
 import * as codex from './codex.mjs';
 import * as dsh from './dsh.mjs';
+import * as geminiCli from './gemini-cli.mjs';
 import * as gemini from './gemini.mjs';
 import * as openai from './openai-compat.mjs';
 import * as mock from './mock.mjs';
@@ -37,6 +38,7 @@ const ENGINES = [
   cli(claudeCode),
   cli(codex),
   cli(dsh),
+  cli(geminiCli),
   {
     module: gemini,
     builtin: true,

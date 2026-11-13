@@ -9,6 +9,7 @@ import { extractPlan, normalizePlan, parseReport, workerPrompt, plannerPrompt } 
 import { importsBackground, briefVersions, resolveBrief } from '../src/imports.mjs';
 import { turnPrompt, systemPrompt, parseMarkers } from '../src/prompts.mjs';
 import { isolationArgs } from '../src/engines/codex.mjs';
+import { loginState, buildArgs } from '../src/engines/gemini-cli.mjs';
 import { tempDir, makeSpace } from './helpers.mjs';
 
 test('settings persist protected keys without exposing them in public responses', (t) => {
@@ -151,6 +152,28 @@ test('codex runs without the user\'s connectors, plugins, hooks and MCP servers'
   }
   assert.ok(!args.includes('mcp_servers.node_repl.env'));
   assert.ok(isolationArgs(path.join(home, 'missing')).includes('apps'));
+});
+
+test('gemini cli login is read from its own settings and credentials', (t) => {
+  const home = tempDir(t);
+  assert.equal(loginState(home).loggedIn, false);
+  fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({ security: { auth: { selectedType: 'oauth-personal' } } }));
+  assert.equal(loginState(home).loggedIn, false);
+  fs.writeFileSync(path.join(home, 'google_accounts.json'), JSON.stringify({ active: 'me@example.com', old: [] }));
+  assert.deepEqual(loginState(home), { loggedIn: true, method: 'Google 账号 me@example.com' });
+  fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({ selectedAuthType: 'vertex-ai' }));
+  assert.equal(loginState(home).loggedIn, true);
+});
+
+test('gemini cli access levels map to approval modes and isolate personal extensions', () => {
+  const mode = (access) => { const a = buildArgs({ access }); return a[a.indexOf('--approval-mode') + 1]; };
+  assert.equal(mode('read'), 'default');
+  assert.equal(mode('edit'), 'auto_edit');
+  assert.equal(mode('run'), 'yolo');
+  assert.equal(mode('full'), 'yolo');
+  assert.ok(buildArgs({ access: 'edit' }).includes('--extensions'));
+  assert.ok(!buildArgs({ access: 'full' }).includes('--extensions'));
+  assert.deepEqual(buildArgs({ access: 'read', model: 'flash' }).slice(-2), ['--model', 'flash']);
 });
 
 test('imported background survives the recent-chat limit and excludes unfinished summaries', () => {

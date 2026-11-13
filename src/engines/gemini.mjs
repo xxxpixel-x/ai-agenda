@@ -4,7 +4,7 @@ import { brief } from './proc.mjs';
 
 export const meta = {
   id: 'gemini',
-  label: 'Gemini',
+  label: 'Gemini API',
   vendor: 'Google',
   kind: 'api',
   defaultName: 'Gemini',

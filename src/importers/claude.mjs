@@ -8,7 +8,7 @@ import { EntryBuilder, readJsonl, readEdges, relTo, brief, toTs } from './common
 
 export const meta = { id: 'claude-code', label: 'Claude Code', engine: 'claude-code' };
 
-const ROOT = () => path.join(os.homedir(), '.claude', 'projects');
+const ROOT = () => path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'projects');
 const ID_RE = /^[0-9a-f-]{36}$/i;
 const CONTINUED = 'This session is being continued from a previous conversation';
 

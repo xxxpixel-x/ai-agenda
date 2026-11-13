@@ -72,10 +72,12 @@ function relTime(ts) {
 const clock = (ts) => new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
 const sizeText = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
 const engineOf = (id) => state.engines.find((e) => e.id === id);
+// 没装就不出现的 AI（Gemini CLI）。已经在用它的成员照常显示。
+const shownEngines = () => state.engines.filter((e) => !e.hideWhenMissing || e.status?.available);
 
 // 各 AI 的图标（public/icons）。单色的跟随文字颜色，用遮罩画；彩色的直接用图片。
 const MONO_LOGO = new Set(['codex', 'openai', 'ollama', 'kimi']);
-const LOGO_OF = { 'claude-code': 'claude', codex: 'codex', dsh: 'deepseek', gemini: 'gemini' };
+const LOGO_OF = { 'claude-code': 'claude', codex: 'codex', dsh: 'deepseek', 'gemini-cli': 'gemini', gemini: 'gemini' };
 const LOGO_HINT = [[/deepseek/i, 'deepseek'], [/qwen|dashscope|通义|千问/i, 'qwen'], [/kimi|moonshot/i, 'kimi'], [/zhipu|bigmodel|智谱|glm/i, 'zhipu'],
   [/ollama|:11434/i, 'ollama'], [/claude|anthropic/i, 'claude'], [/gemini/i, 'gemini'], [/openai|gpt/i, 'openai']];
 function logoKey(engineId, hint = '') {
@@ -222,11 +224,11 @@ function engineBadge(e) {
   return '<span class="badge off">未安装</span>';
 }
 function renderEngineDots() {
-  $('#engineDots').innerHTML = state.engines.map((e) => `<i class="${e.status?.ready ? 'ready' : e.status?.available ? 'warn' : ''}" title="${esc(e.label)}"></i>`).join('');
+  $('#engineDots').innerHTML = shownEngines().map((e) => `<i class="${e.status?.ready ? 'ready' : e.status?.available ? 'warn' : ''}" title="${esc(e.label)}"></i>`).join('');
 }
 function renderWelcome() {
   const none = !state.engines.some((e) => e.status?.ready);
-  $('#engineSummary').innerHTML = !none ? '' : state.engines.map((e) => `
+  $('#engineSummary').innerHTML = !none ? '' : shownEngines().map((e) => `
     <div class="engine-card"><div class="n">${markHtml(e.id, e.color)}${esc(e.label)} ${engineBadge(e)}</div>
     <div class="s">${esc(e.status?.note || '')}</div></div>`).join('');
 }
@@ -237,6 +239,7 @@ async function openEnginesModal() {
   const providers = settings.providers.map((p) => ({ ...p }));
   const cli = state.engines.filter((e) => ['claude-code', 'codex', 'dsh'].includes(e.id));
   const gem = engineOf('gemini');
+  const gemCli = shownEngines().find((e) => e.id === 'gemini-cli');
   const PRESETS = [
     ['DeepSeek', 'https://api.deepseek.com', 'deepseek-chat'],
     ['通义千问', 'https://dashscope.aliyuncs.com/compatible-mode/v1', 'qwen-plus'],
@@ -260,17 +263,20 @@ async function openEnginesModal() {
       </div></div>`;
   };
 
-  const html = `<div class="modal-inner">
-    <div class="modal-head"><h3>连接与登录</h3><button class="icon-btn" type="button" data-act="close">${ICON.close}</button></div>
-    <div class="modal-body">
-      <div class="section-title">本机 AI 应用</div>
-      ${cli.map((e) => `<div class="conn" data-engine="${e.id}">
+  const cliHtml = (e) => `<div class="conn" data-engine="${e.id}">
         <div class="conn-head">${markHtml(e.id, e.color)}<b>${esc(e.label)}</b>${engineBadge(e)}</div>
         <div class="note">${esc(e.status?.note || '')}${e.status?.version ? `（${esc(e.status.version)}）` : ''}</div>
         ${e.status?.command ? `<span class="cmd">${esc(e.status.command)}</span>` : ''}
         <div class="grid"><label class="wide">程序位置<input data-path="${e.id}" value="${esc(settings.paths[e.id] || '')}" placeholder="${esc(e.status?.bin || '自动查找')}"></label></div>
-      </div>`).join('')}
+      </div>`;
+
+  const html = `<div class="modal-inner">
+    <div class="modal-head"><h3>连接与登录</h3><button class="icon-btn" type="button" data-act="close">${ICON.close}</button></div>
+    <div class="modal-body">
+      <div class="section-title">本机 AI 应用</div>
+      ${cli.map(cliHtml).join('')}
       <div class="section-title">Gemini</div>
+      ${gemCli ? cliHtml(gemCli) : ''}
       <div class="conn" data-engine="gemini">
         <div class="conn-head">${markHtml('gemini')}<b>Gemini API</b>${gem ? engineBadge(gem) : ''}</div>
         <div class="note">${esc(gem?.status?.note || '')}</div>
@@ -381,7 +387,7 @@ function memberEditor(container, members) {
       return `<div class="member-row" data-i="${i}" style="--c:${e.color || '#999'}">
         <div class="member-top">
           <input data-k="name" value="${esc(m.name)}" maxlength="20" placeholder="名字">
-          <select data-k="engine">${state.engines.map((x) => `<option value="${esc(x.id)}" ${x.id === m.engine ? 'selected' : ''}>${esc(x.label)}${x.status?.ready ? '' : '（未就绪）'}</option>`).join('')}</select>
+          <select data-k="engine">${state.engines.filter((x) => shownEngines().includes(x) || x.id === m.engine).map((x) => `<option value="${esc(x.id)}" ${x.id === m.engine ? 'selected' : ''}>${esc(x.label)}${x.status?.ready ? '' : '（未就绪）'}</option>`).join('')}</select>
           <input data-k="model" value="${esc(m.model || '')}" list="models-${i}" placeholder="${esc(st.defaultModel ? `默认：${st.defaultModel}` : '默认模型')}">
           <datalist id="models-${i}">${models.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('')}</datalist>
           ${effortSelect(e, m)}
@@ -419,7 +425,8 @@ function memberEditor(container, members) {
     if (b.dataset.act === 'del-member') { members.splice(+b.closest('.member-row').dataset.i, 1); render(); }
     if (b.dataset.act === 'add-member') {
       const used = new Set(members.map((m) => m.engine));
-      const e = state.engines.find((x) => x.status?.ready && !used.has(x.id)) || state.engines.find((x) => x.status?.ready) || state.engines[0];
+      const list = shownEngines();
+      const e = list.find((x) => x.status?.ready && !used.has(x.id)) || list.find((x) => x.status?.ready) || list[0];
       members.push({ engine: e.id, name: uniqueName(members, e.defaultName), model: '', effort: '', persona: '' });
       render();
     }
@@ -432,9 +439,11 @@ function uniqueName(members, base, self) {
   return name;
 }
 function defaultMembers() {
-  const prefer = ['claude-code', 'codex', 'dsh', 'gemini'];
+  // Gemini 只带一个：CLI 能用就用 CLI，否则用 API
+  const cliReady = engineOf('gemini-cli')?.status?.ready;
+  const prefer = ['claude-code', 'codex', 'dsh', cliReady ? 'gemini-cli' : 'gemini'];
   let list = state.engines.filter((e) => e.status?.ready && (prefer.includes(e.id) || e.id.startsWith('openai:')));
-  if (!list.length) list = state.engines.filter((e) => prefer.includes(e.id));
+  if (!list.length) list = shownEngines().filter((e) => prefer.includes(e.id));
   return list.slice(0, 4).map((e) => ({ engine: e.id, name: e.defaultName, model: '', effort: '', persona: '' }));
 }
 const accessChoices = (cur) => Object.entries(ACCESS).map(([k, v]) => `
@@ -490,9 +499,9 @@ async function openNewSpaceModal() {
       try { imp = await api(`/api/import/session?source=${s.source}&id=${encodeURIComponent(s.id)}`); } catch (e) { toast(e.message, 'error'); return; }
       $('#nsTitle', dlg).value = imp.title;
       if (imp.cwd) { autoFolder = imp.cwd; $('#nsFolder', dlg).value = imp.cwd; $('input[name=ws][value=folder]', dlg).checked = true; }
-      if (!members.some((m) => m.engine === imp.engine)) {
-        const e = engineOf(imp.engine);
-        members.unshift({ engine: imp.engine, name: uniqueName(members, e?.defaultName || imp.sourceLabel), model: '', effort: '', persona: '' });
+      const e = engineOf(imp.engine);
+      if (e && !members.some((m) => m.engine === imp.engine)) {
+        members.unshift({ engine: imp.engine, name: uniqueName(members, e.defaultName), model: '', effort: '', persona: '' });
         const box = $('#nsMembers', dlg);
         const fresh = box.cloneNode(false); // 成员编辑器重新绑定
         box.replaceWith(fresh);
@@ -518,7 +527,7 @@ async function openNewSpaceModal() {
         const topic = opts.mode === 'topic';
         if (topic && !opts.topic) { toast('请填写主题', 'error'); $('#impTopic', dlg).focus(); return; }
         const has = members.some((m) => m.engine === imp.engine);
-        if (!has && !topic) { toast(`导入这段对话需要一个 ${imp.sourceLabel} 成员`, 'error'); return; }
+        if (engineOf(imp.engine) && !has && !topic) { toast(`导入这段对话需要一个 ${imp.sourceLabel} 成员`, 'error'); return; }
         const folder = wsType === 'folder' ? body.workspace.path : '';
         const moved = has && imp.engine === 'claude-code' && imp.cwd && !samePath(folder, imp.cwd) && !(topic && folder && subOf(folder, imp.cwd));
         if (moved && !confirm('共享文件夹和原对话的不同，原对话里的文件路径可能对不上。继续吗？')) return;
@@ -1786,8 +1795,12 @@ function openSessionPicker({ cwd } = {}) {
     dlg.innerHTML = `<div class="modal-inner">
       <div class="modal-head"><h3>选择对话</h3><button class="icon-btn" type="button" data-act="close">${ICON.close}</button></div>
       <div class="picker-bar"><input id="pkQ" placeholder="搜索"><div class="seg" id="pkScope" hidden>
-        <button type="button" data-scope="here">同文件夹</button><button type="button" data-scope="all">全部</button></div></div>
-      <div class="modal-body picker-list" id="pkList"><span class="typing"><i></i><i></i><i></i></span></div></div>`;
+        <button type="button" data-scope="here">同文件夹</button><button type="button" data-scope="all">全部</button></div>
+        <button class="btn sm" type="button" data-act="paste">粘贴或选文件</button></div>
+      <div class="modal-body picker-list" id="pkList"><span class="typing"><i></i><i></i><i></i></span></div>
+      <div class="modal-body pk-paste" id="pkPaste" hidden><textarea id="pkText" placeholder="把对话粘贴到这里，或把导出的文件拖进来"></textarea>
+        <div class="pk-paste-foot"><button class="btn" type="button" data-act="file">选择文件…</button><button class="btn primary" type="button" data-act="paste-go">下一步</button></div>
+        <input type="file" id="pkFile" hidden accept=".json,.jsonl,.md,.markdown,.txt,.zip"></div></div>`;
     document.body.appendChild(dlg);
     let result = null;
     dlg.addEventListener('close', () => { dlg.remove(); resolve(result); });
@@ -1800,18 +1813,58 @@ function openSessionPicker({ cwd } = {}) {
       const list = all.filter((s) => (scope === 'all' || samePath(s.cwd, cwd)) && (!q || `${s.title} ${s.cwd}`.toLowerCase().includes(q))).slice(0, 200);
       $$('#pkScope button', dlg).forEach((b) => b.classList.toggle('active', b.dataset.scope === scope));
       $('#pkList', dlg).innerHTML = list.length ? list.map((s) => `<button type="button" class="pk-row" data-id="${esc(s.id)}" data-source="${esc(s.source)}" style="--c:${engineOf(s.engine)?.color || '#999'}">
-          <b>${esc(s.title)}</b><span><i></i>${esc(s.sourceLabel)} · ${esc(folderName(s.cwd))} · ${relTime(s.updatedAt)}</span></button>`).join('')
+          <b>${esc(s.title)}</b><span><i></i>${[esc(s.sourceLabel), esc(folderName(s.cwd)), relTime(s.updatedAt)].filter(Boolean).join(' · ')}</span></button>`).join('')
         : '<div class="empty-list">没有对话</div>';
     };
-    dlg.addEventListener('input', render);
+    const showPaste = (on) => {
+      $('#pkPaste', dlg).hidden = !on;
+      $('#pkList', dlg).hidden = on;
+      $('.picker-bar', dlg).hidden = on;
+      if (on) $('#pkText', dlg).focus();
+    };
+    // 粘贴的文字或文件交给后台整理；一个导出文件里有多段对话时，回到列表里选一段
+    const stage = async (body) => {
+      const go = $('[data-act=paste-go]', dlg);
+      go.disabled = true;
+      try {
+        const list = await api('/api/import/paste', { method: 'POST', body });
+        if (list.length === 1) { result = list[0]; dlg.close(); return; }
+        all = list;
+        scope = 'all';
+        $('#pkScope', dlg).hidden = true;
+        $('[data-act=paste]', dlg).hidden = true;
+        $('#pkQ', dlg).value = '';
+        showPaste(false);
+        render();
+      } catch (e) { toast(e.message, 'error'); } finally { go.disabled = false; }
+    };
+    const stageFile = async (file) => {
+      if (!file) return;
+      const buf = new Uint8Array(await file.arrayBuffer());
+      let bin = '';
+      for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+      stage({ data: btoa(bin), name: file.name });
+    };
+    dlg.addEventListener('input', (ev) => { if (ev.target.id === 'pkQ') render(); });
+    dlg.addEventListener('change', (ev) => { if (ev.target.id === 'pkFile') stageFile(ev.target.files[0]); });
+    dlg.addEventListener('dragover', (ev) => ev.preventDefault());
+    dlg.addEventListener('drop', (ev) => { ev.preventDefault(); showPaste(true); stageFile(ev.dataTransfer.files[0]); });
     dlg.addEventListener('click', (ev) => {
       if (ev.target.closest('[data-act=close]')) { dlg.close(); return; }
+      if (ev.target.closest('[data-act=paste]')) { showPaste(true); return; }
+      if (ev.target.closest('[data-act=file]')) { $('#pkFile', dlg).click(); return; }
+      if (ev.target.closest('[data-act=paste-go]')) {
+        const text = $('#pkText', dlg).value;
+        if (text.trim()) stage({ text }); else $('#pkText', dlg).focus();
+        return;
+      }
       const sc = ev.target.closest('[data-scope]');
       if (sc) { scope = sc.dataset.scope; render(); return; }
       const row = ev.target.closest('.pk-row');
       if (row) { result = all.find((s) => s.id === row.dataset.id && s.source === row.dataset.source); dlg.close(); }
     });
     api('/api/import/sessions').then((list) => {
+      if ($('[data-act=paste]', dlg).hidden) return; // 已经换成了文件里的对话
       all = list;
       if (cwd && all.some((s) => samePath(s.cwd, cwd))) { scope = 'here'; $('#pkScope', dlg).hidden = false; }
       render();
@@ -1829,8 +1882,9 @@ function importOptionsHtml(d, { members = null, cwd = '' } = {}) {
   if (members) {
     const busy = (m) => claude && !!state.space?.memberState?.[m.id]?.importId;
     const same = members.filter((m) => m.engine === d.engine && !busy(m));
-    const label = engineOf(d.engine)?.defaultName || d.sourceLabel;
-    extra += `<div class="field"><div class="label">对应成员</div><select id="impMember">${same.map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}<option value="">新加一个 ${esc(label)}</option><option value="none">不加</option></select></div>`;
+    const label = engineOf(d.engine)?.defaultName;
+    // 来源在 Agenda 里没有对应的 AI 类型（粘贴的、Trae 等）时，只导入文字，不选成员
+    if (label) extra += `<div class="field"><div class="label">对应成员</div><select id="impMember">${same.map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}<option value="">新加一个 ${esc(label)}</option><option value="none">不加</option></select></div>`;
     const others = [...members.filter((m) => m.engine !== d.engine), ...members.filter((m) => m.engine === d.engine)];
     if (others.length) extra += `<div class="field" id="impWriterRow" data-claude="${claude ? 1 : ''}"><div class="label">由谁整理</div><select id="impWriter">${others.map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></div>`;
   }
