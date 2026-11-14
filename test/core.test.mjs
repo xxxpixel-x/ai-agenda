@@ -226,10 +226,10 @@ test('topic briefs only expose approved changes, and support acceptance and reve
   space.emitEvent({ type: 'files_changed', changes });
   assert.equal(brief.briefPending.after, 'AI 修改版本');
   assert.ok(!importsBackground(space.data.messages).includes('AI 修改版本'));
-  resolveBrief(space, brief.id, 'accept');
+  resolveBrief(space.importHost, brief.id, 'accept');
   assert.ok(importsBackground(space.data.messages, { briefs: versions }).includes('AI 修改版本'));
   space.emitEvent({ type: 'files_changed', changes: space.ws.write(brief.brief, '待撤销', 'Bob') });
-  resolveBrief(space, brief.id, 'revert');
+  resolveBrief(space.importHost, brief.id, 'revert');
   assert.equal(space.ws.read(brief.brief), 'AI 修改版本');
   assert.equal(brief.briefPending, undefined);
   space.writeFile(brief.brief, '用户修改');

@@ -29,7 +29,7 @@ for (const activity of ['chat', 'planning', 'worker', 'topic import']) {
     if (activity === 'chat') space.userMessage('@Alice 等待中止');
     else if (activity === 'topic import') {
       space.data.messages.push({ id: 'topic-a', kind: 'import', mode: 'topic', status: 'error', topic: '接口', name: 'Bob', sourceLabel: 'Codex', writerId: 'member-b', entries: [{ role: 'user', text: '整理接口', acts: [] }] });
-      recompressImport(space, 'topic-a');
+      recompressImport(space.importHost, 'topic-a');
     } else {
       await space.startRun({ objective: '等待中止', discuss: false });
       if (activity === 'worker') {

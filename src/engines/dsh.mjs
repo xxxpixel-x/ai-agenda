@@ -13,6 +13,7 @@ export const meta = {
   vendor: 'DeepSeek',
   defaultName: 'DeepSeek',
   color: '#4d6bfe',
+  logo: 'deepseek',
   get models() { return [['', tr('默认')]]; },
   efforts: ['', 'off', 'low', 'medium', 'high', 'xhigh', 'max'], // 具体型号支持哪些，detect 时从型号目录查
   resume: true, // 每个成员复用同一个 dsh 会话，避免在 DeepSeek Harness 里留下一大串会话

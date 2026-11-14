@@ -171,7 +171,7 @@ test('a pasted conversation imports as text only, without adding a member', (t) 
   assert.equal(readSession('pasted', s.id).sourceLabel, 'Gemini');
   assert.ok(fs.existsSync(path.join(root, 'data', 'imports', `${s.id}.json`)), '用到时存进数据目录，重新整理时还能读');
   const before = space.data.members.length;
-  const msg = importSession(space, { source: 'pasted', sessionId: s.id });
+  const msg = importSession(space.importHost, { source: 'pasted', sessionId: s.id });
   assert.equal(space.data.members.length, before);
   assert.equal(msg.memberId, null);
   assert.equal(msg.mode, 'full');

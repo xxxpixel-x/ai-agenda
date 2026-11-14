@@ -19,7 +19,9 @@ Electron 主进程启动仅监听 `127.0.0.1` 的 HTTP 服务，并以随机端�
 | `electron/main.cjs` | 桌面生命周期、本机服务、系统代理、系统加密 |
 | `electron/preload.cjs` | 仅向界面暴露文件夹选择能力 |
 | `src/app-server.mjs` | 静态资源、JSON API、SSE、Host 与跨站请求检查 |
-| `src/space.mjs` | 成员配置、聊天队列、点名与停止规则、任务宿主接口 |
+| `src/space.mjs` | 空间数据、保存与事件；给聊天、任务、导入各提供一个宿主接口 |
+| `src/chat.mjs` | 聊天队列、点名与停止规则、单次发言与会话续接、命令审批 |
+| `src/members.mjs` | 成员校验与起名 |
 | `src/taskrun.mjs` | 规划、依赖调度、审查、退回、冲突处理、总结与合并 |
 | `src/turn-runner.mjs` | 聊天与任务共用的单次引擎调用、流式输出、日志和文件块 |
 | `src/prompts.mjs` / `src/task-prompts.mjs` | 聊天与任务的提示词、标记和计划解析 |
@@ -29,9 +31,11 @@ Electron 主进程启动仅监听 `127.0.0.1` 的 HTTP 服务，并以随机端�
 | `src/imports.mjs` | 导入方式、摘要、主题简报、补导和背景版本 |
 | `src/importers/` | 只读解析外部工具的会话记录，以及粘贴文字和导出文件的整理（新增来源见 [importers.md](importers.md)） |
 | `src/engines/` | CLI / API 适配器与统一注册表 |
-| `public/` | 界面与静态素材 |
+| `public/` | 界面与静态素材：`app.js` 是入口（路由与启动），各部分在 `public/js/`（`util.js` 是工具和全局状态，不依赖其他模块） |
 
-`TaskRun` 通过 `Space.createRunHost()` 提供的接口访问空间，完成后发出 `done` 事件；空间负责把总结写入聊天。
+`Chat`、`TaskRun` 和导入流程分别通过 `Space.createChatHost()`、`createRunHost()`、`createImportHost()` 提供的接口访问空间，不直接碰 `Space`。`TaskRun` 完成后发出 `done` 事件，空间负责把总结写入聊天。
+
+引擎的差异都写在各自模块的 `meta` 里（`kind`、`resume`、`approvals`、`continuesImports`、`logo` 等），注册表、导入和界面只看这些字段，不按具体引擎 id 判断。
 
 ## 引擎接口
 

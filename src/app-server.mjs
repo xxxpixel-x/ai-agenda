@@ -176,7 +176,7 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
     }
     // ---- 导入外部 AI 对话 ----
     if (p === '/api/import/sessions' && method === 'GET') {
-      return sendJson(res, 200, listSessions({ exclude: { ids: forkedSessionIds(spaces.values()), dir: dataDir } }));
+      return sendJson(res, 200, listSessions({ exclude: { ids: forkedSessionIds([...spaces.values()].map((s) => s.importHost)), dir: dataDir } }));
     }
     if (p === '/api/import/paste' && method === 'POST') {
       // { text } 粘贴的文字；或 { data, name } 选择的文件（base64，可以是导出的 zip）
@@ -195,7 +195,7 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
       let importError;
       if (body.import) {
         // 新建空间时从一段对话开始：对应的成员已在成员列表里，取第一个同类成员
-        try { importSession(space, { ...body.import, memberId: undefined }); } catch (e) { importError = e.message; }
+        try { importSession(space.importHost, { ...body.import, memberId: undefined }); } catch (e) { importError = e.message; }
       }
       return sendJson(res, 201, { ...space.toJSON(), importError });
     }
@@ -224,11 +224,11 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
         return sendJson(res, 200, await space.run.fileDiff(arg, url.searchParams.get('path')));
       }
       if (sub === '/events' && method === 'GET') return openSse(req, res, space);
-      if (sub === '/imports' && method === 'POST' && !arg) return sendJson(res, 201, importSession(space, await readJson(req)));
-      if (sub === '/imports' && method === 'GET' && arg && tail === '/check') return sendJson(res, 200, checkImport(space, arg));
-      if (sub === '/imports' && method === 'POST' && arg && tail === '/refresh') return sendJson(res, 200, refreshImport(space, arg));
-      if (sub === '/imports' && method === 'POST' && arg && tail === '/brief') return sendJson(res, 200, resolveBrief(space, arg, (await readJson(req)).action));
-      if (sub === '/imports' && method === 'POST' && arg && tail === '/recompress') return sendJson(res, 200, recompressImport(space, arg, (await readJson(req)).mode));
+      if (sub === '/imports' && method === 'POST' && !arg) return sendJson(res, 201, importSession(space.importHost, await readJson(req)));
+      if (sub === '/imports' && method === 'GET' && arg && tail === '/check') return sendJson(res, 200, checkImport(space.importHost, arg));
+      if (sub === '/imports' && method === 'POST' && arg && tail === '/refresh') return sendJson(res, 200, refreshImport(space.importHost, arg));
+      if (sub === '/imports' && method === 'POST' && arg && tail === '/brief') return sendJson(res, 200, resolveBrief(space.importHost, arg, (await readJson(req)).action));
+      if (sub === '/imports' && method === 'POST' && arg && tail === '/recompress') return sendJson(res, 200, recompressImport(space.importHost, arg, (await readJson(req)).mode));
       if (sub === '/approvals' && method === 'POST' && arg) {
         const { decision, note } = await readJson(req);
         return sendJson(res, 200, space.decideApproval(arg, decision, note));

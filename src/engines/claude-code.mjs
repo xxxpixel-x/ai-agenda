@@ -12,6 +12,7 @@ export const meta = {
   vendor: 'Anthropic',
   defaultName: 'Claude',
   color: '#d97757',
+  logo: 'claude', // public/icons 里的图标名
   // 命令行列不出可用型号，只能写死；列表里没有的型号（含 opus / sonnet 这类别名）可以手填
   get models() { return [
     ['', tr('默认')],
@@ -23,6 +24,7 @@ export const meta = {
   efforts: ['', 'low', 'medium', 'high', 'xhigh', 'max'],
   get capabilities() { return tr('读写共享文件、联网搜索'); },
   approvals: true, // 运行命令前可以先问你
+  continuesImports: true, // 导入它自己的对话时，对应成员复制一份原会话接着聊（runTurn 的 sessionId + fork）
 };
 
 function compareVersions(a, b) {

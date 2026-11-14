@@ -10,6 +10,7 @@ export const meta = {
   kind: 'api',
   defaultName: 'Gemini',
   color: '#4285f4',
+  logo: 'gemini',
   get models() { return [['', tr('自动选择')]]; },
   freeModel: true,
   efforts: ['', 'minimal', 'low', 'medium', 'high'], // thinkingLevel；接口不说哪个型号支持哪几档，选了不支持的会看到报错

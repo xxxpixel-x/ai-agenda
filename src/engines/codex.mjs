@@ -13,6 +13,7 @@ export const meta = {
   vendor: 'OpenAI',
   defaultName: 'Codex',
   color: '#10a37f',
+  logo: 'codex',
   get models() { return [['', tr('默认')]]; },
   freeModel: true, // 允许手动填模型名
   efforts: ['', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'], // 具体型号支持哪些，detect 时从 codex debug models 查

@@ -230,7 +230,7 @@ test('English imports retain original text and accept old Chinese topic protocol
     prompts.push(opts);
     return { text: '# Scene\nA fictional blue door.\n相关原文：1, 2' };
   };
-  const msg = importSession(space, { source: 'pasted', sessionId: staged[0].id, mode: 'topic', topic: 'Scene' });
+  const msg = importSession(space.importHost, { source: 'pasted', sessionId: staged[0].id, mode: 'topic', topic: 'Scene' });
   await until(() => space.importing, (busy) => !busy);
   assert.equal(msg.status, 'ready');
   assert.match(prompts[0].system, /in English/);
@@ -250,7 +250,7 @@ test('English imports retain original text and accept old Chinese topic protocol
     assert.match(opts.prompt, /\[No changes\]/);
     return { text: '[无需修改]' };
   };
-  refreshImport(space, msg.id);
+  refreshImport(space.importHost, msg.id);
   await until(() => space.importing, (busy) => !busy);
   assert.equal(msg.briefText, oldBrief);
 }));

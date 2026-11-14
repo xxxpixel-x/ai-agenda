@@ -13,6 +13,7 @@ export const meta = {
   vendor: 'Google',
   defaultName: 'Gemini',
   color: '#4285f4',
+  logo: 'gemini',
   hideWhenMissing: true,
   // 命令行列不出型号，只有这几个别名；具体型号名可以手填
   get models() { return [['', tr('自动')], ['pro', 'Pro'], ['flash', 'Flash'], ['flash-lite', 'Flash-Lite']]; },

@@ -1,20 +1,19 @@
 // 一个“空间”：一组 AI 成员 + 一个共享文件夹 + 一串聊天记录。
-// 发言规则：依次发言（同一时间只有一个 AI 在说话、改文件）；被 @ 的成员优先；
-// 所有成员连续表示“没有补充”，或者达到每轮来回上限，就停下来等你。
+// Space 负责数据、保存和事件，并把聊天（chat.mjs）、任务协作（taskrun.mjs）、导入（imports.mjs）
+// 接到一起：它们各自只通过 Space 给的宿主接口读写空间。
 import { t as tr, getLanguage } from './i18n.mjs';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Workspace } from './workspace.mjs';
-import { systemPrompt, turnPrompt, parseMarkers, mentionsIn, ACCESS } from './prompts.mjs';
-import { runAgentTurn } from './turn-runner.mjs';
+import { ACCESS } from './prompts.mjs';
+import { Chat } from './chat.mjs';
 import { TaskRun, preflight, cleanupRunFiles, runDir } from './taskrun.mjs';
-import { importsBackground, briefVersions, syncBriefs, resumeNote } from './imports.mjs';
-import { isPreapproved, parseCommand, normalizeAllowed } from './approvals.mjs';
+import { importsBackground, syncBriefs } from './imports.mjs';
+import { normalizeAllowed } from './approvals.mjs';
+import { normalizeMembers } from './members.mjs';
 
-const MODEL_RE = /^[a-z0-9._:\-/[\]]{0,100}$/i;
-const EFFORTS = ['', 'none', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 const str = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
 const clampInt = (v, lo, hi, d) => { const n = parseInt(v, 10); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
 
@@ -22,33 +21,6 @@ const clampInt = (v, lo, hi, d) => { const n = parseInt(v, 10); return Number.is
 export const runNeedsUser = (r) => !!r && !r.closed && (r.status === 'plan_review' || !!r.paused
   || r.tasks.some((t) => ['review', 'blocked', 'failed'].includes(t.status))
   || (r.status === 'done' && r.mode === 'git' && !r.merged && r.tasks.some((t) => t.status === 'approved')));
-
-export function normalizeMembers(input, engines) {
-  const byId = new Map(engines.map((e) => [e.id, e]));
-  const names = new Set();
-  const list = (Array.isArray(input) ? input : []).slice(0, 8).map((m, i) => {
-    const engine = byId.get(m?.engine);
-    if (!engine) throw new Error(tr('第 {0} 个成员的 AI 类型无效', [i + 1]));
-    const name = str(m.name, 20).replace(/[@\s]/g, '') || engine.defaultName;
-    if (/^(me|我)$/i.test(name)) throw new Error(tr('成员不能叫「我」'));
-    if (names.has(name)) throw new Error(tr('成员名「{0}」重复了，给它们起不同的名字', [name]));
-    names.add(name);
-    const model = str(m.model, 100);
-    if (!MODEL_RE.test(model)) throw new Error(tr('成员「{0}」的模型名不合法', [name]));
-    return {
-      id: typeof m.id === 'string' && /^[a-z0-9-]{4,40}$/i.test(m.id) ? m.id : randomUUID().slice(0, 8),
-      name,
-      engine: engine.id,
-      engineLabel: engine.label,
-      model,
-      effort: EFFORTS.includes(m.effort) ? m.effort : '',
-      persona: str(m.persona, 2000),
-      color: /^#[0-9a-f]{6}$/i.test(m.color) ? m.color : engine.color,
-    };
-  });
-  if (!list.length) throw new Error(tr('至少需要一个 AI 成员'));
-  return list;
-}
 
 export class Space extends EventEmitter {
   constructor(data, { registry, store, dataDir }) {
@@ -65,11 +37,9 @@ export class Space extends EventEmitter {
       if (m.streaming) { m.streaming = false; m.interrupted = true; }
       for (const a of m.approvals || []) if (a.status === 'pending') a.status = 'cancelled';
     }
-    this.approvals = new Map(); // 等你确认的命令：id -> { ap, msg, resolve }
     this.ws = new Workspace(this.workspacePath, path.join(this.dir, 'history.json'));
-    this.running = false;
-    this.queue = [];
-    this.current = null;
+    this.chat = new Chat(this.createChatHost());
+    this.importHost = this.createImportHost();
     this.pendingOperations = new Set();
     this.deleting = false;
     this.deleted = false;
@@ -93,6 +63,54 @@ export class Space extends EventEmitter {
       get chatRunning() { return space.running; },
       get importBackground() { return importsBackground(space.data.messages); },
       get deleting() { return space.deleting; },
+      track: (operation) => space.track(operation),
+      emit: (ev) => space.emitEvent(ev),
+      save: () => space.save(),
+    };
+  }
+
+  /** 聊天用的宿主接口：chat.mjs 只通过它读写空间，不直接碰 Space。 */
+  createChatHost() {
+    const space = this;
+    return {
+      get registry() { return space.registry; },
+      get ws() { return space.ws; },
+      get workspacePath() { return space.workspacePath; },
+      get members() { return space.data.members; },
+      get messages() { return space.data.messages; },
+      get memberState() { return space.data.memberState; },
+      get access() { return space.data.access; },
+      get maxTurns() { return space.data.maxTurns; },
+      get allowedPrograms() { return space.data.allowedPrograms; },
+      set allowedPrograms(v) { space.data.allowedPrograms = v; },
+      promptView: () => space.toJSON(),
+      assertAllowed: () => space.assertChatAllowed(),
+      track: (operation) => space.track(operation),
+      emit: (ev) => space.emitEvent(ev),
+      save: () => space.save(),
+    };
+  }
+
+  /** 导入流程用的宿主接口：imports.mjs 只通过它读写空间，不直接碰 Space。 */
+  createImportHost() {
+    const space = this;
+    return {
+      get registry() { return space.registry; },
+      get ws() { return space.ws; },
+      get workspacePath() { return space.workspacePath; },
+      get members() { return space.data.members; },
+      set members(v) { space.data.members = v; },
+      get messages() { return space.data.messages; },
+      set messages(v) { space.data.messages = v; },
+      get memberState() { return space.data.memberState; },
+      get chatRunning() { return space.running; },
+      get importing() { return space.importing; },
+      set importing(v) { space.importing = v; },
+      get importController() { return space.importController; },
+      set importController(v) { space.importController = v; },
+      get deleting() { return space.deleting; },
+      assertChatAllowed: () => space.assertChatAllowed(),
+      snapshot: () => space.toJSON(),
       track: (operation) => space.track(operation),
       emit: (ev) => space.emitEvent(ev),
       save: () => space.save(),
@@ -141,6 +159,8 @@ export class Space extends EventEmitter {
 
   get id() { return this.data.id; }
   get workspacePath() { return this.data.workspace.path; }
+  get running() { return this.chat.running; }
+  get approvals() { return this.chat.approvals; }
 
   toJSON() {
     const { runs, ...rest } = this.data;
@@ -153,9 +173,7 @@ export class Space extends EventEmitter {
         branch: r.mode === 'git' && !r.merged && r.tasks.some((t) => t.status === 'approved') ? r.git?.intBranch : null,
       })).reverse(),
       workspacePath: this.workspacePath,
-      speaking: this.current?.msg.id || null,
-      queue: this.queue.map((q) => q.memberId),
-      running: this.running,
+      ...this.chat.status,
     };
   }
 
@@ -216,265 +234,12 @@ export class Space extends EventEmitter {
     if (this.importing) throw new Error(tr('正在整理导入的对话，稍等一下'));
   }
 
-  userMessage(text) {
-    text = str(text, 20000);
-    if (!text) throw new Error(tr('消息不能为空'));
-    this.assertChatAllowed();
-    const msg = { id: randomUUID(), kind: 'user', name: tr('我'), text, ts: Date.now() };
-    this.data.messages.push(msg);
-    this.emitEvent({ type: 'message', message: msg });
-    this.save();
-
-    const mentioned = this.mentionsOfUser(text);
-    this.turns = 0;
-    this.passesInRow = 0;
-    if (mentioned.length) {
-      // 点名了：只让被点名的人回应（他们之间再互相 @ 会继续）
-      this.queue = [...mentioned.map((id) => ({ memberId: id, reason: 'mention' })), ...(this.running ? this.queue : [])];
-      if (!this.running) this.onlyQueued = true;
-    } else if (!this.running) {
-      this.onlyQueued = false;
-      this.queue = this.rotation({ includeLast: true });
-    } else {
-      this.onlyQueued = false; // 进行中插话：下一位就会看到并回应
-    }
-    this.emitState();
-    this.track(this.pump());
-    return msg;
-  }
-
-  continueDiscussion() {
-    if (this.running) return;
-    this.assertChatAllowed();
-    this.turns = 0;
-    this.passesInRow = 0;
-    this.onlyQueued = false;
-    this.queue = this.rotation({ includeLast: this.data.members.length === 1 });
-    this.track(this.pump());
-  }
-
-  /** 让某个成员发言（点头像旁的“让 TA 说”）。 */
-  ask(memberId) {
-    if (!this.data.members.some((m) => m.id === memberId)) throw new Error(tr('没有这个成员'));
-    this.assertChatAllowed();
-    this.queue = [{ memberId, reason: 'mention' }, ...this.queue.filter((q) => q.memberId !== memberId)];
-    if (!this.running) { this.turns = 0; this.passesInRow = 0; this.onlyQueued = true; }
-    this.emitState();
-    this.track(this.pump());
-  }
-
-  stop() {
-    this.stopRequested = true;
-    this.queue = [];
-    this.current?.controller.abort();
-    this.emitState();
-  }
-
-  skip() {
-    this.current?.controller.abort();
-  }
-
-  // ---------- 调度 ----------
-  mentionsOfUser(text) {
-    return mentionsIn(text, this.data.members, null);
-  }
-
-  /** 从上一位发言者之后开始，轮一圈。 */
-  rotation({ includeLast = false } = {}) {
-    const ms = this.data.members;
-    const lastAi = [...this.data.messages].reverse().find((m) => m.kind === 'ai' && !m.error);
-    const lastIdx = lastAi ? ms.findIndex((m) => m.id === lastAi.memberId) : -1;
-    const order = ms.map((_, i) => ms[(lastIdx + 1 + i) % ms.length]);
-    const list = includeLast || ms.length === 1 ? order : order.filter((m) => m.id !== lastAi?.memberId);
-    return list.map((m) => ({ memberId: m.id, reason: 'turn' }));
-  }
-
-  async pump() {
-    if (this.running) return;
-    this.running = true;
-    this.stopRequested = false;
-    this.emitState();
-    const n = this.data.members.length;
-    try {
-      while (!this.stopRequested) {
-        if (!this.queue.length) {
-          if (this.onlyQueued || n === 1) break;
-          if (this.passesInRow >= n) break;
-          this.queue = this.rotation();
-          if (!this.queue.length) break;
-        }
-        if (this.turns >= this.data.maxTurns) break;
-        const item = this.queue.shift();
-        const member = this.data.members.find((m) => m.id === item.memberId);
-        if (!member) continue;
-        const r = await this.runTurn(member, item.reason);
-        this.turns++;
-        if (r.error) break;                       // 出错就停下，等你处理
-        if (r.passed || r.done) this.passesInRow++;
-        else this.passesInRow = 0;
-        if (this.passesInRow >= n) break;
-        if (r.mentions.length) {
-          // AI 点名了别人：被点名的人接着说
-          const rest = this.queue.filter((q) => !r.mentions.includes(q.memberId));
-          this.queue = [...r.mentions.map((id) => ({ memberId: id, reason: 'mention' })), ...rest];
-        }
-        this.emitState();
-      }
-    } finally {
-      this.running = false;
-      this.queue = [];
-      this.onlyQueued = false;
-      this.save();
-      this.emitState();
-    }
-  }
-
-  async runTurn(member, reason) {
-    const api = this.registry.isApi(member.engine);
-    const state = this.data.memberState[member.id] || {};
-    const imported = state.importId ? state : null; // 接续导入对话的 Claude
-    const canResume = this.registry.supportsResume(member.engine) || !!imported;
-    const outside = this.ws.begin();
-    if (outside.length) this.emitEvent({ type: 'files_changed', changes: outside });
-    // 「可运行命令」档：能先问的 AI 每条命令先问你；问不了的只能改文件（API 型本来就不能运行命令，不受影响）
-    const asks = this.data.access === 'run' && !api && this.registry.supportsApproval(member.engine);
-    const access = this.data.access === 'run' && !api && !asks ? 'edit' : this.data.access;
-
-    const build = (resume) => ({
-      system: systemPrompt(this.toJSON(), member, { api, access, approvals: asks }) + (resume && imported
-        ? `\n${resumeNote(this.data.messages.find((m) => m.id === imported.importId) || { sourceLabel: member.engineLabel }, this.workspacePath)}\n` : ''),
-      prompt: turnPrompt(this.data, member, {
-        reason, api,
-        files: api ? this.ws.snapshot() : null,
-        since: resume ? state.seen : null,
-        background: importsBackground(this.data.messages, { from: resume ? state.seen : 0, excludeId: resume ? imported?.importId : null, briefs: resume ? state.briefs || {} : null }),
-      }),
-    });
-
-    const msg = { id: randomUUID(), kind: 'ai', memberId: member.id, name: member.name, engine: member.engine, text: '', ts: Date.now(), streaming: true, activities: [] };
-    if (member.model) msg.model = member.model;
-    const controller = new AbortController();
-    this.current = { msg, controller, member };
-    this.data.messages.push(msg);
-    this.emitEvent({ type: 'message', message: msg });
-    this.emitState();
-
-    const started = Date.now();
-    const result = { passed: false, done: false, mentions: [], error: false };
-    const call = (resume) => {
-      const { system, prompt } = build(resume);
-      return runAgentTurn(this.registry, member, {
-        system,
-        prompt,
-        cwd: this.workspacePath,
-        access,
-        sessionId: resume ? state.sessionId : undefined,
-        fork: resume && !!imported?.fork,
-        signal: controller.signal,
-        sink: msg,
-        ws: this.ws,
-        onDelta: (t) => this.emitEvent({ type: 'delta', id: msg.id, text: t }),
-        onActivity: (a) => this.emitEvent({ type: 'activity', id: msg.id, activity: a }),
-        onApproval: asks ? (req) => this.requestApproval(msg, req, controller.signal) : undefined,
-      });
-    };
-
-    try {
-      const resume = canResume && !!state.sessionId && state.seen != null;
-      let r;
-      let fellBack = false;
-      try {
-        r = await call(resume);
-      } catch (e) {
-        if (!resume || !e.resumeFailed) throw e;
-        msg.text = '';
-        fellBack = true;
-        r = await call(false); // 旧会话失效：开新会话重来
-      }
-      const mk = parseMarkers(r.text);
-      msg.text = mk.text;
-      msg.passed = mk.passed;
-      msg.done = mk.done;
-      if (r.model && !member.model) msg.model = r.model;
-      result.passed = mk.passed;
-      result.done = mk.done;
-      result.mentions = mk.passed ? [] : mentionsIn(mk.text, this.data.members, member.id);
-      if (imported && fellBack) {
-        delete this.data.memberState[member.id];
-        this.emitEvent({ type: 'notice', level: 'error', text: tr('{0} 接不上导入的原会话了，之后按普通成员发言。', [member.name]) });
-      } else if (imported) {
-        this.data.memberState[member.id] = { ...imported, sessionId: r.sessionId || imported.sessionId, fork: false, seen: this.data.messages.length, briefs: briefVersions(this.data.messages) };
-      } else if (canResume) {
-        this.data.memberState[member.id] = { sessionId: r.sessionId, seen: this.data.messages.length, briefs: briefVersions(this.data.messages) };
-      }
-    } catch (e) {
-      if (e.aborted) {
-        msg.interrupted = true;
-        msg.text = msg.text.trim();
-      } else {
-        msg.error = e.message;
-        result.error = true;
-        this.emitEvent({ type: 'notice', level: 'error', text: `${member.name}：${e.message}` });
-      }
-      if (!imported) delete this.data.memberState[member.id]; // 下次开新会话（接续导入对话的保留，下次接着试）
-    } finally {
-      this.expireApprovals(msg);
-      // 就算出错或被打断，它已经改了的文件也要记下来
-      const changes = this.ws.commit(member.name, msg.id);
-      if (changes.length) {
-        msg.changes = changes;
-        this.emitEvent({ type: 'files_changed', changes });
-      }
-      msg.streaming = false;
-      msg.durationMs = Date.now() - started;
-      this.current = null;
-      this.emitEvent({ type: 'message_done', message: msg });
-      this.save();
-    }
-    return result;
-  }
-
-  // ---------- 命令审批 ----------
-  /** AI 想运行命令：放行过的程序直接允许，否则在它的发言里出一张卡片，等你决定。 */
-  requestApproval(msg, { command }, signal) {
-    command = String(command || '').trim();
-    if (isPreapproved(command, this.data.allowedPrograms)) return Promise.resolve({ allow: true });
-    if (signal?.aborted) return Promise.resolve({ allow: false });
-    const ap = { id: randomUUID().slice(0, 8), command, programs: parseCommand(command).programs, status: 'pending', ts: Date.now() };
-    (msg.approvals ||= []).push(ap);
-    return new Promise((resolve) => {
-      this.approvals.set(ap.id, { ap, msg, resolve });
-      signal?.addEventListener('abort', () => this.settleApproval(ap.id, 'cancelled'), { once: true });
-      this.emitEvent({ type: 'approval', id: msg.id, approval: ap });
-    });
-  }
-
-  /** decision：allow / always（这些程序以后都不问）/ deny。note：附给 AI 的一句话，同意、拒绝都可以带 */
-  decideApproval(id, decision, note) {
-    const p = this.approvals.get(id);
-    if (!p) throw new Error(tr('这条请求已经处理过了'));
-    if (!['allow', 'always', 'deny'].includes(decision)) throw new Error(tr('未知的决定'));
-    if (decision === 'always') this.data.allowedPrograms = normalizeAllowed([...this.data.allowedPrograms, ...p.ap.programs]);
-    const status = { allow: 'allowed', always: 'always', deny: 'denied' }[decision];
-    this.settleApproval(id, status, str(note, 500));
-    return p.ap;
-  }
-
-  settleApproval(id, status, note = '') {
-    const p = this.approvals.get(id);
-    if (!p) return;
-    this.approvals.delete(id);
-    p.ap.status = status;
-    if (note) p.ap.note = note;
-    this.emitEvent({ type: 'approval', id: p.msg.id, approval: p.ap, allowedPrograms: this.data.allowedPrograms });
-    this.save();
-    p.resolve({ allow: status === 'allowed' || status === 'always', note });
-  }
-
-  /** 这一轮发言结束了（包括 AI 进程自己退出）：还没处理的卡片作废，不再显示“等你确认” */
-  expireApprovals(msg) {
-    for (const [id, p] of this.approvals) if (p.msg === msg) this.settleApproval(id, 'cancelled');
-  }
+  userMessage(text) { return this.chat.userMessage(text); }
+  continueDiscussion() { this.chat.continueDiscussion(); }
+  ask(memberId) { this.chat.ask(memberId); }
+  stop() { this.chat.stop(); }
+  skip() { this.chat.skip(); }
+  decideApproval(id, decision, note) { return this.chat.decideApproval(id, decision, note); }
 
   // ---------- 文件 ----------
   writeFile(rel, content) {
@@ -563,9 +328,7 @@ export class Space extends EventEmitter {
     if (this.closing) return;
     this.save();
     this.closing = true;
-    this.stopRequested = true;
-    this.queue = [];
-    this.current?.controller.abort();
+    this.chat.shutdown();
     if (this.run) { clearTimeout(this.run.timer); for (const c of this.run.controllers.values()) c.abort(); }
     this.importController?.abort();
   }
@@ -573,11 +336,7 @@ export class Space extends EventEmitter {
   emitEvent(ev) {
     if (this.deleted || this.closing) return;
     this.emit('event', ev);
-    if (ev.type === 'files_changed' && ev.changes?.length) syncBriefs(this, ev.changes); // 主题简报被改了
-  }
-
-  emitState() {
-    this.emitEvent({ type: 'state', running: this.running, speaking: this.current?.msg.id || null, queue: this.queue.map((q) => q.memberId) });
+    if (ev.type === 'files_changed' && ev.changes?.length) syncBriefs(this.importHost, ev.changes); // 主题简报被改了
   }
 
   save() {

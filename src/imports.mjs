@@ -1,22 +1,24 @@
 // 导入外部 AI 对话（Claude Code / Codex / DeepSeek Harness）到空间里。
 //
 // 导入的对话在聊天记录里是一条 kind:'import' 的消息，显示成一个折叠块。
-// 它不算普通聊天消息（不占“最近 40 条”的名额），而是作为固定背景附在每个成员的每次发言里；
+// 它不算普通聊天消息（不占聊天记录的预算），而是作为固定背景附在每个成员的每次发言里；
 // 所以要控制篇幅：按长度自动选方式（全部原文 / 早期压成摘要 / 写 handoff 文件），也可以手动改。
 //
-// 来源是 Claude Code 时，对应的 Claude 成员接着原会话继续（复制一份再接，原会话不动），
-// 它自己记得全部内容，不需要这块背景。
+// 来源 AI 能接续时（引擎 meta.continuesImports，目前是 Claude Code），对应成员接着原会话继续
+// （复制一份再接，原会话不动），它自己记得全部内容，不需要这块背景。
 // 补导：之后原对话又有新内容，追加一条 parentId 指向原块的导入消息。
 //
 // 按主题导入（mode:'topic'）：只整理和某个主题有关的内容，写成「主题简报」存进共享文件夹，
 // 背景里给的是你确认过的版本（briefText）。成员或别的软件改了简报文件，要你在导入块上「采用」才生效；
 // 你自己在文件面板里改的直接生效。补导时由整理的成员把新内容里相关的部分并进简报。
+//
+// 读写空间都通过宿主接口（见 space.mjs 的 createImportHost），参数名 host。
 import { t as tr, localizeActivity } from './i18n.mjs';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { readSession, samePath } from './importers/index.mjs';
-import { normalizeMembers } from './space.mjs';
+import { normalizeMembers, membersFull, uniqueName } from './members.mjs';
 import { systemPrompt } from './prompts.mjs';
 import { runAgentTurn } from './turn-runner.mjs';
 
@@ -70,10 +72,10 @@ export function sessionDetail(source, id) {
 }
 
 /** 接续中的 Claude 成员复制出来的会话：导入列表里不显示。 */
-export function forkedSessionIds(spaces) {
+export function forkedSessionIds(hosts) {
   const ids = new Set();
-  for (const sp of spaces) {
-    for (const st of Object.values(sp.data.memberState || {})) if (st?.importId && !st.fork && st.sessionId) ids.add(st.sessionId);
+  for (const host of hosts) {
+    for (const st of Object.values(host.memberState || {})) if (st?.importId && !st.fork && st.sessionId) ids.add(st.sessionId);
   }
   return ids;
 }
@@ -144,41 +146,34 @@ const DIGEST = {
 
 // ---------- 导入 ----------
 
-function uniqueName(members, base) {
-  let name = base;
-  for (let k = 2; members.some((m) => m.name === name); k++) name = `${base}${k}`;
-  return name;
-}
-
 /**
  * 对应的成员。memberId：指定的同类成员；'' 表示新加一个；不给就用第一个同类成员。
  * 找不到（或 Claude 成员已在接续别的对话）就新加一个。
  */
-function pickMember(space, engine, memberId) {
-  const d = space.data;
-  const busy = (m) => engine === 'claude-code' && !!d.memberState[m.id]?.importId;
+function pickMember(host, engine, memberId) {
+  const busy = (m) => host.registry.continuesImports(engine) && !!host.memberState[m.id]?.importId;
   const usable = (m) => m.engine === engine && !busy(m);
-  const chosen = memberId == null ? d.members.find(usable) : d.members.find((m) => m.id === memberId && usable(m));
+  const chosen = memberId == null ? host.members.find(usable) : host.members.find((m) => m.id === memberId && usable(m));
   if (chosen) return chosen;
-  const meta = space.registry.list().find((e) => e.id === engine);
+  const meta = host.registry.list().find((e) => e.id === engine);
   if (!meta) throw new Error(tr('Agenda 里没有对应的 AI 类型'));
-  if (d.members.length >= 8) throw new Error(tr('成员已经满 8 个了，先在设置里移除一个'));
-  d.members = normalizeMembers([...d.members, { engine, name: uniqueName(d.members, meta.defaultName) }], space.registry.list());
-  return d.members.at(-1);
+  if (membersFull(host.members)) throw new Error(tr('成员已经满 8 个了，先在设置里移除一个'));
+  host.members = normalizeMembers([...host.members, { engine, name: uniqueName(host.members, meta.defaultName) }], host.registry.list());
+  return host.members.at(-1);
 }
 
-function assertIdle(space) {
-  if (space.running) throw new Error(tr('请先停止当前讨论再导入'));
-  if (space.importing) throw new Error(tr('正在整理另一段导入的对话，稍等'));
+function assertIdle(host) {
+  if (host.chatRunning) throw new Error(tr('请先停止当前讨论再导入'));
+  if (host.importing) throw new Error(tr('正在整理另一段导入的对话，稍等'));
 }
 
 /**
  * 导入一段对话。
  * opts: { source, sessionId, mode?, fromIndex?, memberId?, writerId? }
  */
-export function importSession(space, opts = {}) {
-  assertIdle(space);
-  space.assertChatAllowed();
+export function importSession(host, opts = {}) {
+  assertIdle(host);
+  host.assertChatAllowed();
   const s = readSession(opts.source, opts.sessionId);
   if (!s.entries.length) throw new Error(tr('这段对话里没有内容'));
   const mode = MODES.includes(opts.mode) ? opts.mode : autoMode(charsOf(s.entries));
@@ -186,11 +181,11 @@ export function importSession(space, opts = {}) {
   if (mode === 'topic' && !topic) throw new Error(tr('请填写主题'));
   // 不加对应成员：来源在 Agenda 里没有对应的 AI 类型（粘贴的、Trae 等）；
   // 或者按主题导入时选了“不加”，或者新建空间时把它从成员里去掉了
-  const noMember = !space.registry.list().some((e) => e.id === s.engine)
-    || (mode === 'topic' && (opts.memberId === 'none' || (opts.memberId == null && !space.data.members.some((m) => m.engine === s.engine))));
-  const member = noMember ? null : pickMember(space, s.engine, opts.memberId);
-  const resume = !!member && s.engine === 'claude-code';
-  const members = space.data.members;
+  const noMember = !host.registry.list().some((e) => e.id === s.engine)
+    || (mode === 'topic' && (opts.memberId === 'none' || (opts.memberId == null && !host.members.some((m) => m.engine === s.engine))));
+  const member = noMember ? null : pickMember(host, s.engine, opts.memberId);
+  const resume = !!member && host.registry.continuesImports(s.engine);
+  const members = host.members;
   const writer = resume ? member : members.find((m) => m.id === opts.writerId) || members.find((m) => m.id !== member?.id) || member || members[0];
 
   const { keep, skipped, early } = mode === 'topic' ? { keep: s.entries, skipped: 0, early: [] } : plan(s.entries, mode, opts.fromIndex);
@@ -205,27 +200,27 @@ export function importSession(space, opts = {}) {
   };
   if (topic) Object.assign(msg, { topic, brief: null, briefText: null, briefVer: 0, briefCount: 0 });
 
-  const messages = space.data.messages;
+  const messages = host.messages;
   if (resume) {
-    space.data.memberState[member.id] = {
+    host.memberState[member.id] = {
       importId: msg.id, sessionId: s.id, fork: true,
       seen: Math.max(0, messages.length - PRIOR_CHAT),
-      note: resumeNote(s, space.workspacePath),
+      note: resumeNote(s, host.workspacePath),
     };
   }
   messages.push(msg);
-  space.save();
-  space.emitEvent({ type: 'snapshot', space: space.toJSON() }); // 成员可能变了
-  if (mode === 'topic') space.track(writeTopic(space, msg, writer));
-  else if (msg.status === 'writing') space.track(digest(space, msg, mode === 'handoff' ? s.entries : early, writer));
+  host.save();
+  host.emit({ type: 'snapshot', host: host.snapshot() }); // 成员可能变了
+  if (mode === 'topic') host.track(writeTopic(host, msg, writer));
+  else if (msg.status === 'writing') host.track(digest(host, msg, mode === 'handoff' ? s.entries : early, writer));
   return msg;
 }
 
 /** 让 AI 写摘要 / handoff（后台进行，写好后更新折叠块）。 */
-async function digest(space, msg, entries, writer) {
-  space.importing = true;
-  const controller = space.importController = new AbortController();
-  const state = space.data.memberState[writer.id];
+async function digest(host, msg, entries, writer) {
+  host.importing = true;
+  const controller = host.importController = new AbortController();
+  const state = host.memberState[writer.id];
   const resume = state?.importId === msg.id && !!state.sessionId;
   const ask = DIGEST[msg.mode === 'handoff' ? 'handoff' : 'summary'];
   let prompt;
@@ -238,23 +233,23 @@ async function digest(space, msg, entries, writer) {
     prompt = tr('下面是用户和 {0} 的一段对话（「我」是用户，「{1}」是 {2}）。\n\n{3}\n\n# 对话\n{4}', [msg.sourceLabel, msg.name, msg.sourceLabel, ask, entriesText(entries, msg.name)]);
   }
   const system = resume
-    ? `${systemPrompt(space.toJSON(), writer, { api: space.registry.isApi(writer.engine) })}\n${resumeNote(msg, space.workspacePath)}`
+    ? `${systemPrompt(host.snapshot(), writer, { api: host.registry.isApi(writer.engine) })}\n${resumeNote(msg, host.workspacePath)}`
     : tr('你在帮用户整理导入的对话，照要求输出整理好的文字，不要加别的话。');
   const sink = { text: '', activities: [] };
   try {
-    const r = await runAgentTurn(space.registry, writer, {
-      system, prompt, cwd: space.workspacePath, access: 'read', sink, signal: controller.signal,
+    const r = await runAgentTurn(host.registry, writer, {
+      system, prompt, cwd: host.workspacePath, access: 'read', sink, signal: controller.signal,
       sessionId: resume ? state.sessionId : undefined,
       fork: resume && state.fork,
     });
-    if (space.deleting) return;
+    if (host.deleting) return;
     const text = String(r.text || '').trim();
     if (!text) throw new Error(tr('{0} 没有写出内容', [writer.name]));
     if (resume && r.sessionId) Object.assign(state, { sessionId: r.sessionId, fork: false });
     if (msg.mode === 'handoff') {
-      msg.handoff = handoffPath(space, msg.title);
-      const changes = space.ws.write(msg.handoff, `${text}\n`, writer.name);
-      if (changes.length) space.emitEvent({ type: 'files_changed', changes });
+      msg.handoff = handoffPath(host, msg.title);
+      const changes = host.ws.write(msg.handoff, `${text}\n`, writer.name);
+      if (changes.length) host.emit({ type: 'files_changed', changes });
     } else {
       msg.summary = text;
     }
@@ -263,12 +258,12 @@ async function digest(space, msg, entries, writer) {
   } catch (e) {
     msg.status = 'error';
     msg.error = tr('{0} 没有写成{1}：{2}', [writer.name, msg.mode === 'handoff' ? tr('交接文档') : tr('摘要'), e.message]);
-    space.emitEvent({ type: 'notice', level: 'error', text: msg.error });
+    host.emit({ type: 'notice', level: 'error', text: msg.error });
   } finally {
-    space.importing = false;
-    space.importController = null;
-    space.save();
-    space.emitEvent({ type: 'message_done', message: msg });
+    host.importing = false;
+    host.importController = null;
+    host.save();
+    host.emit({ type: 'message_done', message: msg });
   }
 }
 
@@ -303,18 +298,18 @@ function parseTopicReply(text, entries, name) {
   return { body, quotes: nums.sort((a, b) => a - b).map((n) => quoteOf(entries[n - 1], name)).join('\n\n') };
 }
 
-function topicPath(space, topic) {
+function topicPath(host, topic) {
   const base = tr('主题-{0}', [safeName(topic) || tr('简报')]);
   let name = `${base}.md`;
-  for (let k = 2; fs.existsSync(path.join(space.workspacePath, name)); k++) name = `${base}（${k}）.md`;
+  for (let k = 2; fs.existsSync(path.join(host.workspacePath, name)); k++) name = `${base}（${k}）.md`;
   return name;
 }
 
 /** 写主题简报（后台进行）。还没有简报时整理全部原文；已有简报时只把 briefCount 之后的新内容并进去。 */
-async function writeTopic(space, msg, writer) {
-  space.importing = true;
-  const controller = space.importController = new AbortController();
-  const state = space.data.memberState[writer.id];
+async function writeTopic(host, msg, writer) {
+  host.importing = true;
+  const controller = host.importController = new AbortController();
+  const state = host.memberState[writer.id];
   const resume = state?.importId === msg.id && !!state.sessionId;
   const update = msg.briefText != null && msg.briefCount > 0;
   const from = update ? msg.briefCount : 0;
@@ -331,30 +326,30 @@ async function writeTopic(space, msg, writer) {
     prompt = tr('下面是用户和 {0} 的一段对话（「我」是用户，「{1}」是 {2}），每条前面有编号。\n\n{3}\n\n{4}\n\n# 对话\n{5}', [msg.sourceLabel, msg.name, msg.sourceLabel, topicAsk(msg.topic), quoteAsk(), numbered]);
   }
   const system = resume
-    ? `${systemPrompt(space.toJSON(), writer, { api: space.registry.isApi(writer.engine) })}\n${resumeNote(msg, space.workspacePath)}`
+    ? `${systemPrompt(host.snapshot(), writer, { api: host.registry.isApi(writer.engine) })}\n${resumeNote(msg, host.workspacePath)}`
     : tr('你在帮用户整理导入的对话，照要求输出整理好的文字，不要加别的话。');
   const sink = { text: '', activities: [] };
   try {
-    const r = await runAgentTurn(space.registry, writer, {
-      system, prompt, cwd: space.workspacePath, access: 'read', sink, signal: controller.signal,
+    const r = await runAgentTurn(host.registry, writer, {
+      system, prompt, cwd: host.workspacePath, access: 'read', sink, signal: controller.signal,
       sessionId: resume ? state.sessionId : undefined,
       fork: resume && state.fork,
     });
-    if (space.deleting) return;
+    if (host.deleting) return;
     const text = String(r.text || '').trim();
     if (!text) throw new Error(tr('{0} 没有写出内容', [writer.name]));
     if (resume && r.sessionId) Object.assign(state, { sessionId: r.sessionId, fork: false });
     if (update && /\[(?:无需修改|No changes)\]/i.test(text) && text.length < 32) {
-      space.emitEvent({ type: 'notice', level: 'info', text: tr('新内容和「{0}」无关，简报没有改', [msg.topic]) });
+      host.emit({ type: 'notice', level: 'info', text: tr('新内容和「{0}」无关，简报没有改', [msg.topic]) });
     } else {
       const { body, quotes } = parseTopicReply(text, msg.entries, msg.name);
       const allQuotes = [old?.quotes, quotes].filter(Boolean).join('\n\n');
       const brief = `${body}${allQuotes ? `\n\n${tr(QUOTES_HEAD)}\n\n${allQuotes}` : ''}\n`;
-      msg.brief ||= topicPath(space, msg.topic);
+      msg.brief ||= topicPath(host, msg.topic);
       Object.assign(msg, { briefText: brief, briefVer: (msg.briefVer || 0) + 1 });
       delete msg.briefPending;
-      const changes = space.ws.write(msg.brief, brief, writer.name);
-      if (changes.length) space.emitEvent({ type: 'files_changed', changes });
+      const changes = host.ws.write(msg.brief, brief, writer.name);
+      if (changes.length) host.emit({ type: 'files_changed', changes });
     }
     msg.briefCount = msg.entries.length;
     msg.status = 'ready';
@@ -362,12 +357,12 @@ async function writeTopic(space, msg, writer) {
   } catch (e) {
     msg.status = 'error';
     msg.error = tr('{0} 没有写成主题简报：{1}', [writer.name, e.message]);
-    space.emitEvent({ type: 'notice', level: 'error', text: msg.error });
+    host.emit({ type: 'notice', level: 'error', text: msg.error });
   } finally {
-    space.importing = false;
-    space.importController = null;
-    space.save();
-    space.emitEvent({ type: 'message_done', message: msg });
+    host.importing = false;
+    host.importController = null;
+    host.save();
+    host.emit({ type: 'message_done', message: msg });
   }
 }
 
@@ -378,18 +373,18 @@ export function topicFolder(dir, imp) {
   if (s.cwd && samePath(path.dirname(path.resolve(dir)), s.cwd)) fs.mkdirSync(dir);
 }
 
-const readOrNull = (space, rel) => { try { return space.ws.read(rel); } catch { return null; } };
+const readOrNull = (host, rel) => { try { return host.ws.read(rel); } catch { return null; } };
 
 /**
  * 共享文件夹有改动时调用：你改的简报直接生效；成员或别的软件改的先挂起，等你采用。
  * 简报文件被删掉并采用后（briefText 为 null），这块就不再跟踪。
  */
-export function syncBriefs(space, changes) {
-  for (const m of space.data.messages) {
+export function syncBriefs(host, changes) {
+  for (const m of host.messages) {
     if (m.kind !== 'import' || m.mode !== 'topic' || !m.brief || m.briefText == null) continue;
     const c = changes.findLast((x) => x.path === m.brief);
     if (!c) continue;
-    const cur = readOrNull(space, m.brief);
+    const cur = readOrNull(host, m.brief);
     const wasPending = !!m.briefPending;
     if (c.by === '我') {
       if (cur !== m.briefText) Object.assign(m, { briefText: cur, briefVer: m.briefVer + 1 });
@@ -399,82 +394,82 @@ export function syncBriefs(space, changes) {
     } else {
       m.briefPending = { by: c.by, after: cur };
       const who = c.by === '外部修改' ? tr('有人在软件外') : `${c.by} `;
-      if (!wasPending) space.emitEvent({ type: 'notice', level: 'info', text: tr('{0}改了简报「{1}」，在导入块上采用后才生效', [who, m.brief]) });
+      if (!wasPending) host.emit({ type: 'notice', level: 'info', text: tr('{0}改了简报「{1}」，在导入块上采用后才生效', [who, m.brief]) });
     }
-    space.save();
-    space.emitEvent({ type: 'message_done', message: m });
+    host.save();
+    host.emit({ type: 'message_done', message: m });
   }
 }
 
 /** 处理简报上待确认的修改：accept 采用（以文件为准），revert 撤销（文件恢复成确认过的版本）。 */
-export function resolveBrief(space, id, action) {
-  const m = rootOf(space, id);
+export function resolveBrief(host, id, action) {
+  const m = rootOf(host, id);
   if (m.mode !== 'topic' || !m.briefPending) throw new Error(tr('简报没有待确认的修改'));
   if (action === 'accept') {
-    Object.assign(m, { briefText: readOrNull(space, m.brief), briefVer: m.briefVer + 1 });
+    Object.assign(m, { briefText: readOrNull(host, m.brief), briefVer: m.briefVer + 1 });
     delete m.briefPending;
-    space.save();
-    space.emitEvent({ type: 'message_done', message: m });
+    host.save();
+    host.emit({ type: 'message_done', message: m });
   } else if (action === 'revert') {
-    if (space.running) throw new Error(tr('讨论进行中，先停止再撤销'));
-    const changes = space.ws.write(m.brief, m.briefText, '我');
-    space.emitEvent({ type: 'files_changed', changes }); // syncBriefs 会清掉挂起
+    if (host.chatRunning) throw new Error(tr('讨论进行中，先停止再撤销'));
+    const changes = host.ws.write(m.brief, m.briefText, '我');
+    host.emit({ type: 'files_changed', changes }); // syncBriefs 会清掉挂起
   } else {
     throw new Error(tr('未知操作：{0}', [action]));
   }
   return m;
 }
 
-function handoffPath(space, title) {
+function handoffPath(host, title) {
   const base = tr('交接-{0}', [String(title).replace(/[\\/:*?"<>|\s]+/g, ' ').trim().slice(0, 40) || tr('对话')]);
   let name = `${base}.md`;
-  for (let k = 2; fs.existsSync(path.join(space.workspacePath, name)); k++) name = `${base}（${k}）.md`;
+  for (let k = 2; fs.existsSync(path.join(host.workspacePath, name)); k++) name = `${base}（${k}）.md`;
   return name;
 }
 
 // ---------- 补导 ----------
 
-const writerOf = (space, root) => space.data.members.find((x) => x.id === root.writerId) || space.data.members.find((x) => x.id === root.memberId) || space.data.members[0];
+const writerOf = (host, root) => host.members.find((x) => x.id === root.writerId) || host.members.find((x) => x.id === root.memberId) || host.members[0];
 
-const chainOf = (space, rootId) => space.data.messages.filter((m) => m.kind === 'import' && (m.id === rootId || m.parentId === rootId));
+const chainOf = (host, rootId) => host.messages.filter((m) => m.kind === 'import' && (m.id === rootId || m.parentId === rootId));
 
-function rootOf(space, id) {
-  const m = space.data.messages.find((x) => x.id === id && x.kind === 'import');
+function rootOf(host, id) {
+  const m = host.messages.find((x) => x.id === id && x.kind === 'import');
   if (!m) throw Object.assign(new Error(tr('找不到这段导入的对话')), { status: 404 });
-  return m.parentId ? rootOf(space, m.parentId) : m;
+  return m.parentId ? rootOf(host, m.parentId) : m;
 }
 
 /** 原对话在上次导入之后的新内容。 */
-function newEntries(space, root) {
-  const last = chainOf(space, root.id).at(-1);
+function newEntries(host, root) {
+  const last = chainOf(host, root.id).at(-1);
   const s = readSession(root.source, root.sessionId);
   let i = s.entries.findIndex((e) => e.key === last.lastKey);
   if (i < 0) i = s.entries.findLastIndex((e) => e.ts && e.ts <= last.lastTs);
   return { s, fresh: s.entries.slice(i + 1) };
 }
 
-export function checkImport(space, id) {
-  const root = rootOf(space, id);
-  try { return { newCount: newEntries(space, root).fresh.length }; } catch { return { newCount: 0 }; }
+export function checkImport(host, id) {
+  const root = rootOf(host, id);
+  try { return { newCount: newEntries(host, root).fresh.length }; } catch { return { newCount: 0 }; }
 }
 
-export function refreshImport(space, id) {
-  assertIdle(space);
-  const root = rootOf(space, id);
+export function refreshImport(host, id) {
+  assertIdle(host);
+  const root = rootOf(host, id);
   if (root.mode === 'topic') {
     if (root.status !== 'ready') throw new Error(tr('简报还在整理，稍等'));
     if (root.briefPending) throw new Error(tr('简报上有还没确认的修改，先采用或撤销'));
     if (root.briefText == null) throw new Error(tr('简报文件已经删除了，想继续的话重新导入一次'));
   }
-  const { s, fresh } = newEntries(space, root);
+  const { s, fresh } = newEntries(host, root);
   if (!fresh.length) return { added: 0, grown: false };
   const last = s.entries.at(-1);
   if (root.mode === 'topic') {
     root.entries.push(...fresh);
     Object.assign(root, { total: root.entries.length, lastKey: last.key, lastTs: last.ts, status: 'writing' });
-    space.save();
-    space.emitEvent({ type: 'message_done', message: root });
-    space.track(writeTopic(space, root, writerOf(space, root)));
+    host.save();
+    host.emit({ type: 'message_done', message: root });
+    host.track(writeTopic(host, root, writerOf(host, root)));
     return { added: fresh.length, grown: false };
   }
   const msg = {
@@ -483,41 +478,41 @@ export function refreshImport(space, id) {
     memberId: root.memberId, name: root.name, mode: 'full', skipped: 0, entries: fresh, total: fresh.length,
     lastKey: last.key, lastTs: last.ts, status: 'ready',
   };
-  space.data.messages.push(msg);
-  space.save();
-  space.emitEvent({ type: 'message', message: msg });
-  const raw = charsOf(chainOf(space, root.id).flatMap((m) => m.entries));
+  host.messages.push(msg);
+  host.save();
+  host.emit({ type: 'message', message: msg });
+  const raw = charsOf(chainOf(host, root.id).flatMap((m) => m.entries));
   return { added: fresh.length, grown: raw > (root.mode === 'handoff' ? LIMIT.recentHandoff : LIMIT.short) };
 }
 
 /** 重新整理（变长了要压缩，或者摘要没写成要重试）：原块按新方式重做，补导的块并进来。 */
-export function recompressImport(space, id, mode) {
-  assertIdle(space);
-  const root = rootOf(space, id);
+export function recompressImport(host, id, mode) {
+  assertIdle(host);
+  const root = rootOf(host, id);
   if (root.mode === 'topic') { // 简报没写成：重试
     if (root.status !== 'error') return root;
     root.status = 'writing';
     delete root.error;
-    space.save();
-    space.emitEvent({ type: 'message_done', message: root });
-    space.track(writeTopic(space, root, writerOf(space, root)));
+    host.save();
+    host.emit({ type: 'message_done', message: root });
+    host.track(writeTopic(host, root, writerOf(host, root)));
     return root;
   }
-  const chain = chainOf(space, root.id);
+  const chain = chainOf(host, root.id);
   const s = readSession(root.source, root.sessionId);
   let end = s.entries.findIndex((e) => e.key === chain.at(-1).lastKey);
   if (end < 0) end = s.entries.length - 1;
   const entries = s.entries.slice(0, end + 1);
   const m = MODES.includes(mode) && mode !== 'from' ? mode : autoMode(charsOf(entries));
   const { keep, skipped, early } = plan(entries, m, 0);
-  space.data.messages = space.data.messages.filter((x) => x.parentId !== root.id);
+  host.messages = host.messages.filter((x) => x.parentId !== root.id);
   Object.assign(root, { mode: m, skipped, entries: keep, total: entries.length, lastKey: entries.at(-1).key, lastTs: entries.at(-1).ts });
   delete root.summary; delete root.handoff; delete root.error;
   root.status = early.length || m === 'handoff' ? 'writing' : 'ready';
-  space.save();
-  space.emitEvent({ type: 'snapshot', space: space.toJSON() });
+  host.save();
+  host.emit({ type: 'snapshot', host: host.snapshot() });
   if (root.status === 'writing') {
-    space.track(digest(space, root, m === 'handoff' ? entries : early, writerOf(space, root)));
+    host.track(digest(host, root, m === 'handoff' ? entries : early, writerOf(host, root)));
   }
   return root;
 }

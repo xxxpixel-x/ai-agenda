@@ -5,7 +5,8 @@
 //   runTurn(opts) -> { text, sessionId? }   流式内容通过 onDelta，工具动作通过 onActivity
 //     meta.approvals 为 true 的引擎：opts.onApproval({ command }) 存在时，运行命令前先 await 它，
 //     得到 { allow, reason } 再决定运行还是拒绝（reason 转告 AI）
-// 引擎的能力写在它自己模块的 meta 里：kind（'cli' | 'api'）、resume（能否续接会话）等，
+// 引擎的能力写在它自己模块的 meta 里：kind（'cli' | 'api'）、resume（能否续接会话）、
+// continuesImports（能接着导入的原会话聊）、logo（界面图标）等，
 // 注册表只看 meta，不按具体 id 做判断。
 // 以后要接新的 AI：在 engines/ 下加一个模块，再在下面 ENGINES 里加一行。
 import { t as tr, getLanguage } from '../i18n.mjs';
@@ -83,7 +84,8 @@ export function createRegistry(settings, { mock: mockMode = false } = {}) {
     if (mockMode) {
       // 演示模式：外观照搬内置的几种 AI，实际都由演示引擎回答
       return ENGINES.filter((e) => e.builtin).flatMap((e) => e.instances(settings.get())).map((m) => ({
-        ...mock.meta, id: m.id, label: tr('演示 · {0}', [m.defaultName]), defaultName: m.defaultName, color: m.color, models: m.models, efforts: m.efforts,
+        ...mock.meta, id: m.id, label: tr('演示 · {0}', [m.defaultName]), defaultName: m.defaultName, color: m.color, logo: m.logo, kind: m.kind, models: m.models, efforts: m.efforts,
+        continuesImports: m.continuesImports, hideWhenMissing: m.hideWhenMissing,
       }));
     }
     return ENGINES.flatMap((e) => e.instances(settings.get())).map((m) => ({ ...m }));
@@ -122,6 +124,8 @@ export function createRegistry(settings, { mock: mockMode = false } = {}) {
   const supportsResume = (engineId) => !!moduleOf(engineId)?.meta?.resume;
   // 能不能在运行命令前停下来问你（runTurn 收到 onApproval 时）
   const supportsApproval = (engineId) => !!moduleOf(engineId)?.meta?.approvals;
+  // 演示模式也按真实引擎判断，导入流程和正式版一致（演示引擎会忽略会话 ID）
+  const continuesImports = (engineId) => !!entryOf(engineId)?.module.meta.continuesImports;
 
-  return { list, detect, detectAll, runTurn, isApi, supportsResume, supportsApproval, invalidate: () => cache.clear() };
+  return { list, detect, detectAll, runTurn, isApi, supportsResume, supportsApproval, continuesImports, invalidate: () => cache.clear() };
 }
