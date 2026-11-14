@@ -99,6 +99,11 @@ export function nodeRunner() {
   return { cmd: process.execPath, env: process.versions.electron ? { ELECTRON_RUN_AS_NODE: '1' } : {} };
 }
 
+// CLI 这么久没有任何输出就算卡死。跑很久的命令（构建、测试）期间 CLI 也可能不出声，所以给得宽一些；
+// 环境变量 RT_IDLE_MINUTES 可以改，0 表示不限
+const idleMinutes = Number(process.env.RT_IDLE_MINUTES);
+export const IDLE_MS = (Number.isFinite(idleMinutes) && idleMinutes >= 0 ? idleMinutes : 20) * 60_000;
+
 export class AbortedError extends Error {
   constructor() { super('已中止'); this.aborted = true; }
 }
@@ -110,9 +115,11 @@ export class AbortedError extends Error {
  *  - 返回 { code, stderr, finished }；被 signal 中止时抛 AbortedError。
  *  - keepInput：双向通信。input 是要先发的 JSON 对象数组，stdin 保持打开，之后用 ctl.send(obj) 继续发，
  *    ctl.finish() 时关闭。用于运行中途要回答 AI 的请求（命令审批）。
+ *  - idleMs：这么久没有任何输出就结束进程、报错（卡死的 CLI 不会一直挂着）。
+ *    等你回答的时候不算：ctl.hold(promise) 期间暂停计时。
  */
 // inputDelay：过这么多毫秒再写入 stdin（给子进程留出启动时间）
-export function runJsonl({ cmd, args, env, cwd, input = '', inputDelay = 0, keepInput = false, signal, onEvent, onStderr, onRaw }) {
+export function runJsonl({ cmd, args, env, cwd, input = '', inputDelay = 0, keepInput = false, idleMs = IDLE_MS, signal, onEvent, onStderr, onRaw }) {
   return new Promise((resolve, reject) => {
     let child;
     try {
@@ -126,12 +133,15 @@ export function runJsonl({ cmd, args, env, cwd, input = '', inputDelay = 0, keep
     let stderr = '';
     let graceTimer = null;
     let inputTimer = null;
+    let idleTimer = null;
+    let holds = 0;
 
     const settle = (err, val) => {
       if (settled) return;
       settled = true;
       clearTimeout(graceTimer);
       clearTimeout(inputTimer);
+      clearTimeout(idleTimer);
       signal?.removeEventListener('abort', onAbort);
       if (err) reject(err); else resolve(val);
     };
@@ -139,7 +149,23 @@ export function runJsonl({ cmd, args, env, cwd, input = '', inputDelay = 0, keep
     if (signal?.aborted) return onAbort();
     signal?.addEventListener('abort', onAbort, { once: true });
 
+    const onIdle = () => {
+      killTree(child);
+      settle(Object.assign(new Error(`${path.basename(cmd)} 已经 ${Math.round(idleMs / 60000)} 分钟没有任何动静，停下了。可以重试。`), { stalled: true }));
+    };
+    const touch = () => {
+      clearTimeout(idleTimer);
+      if (idleMs > 0 && !holds && !settled && !finished) idleTimer = setTimeout(onIdle, idleMs);
+    };
+    touch();
+
     const ctl = {
+      /** 等 promise 期间不计“没有动静”的时间（比如等你确认一条命令） */
+      hold(promise) {
+        holds++;
+        clearTimeout(idleTimer);
+        return Promise.resolve(promise).finally(() => { holds--; touch(); });
+      },
       send(obj) {
         if (!child.stdin.writableEnded) child.stdin.write(`${JSON.stringify(obj)}\n`, 'utf8');
       },
@@ -167,6 +193,7 @@ export function runJsonl({ cmd, args, env, cwd, input = '', inputDelay = 0, keep
 
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk) => {
+      touch();
       buf += chunk;
       let i;
       while ((i = buf.indexOf('\n')) >= 0) {
@@ -176,6 +203,7 @@ export function runJsonl({ cmd, args, env, cwd, input = '', inputDelay = 0, keep
     });
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', (d) => {
+      touch();
       stderr += d;
       if (stderr.length > 12000) stderr = stderr.slice(-12000);
       onStderr?.(String(d));

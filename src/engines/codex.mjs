@@ -179,7 +179,7 @@ async function runAsking({ bin, input, model, effort, cwd, signal, onDelta, onAc
     const reply = (result) => ctl.send(rpc({ id: m.id, result }));
     if (m.method === 'item/commandExecution/requestApproval') {
       const command = (p.commandActions || []).map((a) => a.command).filter(Boolean).join(' && ') || unwrapCommand(p.command);
-      const d = await onApproval({ command });
+      const d = await ctl.hold(onApproval({ command }));
       reply({ decision: d.allow ? 'accept' : 'decline' });
       if (!d.allow && d.reason) {
         ctl.send(rpc({ id: `steer-${m.id}`, method: 'turn/steer', params: { threadId: p.threadId, expectedTurnId: p.turnId, input: [{ type: 'text', text: refusal(d.reason), text_elements: [] }] } }));

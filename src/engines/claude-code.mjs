@@ -186,7 +186,7 @@ export async function runTurn({ system, prompt, model, effort, cwd, access = 'ed
     const { tool_name: tool, input = {} } = msg.request;
     let response;
     if (COMMAND_TOOLS.has(tool)) {
-      const d = await onApproval({ command: input.command || '' });
+      const d = await ctl.hold(onApproval({ command: input.command || '' }));
       response = d.allow ? { behavior: 'allow', updatedInput: input } : { behavior: 'deny', message: refusal(d.reason) };
     } else {
       response = { behavior: 'deny', message: '超出了当前权限。' };

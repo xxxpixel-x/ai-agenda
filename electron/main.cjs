@@ -133,3 +133,5 @@ app.on('window-all-closed', () => {
   srv?.close();
   app.quit();
 });
+// 不是关窗口退出的（系统注销、任务栏“关闭窗口”之外的退出）也要结束 AI 进程；重复调用没关系
+app.on('before-quit', () => srv?.close());

@@ -289,6 +289,10 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
     port: actualPort,
     registry,
     stopAll() { for (const s of spaces.values()) s.stop(); },
-    close() { for (const s of spaces.values()) s.stop(); server.close(); },
+    // 退出时结束所有 AI 进程（包括任务协作里的），不留在后台继续花额度、改文件
+    close() {
+      for (const s of spaces.values()) s.shutdown();
+      if (server.listening) server.close();
+    },
   };
 }

@@ -547,8 +547,23 @@ export class Space extends EventEmitter {
   }
 
   // ---------- 其他 ----------
+  /**
+   * 软件退出：先把眼下的状态存好，再结束这个空间里所有正在运行的 AI（聊天、任务协作、整理导入）。
+   * 之后不再保存：被结束的发言和子任务别记成“被你中止了”，下次打开时按“软件关闭，中断了”恢复。
+   */
+  shutdown() {
+    if (this.closing) return;
+    this.save();
+    this.closing = true;
+    this.stopRequested = true;
+    this.queue = [];
+    this.current?.controller.abort();
+    if (this.run) { clearTimeout(this.run.timer); for (const c of this.run.controllers.values()) c.abort(); }
+    this.importController?.abort();
+  }
+
   emitEvent(ev) {
-    if (this.deleted) return;
+    if (this.deleted || this.closing) return;
     this.emit('event', ev);
     if (ev.type === 'files_changed' && ev.changes?.length) syncBriefs(this, ev.changes); // 主题简报被改了
   }
@@ -558,7 +573,7 @@ export class Space extends EventEmitter {
   }
 
   save() {
-    if (this.deleted) return;
+    if (this.deleted || this.closing) return;
     this.data.updatedAt = Date.now();
     try { this.store.save(this.data); } catch (e) { console.error('保存失败：', e.message); }
   }
