@@ -3,7 +3,14 @@ import { t as tr } from './i18n.mjs';
 import { randomBytes } from 'node:crypto';
 import { fileBlockRules, filesForPrompt } from './engines/file-blocks.mjs';
 
-const MAX_HISTORY = 40; // 每次最多带上最近多少条聊天记录
+// 聊天记录按字数取：超出预算时按档往后裁，同一档里开头几轮不变，模型那边的前缀缓存才用得上
+const HISTORY_CHARS = 60000;
+const HISTORY_STEP = 10;
+// 较早的 AI 长回复只留头尾（最近几条保持原样）
+const LONG_REPLY = 8000;
+const CLIP_HEAD = 4000;
+const CLIP_TAIL = 1000;
+const RECENT_FULL = 6;
 
 export const ACCESS = {
   read: { get label() { return tr('只读'); }, get desc() { return tr('你只能阅读共享文件夹里的文件，不能修改，也不能运行命令。'); } },
@@ -17,16 +24,22 @@ export const canRun = (access) => access === 'run' || access === 'full';
 export const PASS = '[跳过]';
 export const DONE = '[结束]';
 
-// ---------- 发言人标记 ----------
-// 给 AI 的输入是一整段文字，谁说的只能靠标注。每次输入换一个随机标记：
-// AI 在回复里猜不到下一次的标记，所以冒充不了别人，尤其冒充不了「我」。
+// ---------- 发言人标注 ----------
+// 给 AI 的输入是一整段文字，谁说的只能靠 <消息> 框标注。
+// 放进输入的内容（消息、导入的对话、附带的文件）里出现的 <消息> 标签一律转义，伪造的消息框进不了输入，
+// 所以聊天的消息框格式是固定的，每轮输入的前面部分保持不变，能命中缓存。
+// 任务协作的提示词是一次性的，另外再加一个每次都换的随机标记（key）。
 
 export const newKey = () => randomBytes(4).toString('hex');
+
+const TAG_RE = /<(\s*\/?\s*)(消息|message)(?=[\s>/]|$)/gi;
+export const escapeTags = (text) => String(text ?? '').replace(TAG_RE, '＜$1$2');
 
 export function said(key, who, text, user = false) {
   const speaker = user ? tr('我') : /^(me|我)$/i.test(who) ? `@${who}` : who;
   const name = String(speaker).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  return tr('<消息 来自="{0}" 标记="{1}">\n{2}\n</消息>', [name, key, text]);
+  const body = escapeTags(text);
+  return key ? tr('<消息 来自="{0}" 标记="{1}">\n{2}\n</消息>', [name, key, body]) : tr('<消息 来自="{0}">\n{1}\n</消息>', [name, body]);
 }
 
 export const keyRule = (key) => tr('chat.keyRule', [key]);
@@ -53,37 +66,50 @@ export function systemPrompt(space, member, { api = false, access: granted = spa
   ]);
 }
 
-function line(m, key) {
+function clip(text) {
+  if (text.length <= LONG_REPLY) return text;
+  return `${text.slice(0, CLIP_HEAD)}\n${tr('……（中间省略 {0} 字）……', [text.length - CLIP_HEAD - CLIP_TAIL])}\n${text.slice(-CLIP_TAIL)}`;
+}
+
+function line(m, full) {
   const who = m.kind === 'user' ? tr('我') : m.name;
   const parts = [];
   if (m.interrupted) parts.push(tr('（发言被打断）'));
-  if (m.text?.trim()) parts.push(m.text.trim());
+  const text = m.text?.trim();
+  if (text) parts.push(m.kind === 'ai' && !full ? clip(text) : text);
   if (m.changes?.length) parts.push(tr('（修改了：{0}）', [m.changes.map((c) => c.path).join('、')]));
-  return said(key, who, parts.join('\n'), m.kind === 'user');
+  return said(null, who, parts.join('\n'), m.kind === 'user');
+}
+
+/** 从第几条开始带：从最新往前装满预算，再按档对齐（最新一条总会带上）。 */
+function windowStart(lens) {
+  let i = lens.length;
+  let total = 0;
+  while (i > 0 && total + lens[i - 1] <= HISTORY_CHARS) total += lens[--i];
+  return i === 0 ? 0 : Math.min(Math.ceil(i / HISTORY_STEP) * HISTORY_STEP, lens.length - 1);
 }
 
 const visible = (m) => (m.kind === 'user' || m.kind === 'ai') && !m.passed && (m.text?.trim() || m.changes?.length);
 
 /**
- * 本次发言的输入。
+ * 本次发言的输入。固定的内容在前、每轮会变的在后，好让模型复用前缀缓存。
  *  since：只给出这条之后的新消息（续接会话时用，之前的它都记得）
- *  background：导入的外部对话（固定附带，不占聊天记录的条数）
- *  key：发言人标记，不给就新生成一个
+ *  background：导入的外部对话（固定附带，不占聊天记录的预算）
  */
-export function turnPrompt(space, member, { reason, api = false, files = null, since = null, background = '', key = newKey() } = {}) {
-  const msgs = space.messages.filter(visible);
-  let list = since != null ? space.messages.slice(since).filter(visible) : msgs.slice(-MAX_HISTORY);
-  const omitted = since == null ? msgs.length - list.length : 0;
+export function turnPrompt(space, member, { reason, api = false, files = null, since = null, background = '' } = {}) {
+  const pool = (since != null ? space.messages.slice(since) : space.messages).filter(visible);
+  const lines = pool.map((m, i) => line(m, i >= pool.length - RECENT_FULL));
+  const omitted = windowStart(lines.map((l) => l.length));
   const parts = [];
-  if (since == null) parts.push(tr('# 空间：{0}', [space.title]));
-  parts.push(keyRule(key));
-  if (background) parts.push(background);
-  if (api && files) parts.push(filesForPrompt(files));
-  if (list.length) {
-    parts.push(`# ${since != null ? tr('你上次发言之后的新消息') : tr('聊天记录')}${omitted ? tr('（更早的 {0} 条已省略）', [omitted]) : ''}\n${list.map((m) => line(m, key)).join('\n\n')}`);
+  if (since == null) parts.push(tr('# 空间：{0}', [escapeTags(space.title)]));
+  parts.push(tr('chat.rule'));
+  if (background) parts.push(escapeTags(background));
+  if (lines.length) {
+    parts.push(`# ${since != null ? tr('你上次发言之后的新消息') : tr('聊天记录')}${omitted ? tr('（更早的 {0} 条已省略）', [omitted]) : ''}\n${lines.slice(omitted).join('\n\n')}`);
   } else if (since != null) {
     parts.push(tr('# 你上次发言之后没有新消息'));
   }
+  if (api && files) parts.push(escapeTags(filesForPrompt(files)));
   if (reason === 'mention') parts.push(tr('有人 @ 了你。现在请你（「{0}」）回应。', [member.name]));
   else parts.push(tr('现在轮到你（「{0}」）发言。没有要补充的就只回复 {1}。', [member.name, tr(PASS)]));
   return parts.join('\n\n');
