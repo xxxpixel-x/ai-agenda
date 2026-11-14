@@ -27,7 +27,7 @@ No AI account? Try demo mode to see the interface and workflow.
 - **Import conversations**: automatically lists local sessions from Claude Code, Codex, DeepSeek Harness, Gemini CLI, WorkBuddy / CodeBuddy and ZCode. For other apps such as ChatGPT, Claude.ai or Gemini on the web, paste the conversation or pick an exported file. Imported Claude Code sessions can be resumed in place; long ones are summarized automatically; if the original conversation grows, you can import the new part.
 - **Topic handoff**: building a game in Claude Code and only want to hand the script to Gemini? Enter "script" and Agenda picks out just the relevant parts and writes a brief (background / decided / constraints and interfaces / open questions / relevant quotes), saved in the shared folder as `主题-<topic>.md`. Other members read only the brief, not the whole original conversation.
 - **Mixed members**: command-line AIs use their own account quota, and API models can edit files too. You can add the same AI more than once with different roles (e.g. "you find the flaws"), models and reasoning levels.
-- **Command approval**: when AIs are allowed to run commands, each command shows a card first. You can allow it once, always allow that program, or deny it with a reason.
+- **Command approval**: when AIs are allowed to run commands, each command shows a card first. You can allow it once, always allow that program, or deny it, and add a note for the AI with any of them.
 
 ## Install
 

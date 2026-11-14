@@ -194,7 +194,7 @@ button.person { font: inherit; font-size: 13px; color: inherit; }
 .ap-q { font-size: 12.5px; color: var(--muted); }
 .ap-cmd { margin: 5px 0 9px; padding: 6px 9px; border-radius: 7px; background: var(--code-bg); font: 12.5px/1.5 var(--mono); white-space: pre-wrap; word-break: break-all; max-height: 9.5em; overflow: auto; }
 .ap-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-.ap-actions input { flex: 1; min-width: 160px; height: 28px; padding: 0 9px; font-size: 13px; }
+.ap-note { display: block; width: 100%; height: 30px; padding: 0 9px; margin: 0 0 8px; font-size: 13px; }
 .ap-done { display: flex; align-items: baseline; gap: 6px; font-size: 12.5px; color: var(--muted); min-width: 0; }
 .ap-done > span:first-child { flex: none; color: var(--ok); }
 .ap-done.denied > span:first-child { color: var(--danger); }

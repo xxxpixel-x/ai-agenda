@@ -39,7 +39,7 @@ test('run access: a command waits for the user, and a refusal reason reaches the
   const [reply] = replies(space);
   assert.match(reply.text, /先别跑/);
   assert.equal(reply.approvals[0].status, 'denied');
-  assert.equal(reply.approvals[0].reason, '先别跑');
+  assert.equal(reply.approvals[0].note, '先别跑');
   assert.equal(space.listItem().waiting, false);
   assert.throws(() => space.decideApproval(ap.id, 'allow'), /处理过了/);
 });
@@ -49,14 +49,15 @@ test('"always allow" remembers the programs for the rest of the space', { timeou
   t.after(() => settleSpace(space));
   space.userMessage('大家跑一下测试');
   const ap = await waitForCard(space);
-  space.decideApproval(ap.id, 'always');
+  space.decideApproval(ap.id, 'always', '跑完告诉我耗时');
   assert.deepEqual(space.data.allowedPrograms, ['git', 'npm']);
 
   // 第二位成员运行同样的命令：不再出卡片
   await until(() => space.running, (r) => !r);
   const [first, second] = replies(space);
   assert.equal(first.approvals[0].status, 'always');
-  assert.match(first.text, /测试跑过了/);
+  assert.equal(first.approvals[0].note, '跑完告诉我耗时');
+  assert.match(first.text, /测试跑过了.*跑完告诉我耗时/s, 'a note given with an approval reaches the AI too');
   assert.equal(second.approvals, undefined);
   assert.match(second.text, /测试跑过了/);
 
@@ -75,6 +76,19 @@ test('stopping while a card waits cancels it', { timeout: 30000 }, async (t) => 
   await until(() => space.running, (r) => !r);
   assert.equal(ap.status, 'cancelled');
   assert.equal(space.approvals.size, 0);
+});
+
+test('a card still waiting when the turn ends on its own is cancelled', { timeout: 30000 }, async (t) => {
+  const space = makeSpace(tempDir(t), { access: 'run', maxTurns: 1 });
+  t.after(() => settleSpace(space));
+  // 像 AI 进程自己退出了：发出审批请求后不等结果就结束这一轮
+  space.registry = { ...space.registry, runTurn: async (_id, opts) => { opts.onApproval({ command: 'npm test' }); return { text: '进程退出了' }; } };
+  space.userMessage('@Alice 跑一下');
+  await until(() => space.running, (r) => !r);
+  const [reply] = replies(space);
+  assert.equal(reply.approvals[0].status, 'cancelled');
+  assert.equal(space.approvals.size, 0);
+  assert.equal(space.listItem().waiting, false);
 });
 
 test('an AI that cannot ask only gets file access at the run level', { timeout: 30000 }, async (t) => {

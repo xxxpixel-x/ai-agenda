@@ -102,11 +102,12 @@ export async function runTurn({ system, prompt, cwd, access, signal, onDelta, on
   // 「可运行命令」档：先问能不能跑测试
   if (access === 'run' && onApproval && myTurns === 0) {
     const d = await onApproval({ command: 'npm test && git status' });
+    const note = d.note ? `（${d.note}）` : '';
     if (d.allow) {
       onActivity?.({ kind: 'command', label: '运行 npm test && git status' });
-      text += '\n\n测试跑过了，全部通过。';
+      text += '\n\n测试跑过了，全部通过。' + note;
     } else {
-      text += `\n\n好，先不跑测试${d.reason ? `（${d.reason}）` : ''}。`;
+      text += `\n\n好，先不跑测试${note}。`;
     }
   }
   if (myTurns === 1) text += ' [结束]';

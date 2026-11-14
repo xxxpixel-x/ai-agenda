@@ -416,6 +416,7 @@ export class Space extends EventEmitter {
       }
       if (!imported) delete this.data.memberState[member.id]; // 下次开新会话（接续导入对话的保留，下次接着试）
     } finally {
+      this.expireApprovals(msg);
       // 就算出错或被打断，它已经改了的文件也要记下来
       const changes = this.ws.commit(member.name, msg.id);
       if (changes.length) {
@@ -446,26 +447,31 @@ export class Space extends EventEmitter {
     });
   }
 
-  /** decision：allow / always（这些程序以后都不问）/ deny（可附理由） */
-  decideApproval(id, decision, reason) {
+  /** decision：allow / always（这些程序以后都不问）/ deny。note：附给 AI 的一句话，同意、拒绝都可以带 */
+  decideApproval(id, decision, note) {
     const p = this.approvals.get(id);
     if (!p) throw new Error('这条请求已经处理过了');
     if (!['allow', 'always', 'deny'].includes(decision)) throw new Error('未知的决定');
     if (decision === 'always') this.data.allowedPrograms = normalizeAllowed([...this.data.allowedPrograms, ...p.ap.programs]);
     const status = { allow: 'allowed', always: 'always', deny: 'denied' }[decision];
-    this.settleApproval(id, status, decision === 'deny' ? str(reason, 500) : '');
+    this.settleApproval(id, status, str(note, 500));
     return p.ap;
   }
 
-  settleApproval(id, status, reason = '') {
+  settleApproval(id, status, note = '') {
     const p = this.approvals.get(id);
     if (!p) return;
     this.approvals.delete(id);
     p.ap.status = status;
-    if (reason) p.ap.reason = reason;
+    if (note) p.ap.note = note;
     this.emitEvent({ type: 'approval', id: p.msg.id, approval: p.ap, allowedPrograms: this.data.allowedPrograms });
     this.save();
-    p.resolve({ allow: status === 'allowed' || status === 'always', reason });
+    p.resolve({ allow: status === 'allowed' || status === 'always', note });
+  }
+
+  /** 这一轮发言结束了（包括 AI 进程自己退出）：还没处理的卡片作废，不再显示“等你确认” */
+  expireApprovals(msg) {
+    for (const [id, p] of this.approvals) if (p.msg === msg) this.settleApproval(id, 'cancelled');
   }
 
   // ---------- 文件 ----------

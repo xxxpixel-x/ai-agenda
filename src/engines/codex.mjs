@@ -161,7 +161,8 @@ export async function runTurn({ system, prompt, model, effort, cwd, access = 'ed
 // 它在运行命令之前发来审批请求，回答之后才继续。只读的常见命令（ls、cat 之类）它自己判断为安全，不会来问。
 
 const rpc = (obj) => ({ jsonrpc: '2.0', ...obj });
-const refusal = (reason) => `「我」没有同意运行刚才那条命令${reason ? `，理由：${reason}` : ''}。按这个调整做法，不要换一种写法绕过。`;
+const refusal = (note) => `「我」没有同意运行刚才那条命令${note ? `，理由：${note}` : ''}。按这个调整做法，不要换一种写法绕过。`;
+const approvalNote = (note) => `「我」同意了刚才那条命令，并补充：${note}`;
 
 async function runAsking({ bin, input, model, effort, cwd, signal, onDelta, onActivity, onRaw, onApproval }) {
   let text = '';
@@ -181,8 +182,10 @@ async function runAsking({ bin, input, model, effort, cwd, signal, onDelta, onAc
       const command = (p.commandActions || []).map((a) => a.command).filter(Boolean).join(' && ') || unwrapCommand(p.command);
       const d = await ctl.hold(onApproval({ command }));
       reply({ decision: d.allow ? 'accept' : 'decline' });
-      if (!d.allow && d.reason) {
-        ctl.send(rpc({ id: `steer-${m.id}`, method: 'turn/steer', params: { threadId: p.threadId, expectedTurnId: p.turnId, input: [{ type: 'text', text: refusal(d.reason), text_elements: [] }] } }));
+      // 附的话（同意、拒绝都可以）：用 turn/steer 插进这一轮
+      if (d.note) {
+        const text = d.allow ? approvalNote(d.note) : refusal(d.note);
+        ctl.send(rpc({ id: `steer-${m.id}`, method: 'turn/steer', params: { threadId: p.threadId, expectedTurnId: p.turnId, input: [{ type: 'text', text, text_elements: [] }] } }));
       }
     } else if (m.method === 'item/fileChange/requestApproval') {
       reply({ decision: 'decline' }); // 共享文件夹里的修改不会来问；来问的是文件夹以外的，超出权限

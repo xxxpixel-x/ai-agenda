@@ -223,8 +223,8 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
       if (sub === '/imports' && method === 'POST' && arg && tail === '/brief') return sendJson(res, 200, resolveBrief(space, arg, (await readJson(req)).action));
       if (sub === '/imports' && method === 'POST' && arg && tail === '/recompress') return sendJson(res, 200, recompressImport(space, arg, (await readJson(req)).mode));
       if (sub === '/approvals' && method === 'POST' && arg) {
-        const { decision, reason } = await readJson(req);
-        return sendJson(res, 200, space.decideApproval(arg, decision, reason));
+        const { decision, note } = await readJson(req);
+        return sendJson(res, 200, space.decideApproval(arg, decision, note));
       }
       if (sub === '/members' && method === 'PATCH' && arg) return sendJson(res, 200, space.updateMember(arg, await readJson(req)));
       if (sub === '/messages' && method === 'POST') return sendJson(res, 201, space.userMessage((await readJson(req)).text));

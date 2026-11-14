@@ -119,7 +119,8 @@ function accessArgs(access, ask = false) {
   ];
 }
 
-const refusal = (reason) => `「我」没有同意运行这条命令${reason ? `，理由：${reason}` : ''}。按这个调整做法，不要换一种写法绕过。`;
+const refusal = (note) => `「我」没有同意运行这条命令${note ? `，理由：${note}` : ''}。按这个调整做法，不要换一种写法绕过。`;
+const approvalNote = (note) => `「我」同意了刚才那条命令，并补充：${note}`;
 
 function activityOf(block, cwd) {
   const i = block.input || {};
@@ -185,13 +186,17 @@ export async function runTurn({ system, prompt, model, effort, cwd, access = 'ed
   async function answerPermission(msg, ctl) {
     const { tool_name: tool, input = {} } = msg.request;
     let response;
+    let note = '';
     if (COMMAND_TOOLS.has(tool)) {
       const d = await ctl.hold(onApproval({ command: input.command || '' }));
-      response = d.allow ? { behavior: 'allow', updatedInput: input } : { behavior: 'deny', message: refusal(d.reason) };
+      response = d.allow ? { behavior: 'allow', updatedInput: input } : { behavior: 'deny', message: refusal(d.note) };
+      if (d.allow) note = d.note;
     } else {
       response = { behavior: 'deny', message: '超出了当前权限。' };
     }
     ctl.send({ type: 'control_response', response: { subtype: 'success', request_id: msg.request_id, response } });
+    // 同意时附的话：紧跟着发一条消息，Claude 在这一轮里就会读到（Claude Code 2.1.321 实测）
+    if (note) ctl.send({ type: 'user', message: { role: 'user', content: approvalNote(note) }, parent_tool_use_id: null, session_id: '' });
   }
 
   try {

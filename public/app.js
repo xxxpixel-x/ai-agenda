@@ -839,7 +839,7 @@ function handleEvent(ev) {
       const i = list.findIndex((a) => a.id === ev.approval.id);
       if (i >= 0) list[i] = ev.approval; else list.push(ev.approval);
       if (ev.allowedPrograms) sp.allowedPrograms = ev.allowedPrograms;
-      if (ev.approval.status !== 'pending') denyDrafts.delete(ev.approval.id);
+      if (ev.approval.status !== 'pending') noteDrafts.delete(ev.approval.id);
       scheduleUpdate(m.id);
       break;
     }
@@ -952,50 +952,34 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#mem
 window.addEventListener('resize', hideMemberPop);
 
 // ---- 命令审批卡片 ----
-const denyDrafts = new Map(); // 正在写拒绝理由的卡片：id -> 理由
+const noteDrafts = new Map(); // 卡片上正在写的附言：id -> 文字（消息重绘时不丢）
 const AP_DONE = { allowed: '已允许', always: '已允许，以后不再问', denied: '已拒绝', cancelled: '已取消' };
 function approvalHtml(a) {
   if (a.status !== 'pending') {
     const one = a.command.replace(/\s+/g, ' ');
-    return `<div class="ap-done ${a.status}"><span>${AP_DONE[a.status] || a.status}</span><code title="${esc(a.command)}">${esc(one)}</code>${a.reason ? `<span class="why">${esc(a.reason)}</span>` : ''}</div>`;
+    const note = a.note || a.reason;
+    return `<div class="ap-done ${a.status}"><span>${AP_DONE[a.status] || a.status}</span><code title="${esc(a.command)}">${esc(one)}</code>${note ? `<span class="why" title="${esc(note)}">${esc(note)}</span>` : ''}</div>`;
   }
-  const denying = denyDrafts.has(a.id);
   return `<div class="approval" data-ap="${a.id}">
     <div class="ap-q">想运行</div>
     <pre class="ap-cmd">${esc(a.command)}</pre>
-    ${denying
-    ? `<div class="ap-actions"><input data-apr placeholder="告诉它为什么（可不填）" value="${esc(denyDrafts.get(a.id))}">
-        <button class="btn sm danger" type="button" data-apd="deny">拒绝</button><button class="btn sm" type="button" data-apd="back">返回</button></div>`
-    : `<div class="ap-actions"><button class="btn sm primary" type="button" data-apd="allow">允许</button>
-        ${a.programs?.length ? `<button class="btn sm" type="button" data-apd="always">一直允许 ${esc(a.programs.join('、'))}</button>` : ''}
-        <button class="btn sm" type="button" data-apd="ask-why">拒绝</button></div>`}
+    <input class="ap-note" data-apr maxlength="500" placeholder="附一句话（可不填）" value="${esc(noteDrafts.get(a.id) || '')}">
+    <div class="ap-actions"><button class="btn sm primary" type="button" data-apd="allow">允许</button>
+      ${a.programs?.length ? `<button class="btn sm" type="button" data-apd="always">一直允许 ${esc(a.programs.join('、'))}</button>` : ''}
+      <button class="btn sm" type="button" data-apd="deny">拒绝</button></div>
   </div>`;
 }
 const approvalsHtml = (m) => (m.approvals?.length ? `<div class="approvals">${m.approvals.map(approvalHtml).join('')}</div>` : '');
 async function decide(card, decision) {
   const id = card.dataset.ap;
-  const msgId = card.closest('.msg')?.id.slice(2);
-  if (decision === 'ask-why' || decision === 'back') {
-    if (decision === 'ask-why') denyDrafts.set(id, ''); else denyDrafts.delete(id);
-    const m = findMsg(msgId);
-    if (m) updateMessage(m);
-    if (decision === 'ask-why') $(`[data-ap="${id}"] [data-apr]`)?.focus();
-    return;
-  }
-  $$('button', card).forEach((b) => { b.disabled = true; });
+  $$('button, input', card).forEach((b) => { b.disabled = true; });
   try {
-    await api(`/api/spaces/${state.space.id}/approvals/${id}`, { method: 'POST', body: { decision, reason: denyDrafts.get(id) || '' } });
-  } catch (err) { toast(err.message, 'error'); $$('button', card).forEach((b) => { b.disabled = false; }); }
+    await api(`/api/spaces/${state.space.id}/approvals/${id}`, { method: 'POST', body: { decision, note: noteDrafts.get(id) || '' } });
+  } catch (err) { toast(err.message, 'error'); $$('button, input', card).forEach((b) => { b.disabled = false; }); }
 }
 $('#messages').addEventListener('input', (e) => {
   const card = e.target.closest('[data-ap]');
-  if (card && e.target.matches('[data-apr]')) denyDrafts.set(card.dataset.ap, e.target.value);
-});
-$('#messages').addEventListener('keydown', (e) => {
-  const card = e.target.closest('[data-ap]');
-  if (!card || !e.target.matches('[data-apr]')) return;
-  if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); decide(card, 'deny'); }
-  if (e.key === 'Escape') { e.preventDefault(); decide(card, 'back'); }
+  if (card && e.target.matches('[data-apr]')) noteDrafts.set(card.dataset.ap, e.target.value);
 });
 
 function activitiesHtml(acts, streaming) {
@@ -1052,8 +1036,15 @@ function updateMessage(m) {
   const hidden = m.kind === 'ai' && !m.streaming && !m.text && !m.error && !m.passed && !m.changes?.length && !m.interrupted;
   if (!el) { if (!hidden) appendMessage(m); return; }
   if (hidden) { el.remove(); return; }
+  // 正在卡片上写附言时消息重绘了：把光标放回原处
+  const typing = el.contains(document.activeElement) && document.activeElement.matches('[data-apr]')
+    ? { id: document.activeElement.closest('[data-ap]').dataset.ap, at: document.activeElement.selectionStart } : null;
   if (m.kind === 'import') replaceImport(el, m);
   else el.outerHTML = messageHtml(m);
+  if (typing) {
+    const box = $(`[data-ap="${typing.id}"] [data-apr]`);
+    if (box) { box.focus(); box.setSelectionRange(typing.at, typing.at); }
+  }
   if (stick) scrollToBottom();
 }
 const pending = new Set();
