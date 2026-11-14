@@ -1,6 +1,7 @@
 // 调用一次 AI：聊天发言和任务协作共用。
 // 负责把流式输出、工具动作、原始日志写进 sink，并处理 API 型 AI 的文件块（按权限写入共享文件夹）。
 // 不关心调用方是谁：中止（signal）、会话续接的重试、事件推送都由调用方决定。
+import { t as tr } from './i18n.mjs';
 import { extractFileBlocks } from './engines/file-blocks.mjs';
 
 const MAX_LOG_LINE = 2000;
@@ -53,15 +54,15 @@ function applyFileBlocks(reply, { member, ws, access, sink }) {
   const { text, files } = extractFileBlocks(reply);
   if (!files.length) return text;
   if (!ws || access === 'read') {
-    sink.note = `${member.name} 想修改 ${files.map((f) => f.path).join('、')}，但当前是只读权限，没有写入。`;
+    sink.note = tr('{0} 想修改 {1}，但当前是只读权限，没有写入。', [member.name, files.map((f) => f.path).join('、')]);
     return text;
   }
   for (const f of files) {
     try {
       ws.writeRaw(f.path, f.content);
-      sink.activities.push({ kind: 'edit', label: `修改 ${f.path}` });
+      sink.activities.push({ kind: 'edit', label: tr('修改 {0}', [f.path]) });
     } catch (e) {
-      sink.note = `没能写入 ${f.path}：${e.message}`;
+      sink.note = tr('没能写入 {0}：{1}', [f.path, e.message]);
     }
   }
   return text;

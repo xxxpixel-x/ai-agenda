@@ -8,6 +8,7 @@
 // 引擎的能力写在它自己模块的 meta 里：kind（'cli' | 'api'）、resume（能否续接会话）等，
 // 注册表只看 meta，不按具体 id 做判断。
 // 以后要接新的 AI：在 engines/ 下加一个模块，再在下面 ENGINES 里加一行。
+import { t as tr, getLanguage } from '../i18n.mjs';
 import * as claudeCode from './claude-code.mjs';
 import * as codex from './codex.mjs';
 import * as dsh from './dsh.mjs';
@@ -52,9 +53,9 @@ const ENGINES = [
     instances: (s) => s.providers.map((p) => ({
       ...openai.meta,
       id: `${OPENAI_PREFIX}${p.id}`,
-      label: p.name || 'OpenAI 兼容接口',
+      label: p.name || tr('OpenAI 兼容接口'),
       defaultName: p.name || 'AI',
-      models: [['', p.model ? `默认（${p.model}）` : '接口默认模型']],
+      models: [['', p.model ? tr('默认（{0}）', [p.model]) : tr('接口默认模型')]],
     })),
     options: (s, id) => ({ conn: s.providers.find((p) => p.id === id.slice(OPENAI_PREFIX.length)) || null }),
   },
@@ -82,7 +83,7 @@ export function createRegistry(settings, { mock: mockMode = false } = {}) {
     if (mockMode) {
       // 演示模式：外观照搬内置的几种 AI，实际都由演示引擎回答
       return ENGINES.filter((e) => e.builtin).flatMap((e) => e.instances(settings.get())).map((m) => ({
-        ...mock.meta, id: m.id, label: `演示 · ${m.defaultName}`, defaultName: m.defaultName, color: m.color, models: m.models, efforts: m.efforts,
+        ...mock.meta, id: m.id, label: tr('演示 · {0}', [m.defaultName]), defaultName: m.defaultName, color: m.color, models: m.models, efforts: m.efforts,
       }));
     }
     return ENGINES.flatMap((e) => e.instances(settings.get())).map((m) => ({ ...m }));
@@ -90,8 +91,9 @@ export function createRegistry(settings, { mock: mockMode = false } = {}) {
 
   async function detect(engineId, { refresh = false } = {}) {
     const mod = moduleOf(engineId);
-    if (!mod) return { available: false, ready: false, note: '未知的 AI 类型' };
-    const hit = cache.get(engineId);
+    if (!mod) return { available: false, ready: false, note: tr('未知的 AI 类型') };
+    const cacheKey = `${getLanguage()}:${engineId}`;
+    const hit = cache.get(cacheKey);
     if (!refresh && hit && Date.now() - hit.at < 60_000) return hit.status;
     let status;
     try {
@@ -99,7 +101,7 @@ export function createRegistry(settings, { mock: mockMode = false } = {}) {
     } catch (e) {
       status = { available: false, ready: false, note: e.message };
     }
-    cache.set(engineId, { at: Date.now(), status });
+    cache.set(cacheKey, { at: Date.now(), status });
     return status;
   }
 
@@ -111,7 +113,7 @@ export function createRegistry(settings, { mock: mockMode = false } = {}) {
 
   function runTurn(engineId, opts) {
     const mod = moduleOf(engineId);
-    if (!mod) throw new Error(`未知的 AI 类型：${engineId}`);
+    if (!mod) throw new Error(tr('未知的 AI 类型：{0}', [engineId]));
     return mod.runTurn({ ...optionsFor(engineId), ...opts });
   }
 

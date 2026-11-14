@@ -1,4 +1,5 @@
 // DeepSeek Harness 的会话记录：~/.dsh/sessions/<项目>/session-<ID>/session.v4.jsonl.zstd（zstd 压缩的 JSONL）
+import { t as tr } from '../i18n.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -35,7 +36,7 @@ function load(file) {
   const mtime = fs.statSync(file).mtimeMs;
   const hit = cache.get(file);
   if (hit && hit.mtime === mtime) return hit.lines;
-  if (typeof zlib.zstdDecompressSync !== 'function') throw new Error('当前 Node 版本不能解压 DeepSeek Harness 的记录（需要 Node 22.15 以上）');
+  if (typeof zlib.zstdDecompressSync !== 'function') throw new Error(tr('当前 Node 版本不能解压 DeepSeek Harness 的记录（需要 Node 22.15 以上）'));
   const lines = readJsonl(zlib.zstdDecompressSync(fs.readFileSync(file)).toString('utf8'));
   cache.set(file, { mtime, lines });
   return lines;
@@ -56,12 +57,12 @@ function actOf(c, cwd) {
   try { a = JSON.parse(c.arguments || '{}'); } catch { /* 参数不是 JSON */ }
   const file = relTo(a.file_path || a.path, cwd);
   switch (String(c.name || '').toLowerCase()) {
-    case 'read': return `读取 ${file}`;
-    case 'write': return `写入 ${file}`;
-    case 'edit': case 'multiedit': case 'apply_patch': return `修改 ${file}`;
-    case 'pwsh': case 'bash': case 'shell': case 'powershell': return `运行 ${brief(a.command || a.cmd, 70)}`;
-    case 'web_search': return `搜索：${brief(a.query || a.queries?.[0], 60)}`;
-    case 'web_fetch': return `打开网页 ${brief(a.url, 60)}`;
+    case 'read': return tr('读取 {0}', [file]);
+    case 'write': return tr('写入 {0}', [file]);
+    case 'edit': case 'multiedit': case 'apply_patch': return tr('修改 {0}', [file]);
+    case 'pwsh': case 'bash': case 'shell': case 'powershell': return tr('运行 {0}', [brief(a.command || a.cmd, 70)]);
+    case 'web_search': return tr('搜索：{0}', [brief(a.query || a.queries?.[0], 60)]);
+    case 'web_fetch': return tr('打开网页 {0}', [brief(a.url, 60)]);
     default: return '';
   }
 }
@@ -86,9 +87,9 @@ export function list() {
 }
 
 export function read(id) {
-  if (!ID_RE.test(id)) throw new Error('会话 id 不对');
+  if (!ID_RE.test(id)) throw new Error(tr('会话 id 不对'));
   const file = files().find((f) => idOf(f) === id);
-  if (!file) throw new Error('找不到这段 DeepSeek Harness 对话');
+  if (!file) throw new Error(tr('找不到这段 DeepSeek Harness 对话'));
   const lines = load(file);
   const cwd = lines.find((o) => o.type === 'session')?.cwd || '';
   const b = new EntryBuilder();

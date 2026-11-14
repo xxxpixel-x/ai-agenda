@@ -3,6 +3,7 @@
 // Windows 已核对；macOS / Linux 的 ~/.zcode 路径由上游源码确认，但未在对应系统实测。
 // Electron 缓存惯例位置（macOS / Linux 为推断）：%APPDATA%/ZCode、
 // ~/Library/Application Support/ZCode、$XDG_CONFIG_HOME/ZCode（默认 ~/.config/ZCode），不作为会话来源。
+import { t as tr } from '../i18n.mjs';
 import fs from 'node:fs';
 import { EntryBuilder, homeDir, openSqlite, relTo, brief, toTs } from './common.mjs';
 
@@ -46,7 +47,7 @@ function sessionFilter(db) {
 function summary(row, task) {
   return {
     id: row.id,
-    title: (task?.title_overridden && task.title) || row.title || '（无标题）',
+    title: (task?.title_overridden && task.title) || row.title || tr('（无标题）'),
     cwd: row.directory || '',
     updatedAt: Math.max(toTs(row.time_updated), toTs(task?.updated_at)),
   };
@@ -83,12 +84,12 @@ function actOf(part, cwd) {
   const command = brief(a.command || a.cmd, 70);
   const query = brief(a.query || a.pattern, 60);
   switch (String(part.tool || '').toLowerCase()) {
-    case 'read': return file ? `读取 ${file}` : '';
-    case 'edit': case 'multiedit': case 'notebookedit': return file ? `修改 ${file}` : '';
-    case 'write': return file ? `写入 ${file}` : '';
-    case 'bash': case 'powershell': case 'pwsh': case 'shell': return command ? `运行 ${command}` : '';
-    case 'websearch': case 'web_search': return query ? `搜索：${query}` : '';
-    case 'webfetch': case 'web_fetch': return a.url ? `打开网页 ${brief(a.url, 60)}` : '';
+    case 'read': return file ? tr('读取 {0}', [file]) : '';
+    case 'edit': case 'multiedit': case 'notebookedit': return file ? tr('修改 {0}', [file]) : '';
+    case 'write': return file ? tr('写入 {0}', [file]) : '';
+    case 'bash': case 'powershell': case 'pwsh': case 'shell': return command ? tr('运行 {0}', [command]) : '';
+    case 'websearch': case 'web_search': return query ? tr('搜索：{0}', [query]) : '';
+    case 'webfetch': case 'web_fetch': return a.url ? tr('打开网页 {0}', [brief(a.url, 60)]) : '';
     default: return '';
   }
 }
@@ -105,14 +106,14 @@ export function list() {
 }
 
 export function read(id) {
-  if (typeof id !== 'string' || !id) throw new Error('ZCode 会话 id 不对');
+  if (typeof id !== 'string' || !id) throw new Error(tr('ZCode 会话 id 不对'));
   try {
     const tasks = desktopTasks();
     return withDb(database(), (db) => {
       db.exec('BEGIN'); // 同一次读取使用一致的正文快照，close 时释放。
       const row = db.prepare(`SELECT id, title, directory, time_updated FROM session
         WHERE id = ? AND ${sessionFilter(db)}`).get(id);
-      if (!row || tasks.get(id)?.deleted) throw new Error('找不到这段 ZCode 对话（可能已删除或是子任务）');
+      if (!row || tasks.get(id)?.deleted) throw new Error(tr('找不到这段 ZCode 对话（可能已删除或是子任务）'));
       const info = summary(row, tasks.get(id));
       const messages = db.prepare(`SELECT id, time_created, data FROM message
         WHERE session_id = ? ORDER BY ${orderBy(db, 'message')}`).all(id);
@@ -146,6 +147,6 @@ export function read(id) {
       return { id, title: info.title, cwd: info.cwd, entries: b.done() };
     });
   } catch (error) {
-    throw new Error(`无法读取 ZCode 对话：数据库可能被占用、无读取权限或格式不受支持，请关闭 ZCode 后重试。${error.message}`);
+    throw new Error(tr('无法读取 ZCode 对话：数据库可能被占用、无读取权限或格式不受支持，请关闭 ZCode 后重试。{0}', [error.message]));
   }
 }

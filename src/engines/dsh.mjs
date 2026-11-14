@@ -1,4 +1,5 @@
 // DeepSeek Harness（DeepSeek 官方桌面版自带的命令行 dsh，headless 模式）。使用它自己的登录。
+import { t as tr } from '../i18n.mjs';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -12,10 +13,10 @@ export const meta = {
   vendor: 'DeepSeek',
   defaultName: 'DeepSeek',
   color: '#4d6bfe',
-  models: [['', '默认']],
+  get models() { return [['', tr('默认')]]; },
   efforts: ['', 'off', 'low', 'medium', 'high', 'xhigh', 'max'], // 具体型号支持哪些，detect 时从型号目录查
   resume: true, // 每个成员复用同一个 dsh 会话，避免在 DeepSeek Harness 里留下一大串会话
-  capabilities: '读写共享文件、在共享文件夹内运行命令',
+  get capabilities() { return tr('读写共享文件、在共享文件夹内运行命令'); },
 };
 
 const EXE = 'DeepSeek Harness.exe';
@@ -69,7 +70,7 @@ function command(root, rest) {
 
 export async function detect({ binOverride } = {}) {
   const root = await findRoot(binOverride);
-  if (!root) return { available: false, ready: false, note: '没有找到 DeepSeek Harness。安装后重新检测，或在下面手动填写安装目录。' };
+  if (!root) return { available: false, ready: false, note: tr('没有找到 DeepSeek Harness。安装后重新检测，或在下面手动填写安装目录。') };
   const c = command(root, ['--version']);
   const [ver, models] = await Promise.all([capture(c.cmd, c.args, { env: c.env }), modelsFor(root)]);
   const hasCred = fs.existsSync(path.join(os.homedir(), '.dsh', '.credentials.yaml'));
@@ -79,7 +80,7 @@ export async function detect({ binOverride } = {}) {
     bin: path.join(root, EXE),
     version: brief(ver.stdout, 30),
     ...models,
-    note: hasCred ? '已登录' : '还没有登录。请打开 DeepSeek Harness 桌面版登录一次。',
+    note: hasCred ? tr('已登录') : tr('还没有登录。请打开 DeepSeek Harness 桌面版登录一次。'),
   };
 }
 
@@ -87,14 +88,14 @@ function activityOf(ev, cwd) {
   const i = ev.input || {};
   const file = relPath(i.file_path || i.path || i.filePath, cwd);
   switch (String(ev.tool || '').toLowerCase()) {
-    case 'read': return { kind: 'read', label: `读取 ${file}` };
-    case 'edit': case 'multi_edit': case 'multiedit': return { kind: 'edit', label: `修改 ${file}` };
-    case 'write': return { kind: 'edit', label: `写入 ${file}` };
-    case 'glob': case 'grep': case 'ls': case 'list': return { kind: 'read', label: `查找 ${brief(i.pattern || i.path || '', 40)}` };
-    case 'bash': case 'shell': case 'exec': case 'powershell': return { kind: 'command', label: `运行 ${brief(i.command || i.cmd || '', 70)}` };
-    case 'web_search': case 'websearch': case 'search': return { kind: 'search', label: `搜索：${brief(i.query || '', 60)}` };
-    case 'web_fetch': case 'webfetch': case 'fetch': return { kind: 'search', label: `打开网页 ${brief(i.url || '', 60)}` };
-    default: return { kind: 'tool', label: String(ev.tool || '工具') };
+    case 'read': return { kind: 'read', label: tr('读取 {0}', [file]) };
+    case 'edit': case 'multi_edit': case 'multiedit': return { kind: 'edit', label: tr('修改 {0}', [file]) };
+    case 'write': return { kind: 'edit', label: tr('写入 {0}', [file]) };
+    case 'glob': case 'grep': case 'ls': case 'list': return { kind: 'read', label: tr('查找 {0}', [brief(i.pattern || i.path || '', 40)]) };
+    case 'bash': case 'shell': case 'exec': case 'powershell': return { kind: 'command', label: tr('运行 {0}', [brief(i.command || i.cmd || '', 70)]) };
+    case 'web_search': case 'websearch': case 'search': return { kind: 'search', label: tr('搜索：{0}', [brief(i.query || '', 60)]) };
+    case 'web_fetch': case 'webfetch': case 'fetch': return { kind: 'search', label: tr('打开网页 {0}', [brief(i.url || '', 60)]) };
+    default: return { kind: 'tool', label: String(ev.tool || tr('工具')) };
   }
 }
 
@@ -143,7 +144,7 @@ async function commandcodeCatalog() {
       efforts: levels.length ? ['off', ...levels] : [],
     });
   }
-  if (!rows.length) throw new Error('型号目录是空的');
+  if (!rows.length) throw new Error(tr('型号目录是空的'));
   catalogCache = { at: Date.now(), rows };
   return rows;
 }
@@ -183,7 +184,7 @@ const EFFORT_RETRY_DELAY = 12_000;
 
 export async function runTurn({ system, prompt, model, effort, cwd, access = 'edit', signal, onDelta, onActivity, onRaw, sessionId, binOverride }) {
   const root = await findRoot(binOverride);
-  if (!root) throw new Error('没有找到 DeepSeek Harness');
+  if (!root) throw new Error(tr('没有找到 DeepSeek Harness'));
   const patch = model || effort ? await writePatch(root, model, effort) : null;
 
   async function once(inputDelay) {
@@ -223,8 +224,8 @@ export async function runTurn({ system, prompt, model, effort, cwd, access = 'ed
     });
 
     if (!final) {
-      const why = brief(r.stderr || `退出码 ${r.code}`, 300);
-      const err = new Error(`DeepSeek Harness 没有返回结果：${why}`);
+      const why = brief(r.stderr || tr('退出码 {0}', [r.code]), 300);
+      const err = new Error(tr('DeepSeek Harness 没有返回结果：{0}', [why]));
       // 会话找不到时让调用方换新会话重试
       if (sessionId && /session/i.test(why)) err.resumeFailed = true;
       throw err;
@@ -233,17 +234,17 @@ export async function runTurn({ system, prompt, model, effort, cwd, access = 'ed
     const why = reason.error?.message || reason.message || final.text || '';
     if (reason.error?.code === 'UNSUPPORTED_REASONING_EFFORT' && !text) return { effortRejected: true, why };
     if (reason.kind && reason.kind !== 'completed') {
-      throw new Error(`DeepSeek Harness 未完成（${reason.kind}）：${brief(why, 300)}`);
+      throw new Error(tr('DeepSeek Harness 未完成（{0}）：{1}', [reason.kind, brief(why, 300)]));
     }
     if (!text && final.text) emit(final.text);
-    if (!text.trim()) throw new Error('DeepSeek Harness 没有返回内容');
+    if (!text.trim()) throw new Error(tr('DeepSeek Harness 没有返回内容'));
     return { text, sessionId: newSession };
   }
 
   try {
     let r = await once(0);
     if (r.effortRejected) r = await once(EFFORT_RETRY_DELAY);
-    if (r.effortRejected) throw new Error(`DeepSeek Harness 不接受这个思考档位：${brief(r.why, 300)}`);
+    if (r.effortRejected) throw new Error(tr('DeepSeek Harness 不接受这个思考档位：{0}', [brief(r.why, 300)]));
     return r;
   } finally {
     if (patch) fs.rm(patch, { force: true }, () => {});

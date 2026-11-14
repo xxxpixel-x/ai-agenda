@@ -1,4 +1,5 @@
 // 各命令行引擎共用的进程工具：查找可执行文件、启动、逐行读 JSON、可靠地结束进程树。
+import { t as tr } from '../i18n.mjs';
 import { spawn, execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -105,7 +106,7 @@ const idleMinutes = Number(process.env.RT_IDLE_MINUTES);
 export const IDLE_MS = (Number.isFinite(idleMinutes) && idleMinutes >= 0 ? idleMinutes : 20) * 60_000;
 
 export class AbortedError extends Error {
-  constructor() { super('已中止'); this.aborted = true; }
+  constructor() { super(tr('已中止')); this.aborted = true; }
 }
 
 /**
@@ -125,7 +126,7 @@ export function runJsonl({ cmd, args, env, cwd, input = '', inputDelay = 0, keep
     try {
       child = spawnSmart(cmd, args, { env, cwd });
     } catch (e) {
-      return reject(new Error(`无法启动 ${path.basename(cmd)}：${e.message}`));
+      return reject(new Error(tr('无法启动 {0}：{1}', [path.basename(cmd), e.message])));
     }
     let settled = false;
     let finished = false;
@@ -151,7 +152,7 @@ export function runJsonl({ cmd, args, env, cwd, input = '', inputDelay = 0, keep
 
     const onIdle = () => {
       killTree(child);
-      settle(Object.assign(new Error(`${path.basename(cmd)} 已经 ${Math.round(idleMs / 60000)} 分钟没有任何动静，停下了。可以重试。`), { stalled: true }));
+      settle(Object.assign(new Error(tr('{0} 已经 {1} 分钟没有任何动静，停下了。可以重试。', [path.basename(cmd), Math.round(idleMs / 60000)])), { stalled: true }));
     };
     const touch = () => {
       clearTimeout(idleTimer);
@@ -188,7 +189,7 @@ export function runJsonl({ cmd, args, env, cwd, input = '', inputDelay = 0, keep
       if (!line || line[0] !== '{') return;
       let obj;
       try { obj = JSON.parse(line); } catch { return; }
-      try { onEvent(obj, ctl); } catch (e) { console.error('事件处理出错：', e); }
+      try { onEvent(obj, ctl); } catch (e) { console.error(tr('事件处理出错：'), e); }
     };
 
     child.stdout.setEncoding('utf8');
@@ -209,7 +210,7 @@ export function runJsonl({ cmd, args, env, cwd, input = '', inputDelay = 0, keep
       onStderr?.(String(d));
       for (const l of String(d).split('\n')) if (l.trim()) onRaw?.(`[stderr] ${l.trimEnd()}`);
     });
-    child.on('error', (e) => settle(new Error(`无法启动 ${path.basename(cmd)}：${e.message}`)));
+    child.on('error', (e) => settle(new Error(tr('无法启动 {0}：{1}', [path.basename(cmd), e.message]))));
     child.on('close', (code) => {
       if (buf.trim()) feed(buf);
       settle(null, { code, stderr, finished });

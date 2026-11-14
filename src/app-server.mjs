@@ -1,4 +1,5 @@
 // 桌面版内部的本机 HTTP 服务：给窗口里的界面提供接口与实时事件（SSE）。只监听 127.0.0.1。
+import { t as tr, resolveLanguage, withLanguage } from './i18n.mjs';
 import http from 'node:http';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
@@ -33,6 +34,10 @@ const TYPES = {
 export async function startServer({ port = 3210, dataDir, mock = false, hooks = {} } = {}) {
   fs.mkdirSync(path.join(dataDir, 'spaces'), { recursive: true });
   const settings = createSettings(path.join(dataDir, 'settings.json'), { pathKeys: CLI_ENGINE_IDS, protect: hooks.protect, unprotect: hooks.unprotect });
+  let browserLocales = [];
+  const locales = () => hooks.locales?.() || browserLocales;
+  const language = () => resolveLanguage(settings.get().language, locales());
+  hooks.onLanguage?.(language);
   const registry = createRegistry(settings, { mock });
   const store = new Store(path.join(dataDir, 'spaces'));
   const deps = { registry, store, dataDir };
@@ -55,7 +60,7 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
     return space;
   };
   for (const data of store.loadAll()) {
-    try { addSpace(new Space(data, deps)); } catch (e) { console.warn('跳过无法打开的空间：', e.message); }
+    try { addSpace(new Space(data, deps)); } catch (e) { console.warn(tr('跳过无法打开的空间：'), e.message); }
   }
 
   let actualPort = port;
@@ -70,12 +75,12 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
     const chunks = [];
     req.on('data', (c) => {
       size += c.length;
-      if (size > max) { reject(Object.assign(new Error('请求体太大'), { status: 413 })); req.destroy(); return; }
+      if (size > max) { reject(Object.assign(new Error(tr('请求体太大')), { status: 413 })); req.destroy(); return; }
       chunks.push(c);
     });
     req.on('end', () => {
       if (!chunks.length) return resolve({});
-      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch { reject(Object.assign(new Error('JSON 格式错误'), { status: 400 })); }
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch { reject(Object.assign(new Error(tr('JSON 格式错误')), { status: 400 })); }
     });
     req.on('error', reject);
   });
@@ -93,9 +98,9 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
   function serveStatic(res, pathname) {
     const rel = pathname === '/' ? 'index.html' : decodeURIComponent(pathname.slice(1));
     const file = path.resolve(PUBLIC, rel);
-    if (!file.startsWith(PUBLIC + path.sep)) return sendJson(res, 403, { error: 'forbidden' });
+    if (!file.startsWith(PUBLIC + path.sep)) return sendJson(res, 403, { error: tr('禁止访问') });
     fs.readFile(file, (err, buf) => {
-      if (err) return sendJson(res, 404, { error: 'not found' });
+      if (err) return sendJson(res, 404, { error: tr('未找到') });
       res.writeHead(200, { 'Content-Type': TYPES[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
       res.end(buf);
     });
@@ -122,28 +127,30 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
 
   const getSpace = (id) => {
     const s = spaces.get(id);
-    if (!s) throw Object.assign(new Error('这个空间不存在'), { status: 404 });
+    if (!s) throw Object.assign(new Error(tr('这个空间不存在')), { status: 404 });
     return s;
   };
 
   // ---------- 路由 ----------
   async function handle(req, res) {
-    if (!allowedHost(req)) return sendJson(res, 403, { error: '只允许从本机访问' });
+    if (!allowedHost(req)) return sendJson(res, 403, { error: tr('只允许从本机访问') });
     const url = new URL(req.url, `http://${req.headers.host}`);
     const p = url.pathname;
     const method = req.method;
 
     if (!p.startsWith('/api/')) {
-      if (method !== 'GET') return sendJson(res, 405, { error: 'method not allowed' });
+      if (method !== 'GET') return sendJson(res, 405, { error: tr('不支持此请求方法') });
       return serveStatic(res, p);
     }
     if (method !== 'GET') {
-      if (!sameOrigin(req)) return sendJson(res, 403, { error: '拒绝跨站请求' });
-      if (!(req.headers['content-type'] || '').includes('application/json')) return sendJson(res, 415, { error: '需要 application/json' });
+      if (!sameOrigin(req)) return sendJson(res, 403, { error: tr('拒绝跨站请求') });
+      if (!(req.headers['content-type'] || '').includes('application/json')) return sendJson(res, 415, { error: tr('需要 application/json') });
     }
 
     if (p === '/api/app' && method === 'GET') {
-      return sendJson(res, 200, { mock, desktop: !!hooks.desktop, dataDir });
+      browserLocales = String(req.headers['x-agenda-languages'] || req.headers['accept-language'] || '')
+        .split(',').map((s) => s.split(';')[0].trim()).filter(Boolean);
+      return sendJson(res, 200, { mock, desktop: !!hooks.desktop, dataDir, language: settings.get().language, locales: locales(), resolvedLanguage: language() });
     }
     if (p === '/api/engines' && method === 'GET') {
       return sendJson(res, 200, await registry.detectAll({ refresh: url.searchParams.get('refresh') === '1' }));
@@ -156,9 +163,9 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
     }
     if (p === '/api/open-path' && method === 'POST') {
       const { path: target } = await readJson(req);
-      if (!hooks.openPath) return sendJson(res, 400, { error: '当前环境不能打开文件夹' });
+      if (!hooks.openPath) return sendJson(res, 400, { error: tr('当前环境不能打开文件夹') });
       const known = [...spaces.values()].some((s) => path.resolve(target || '') === s.workspacePath);
-      if (!known) return sendJson(res, 403, { error: '只能打开空间的共享文件夹' });
+      if (!known) return sendJson(res, 403, { error: tr('只能打开空间的共享文件夹') });
       await hooks.openPath(target);
       return sendJson(res, 200, { ok: true });
     }
@@ -199,7 +206,7 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
       const sub = m[2] || '';
       const arg = m[3];
       const tail = m[4] || '';
-      if (space.deleting && method !== 'GET' && method !== 'DELETE') return sendJson(res, 409, { error: '这个空间正在删除，请稍等' });
+      if (space.deleting && method !== 'GET' && method !== 'DELETE') return sendJson(res, 409, { error: tr('这个空间正在删除，请稍等') });
 
       if (sub === '' && method === 'GET') return sendJson(res, 200, space.toJSON());
       if (sub === '' && method === 'PATCH') { space.update(await readJson(req)); return sendJson(res, 200, space.toJSON()); }
@@ -209,11 +216,11 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
       if (sub === '/runs' && method === 'POST') return sendJson(res, 201, await space.startRun(await readJson(req)));
       if (sub === '/run' && method === 'POST' && arg) return sendJson(res, 200, await space.runAction(arg, await readJson(req)));
       if (sub === '/task' && method === 'GET' && arg) {
-        if (!space.run) throw Object.assign(new Error('没有进行中的任务'), { status: 404 });
+        if (!space.run) throw Object.assign(new Error(tr('没有进行中的任务')), { status: 404 });
         return sendJson(res, 200, space.run.taskDetail(arg));
       }
       if (sub === '/taskdiff' && method === 'GET' && arg) {
-        if (!space.run) throw Object.assign(new Error('没有进行中的任务'), { status: 404 });
+        if (!space.run) throw Object.assign(new Error(tr('没有进行中的任务')), { status: 404 });
         return sendJson(res, 200, await space.run.fileDiff(arg, url.searchParams.get('path')));
       }
       if (sub === '/events' && method === 'GET') return openSse(req, res, space);
@@ -236,7 +243,7 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
           continue: () => space.continueDiscussion(),
           ask: () => space.ask(memberId),
         };
-        if (!actions[action]) return sendJson(res, 400, { error: `未知操作：${action}` });
+        if (!actions[action]) return sendJson(res, 400, { error: tr('未知操作：{0}', [action]) });
         actions[action]();
         return sendJson(res, 200, { ok: true });
       }
@@ -262,14 +269,14 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
         return res.end(space.toMarkdown());
       }
     }
-    return sendJson(res, 404, { error: 'not found' });
+    return sendJson(res, 404, { error: tr('未找到') });
   }
 
   const server = http.createServer((req, res) => {
-    handle(req, res).catch((e) => {
+    withLanguage(language, () => handle(req, res).catch((e) => {
       if (!res.headersSent) sendJson(res, e.status || 400, { error: e.message, conflict: !!e.conflict });
       else res.end();
-    });
+    }));
   });
 
   await new Promise((resolve, reject) => {
@@ -288,6 +295,7 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
     url: `http://localhost:${actualPort}`,
     port: actualPort,
     registry,
+    language,
     stopAll() { for (const s of spaces.values()) s.stop(); },
     // 退出时结束所有 AI 进程（包括任务协作里的），不留在后台继续花额度、改文件
     close() {

@@ -1,14 +1,20 @@
 // Agenda —— 界面逻辑
+import { t as tr, getLanguage, initLanguage, translatePage, localizeActivity } from './i18n.js';
+
+const appInfo = await initLanguage();
+translatePage();
+
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const authorName = (name) => ['我', '外部修改'].includes(name) ? tr(name) : name;
 const initial = (name) => [...(name || '?')][0];
 
 const ACCESS = {
-  read: { label: '只读', desc: '只能阅读，不能修改' },
-  edit: { label: '可改文件', desc: '可以阅读和修改文件' },
-  run: { label: '可运行命令', desc: '还能运行命令，每条命令先问你' },
-  full: { label: '全部权限', desc: '不受限制，可以动电脑上任何地方' },
+  read: { label: tr('只读'), desc: tr('只能阅读，不能修改') },
+  edit: { label: tr('可改文件'), desc: tr('可以阅读和修改文件') },
+  run: { label: tr('可运行命令'), desc: tr('还能运行命令，每条命令先问你') },
+  full: { label: tr('全部权限'), desc: tr('不受限制，可以动电脑上任何地方') },
 };
 const svg = (d, z = 16) => `<svg viewBox="0 0 24 24" width="${z}" height="${z}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
@@ -34,7 +40,7 @@ const ACT_ICON = {
 };
 
 const state = {
-  app: {},
+  app: appInfo,
   engines: [],        // [{ id, label, color, models, efforts, freeModel, status }]
   spaces: [],
   space: null,        // 当前空间（完整数据）
@@ -50,7 +56,7 @@ async function api(path, opts = {}) {
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw Object.assign(new Error(data.error || `请求失败（${res.status}）`), { conflict: data.conflict });
+  if (!res.ok) throw Object.assign(new Error(data.error || tr('请求失败（{0}）', [res.status])), { conflict: data.conflict });
   return data;
 }
 function toast(text, level = 'info') {
@@ -64,12 +70,12 @@ function store(key, v) { try { localStorage.setItem(key, JSON.stringify(v)); } c
 function load(key) { try { return JSON.parse(localStorage.getItem(key)); } catch { return null; } }
 function relTime(ts) {
   const s = (Date.now() - ts) / 1000;
-  if (s < 60) return '刚刚';
-  if (s < 3600) return `${Math.floor(s / 60)} 分钟前`;
-  if (s < 86400) return `${Math.floor(s / 3600)} 小时前`;
-  return new Date(ts).toLocaleDateString('zh-CN');
+  if (s < 60) return tr('刚刚');
+  if (s < 3600) return tr('{0} 分钟前', [Math.floor(s / 60)]);
+  if (s < 86400) return tr('{0} 小时前', [Math.floor(s / 3600)]);
+  return new Date(ts).toLocaleDateString(getLanguage());
 }
-const clock = (ts) => new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+const clock = (ts) => new Date(ts).toLocaleTimeString(getLanguage(), { hour: '2-digit', minute: '2-digit', hour12: false });
 const sizeText = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
 const engineOf = (id) => state.engines.find((e) => e.id === id);
 // 没装就不出现的 AI（Gemini CLI）。已经在用它的成员照常显示。
@@ -203,12 +209,12 @@ function diffHtml(before, after) {
   let gap = 0;
   lines.forEach((l, i) => {
     if (!keep[i]) { gap++; return; }
-    if (gap) { html += `<div class="dl gap">… 省略 ${gap} 行未改动 …</div>`; gap = 0; }
+    if (gap) { html += `<div class="dl gap">${tr('… 省略 {0} 行未改动 …', [gap])}</div>`; gap = 0; }
     const no = l.type === 'add' ? `+${l.nb}` : l.type === 'del' ? `-${l.na}` : l.nb;
     html += `<div class="dl ${l.type}"><span class="no">${no}</span><span>${esc(l.t) || ' '}</span></div>`;
   });
-  if (gap) html += `<div class="dl gap">… 省略 ${gap} 行未改动 …</div>`;
-  return html || '<div class="empty-files">没有差异</div>';
+  if (gap) html += `<div class="dl gap">${tr('… 省略 {0} 行未改动 …', [gap])}</div>`;
+  return html || `<div class="empty-files">${tr('没有差异')}</div>`;
 }
 
 // ---------------- 引擎 / 设置 ----------------
@@ -219,9 +225,9 @@ async function refreshEngines(refresh = false) {
 }
 function engineBadge(e) {
   const s = e.status || {};
-  if (s.ready) return '<span class="badge ok">可用</span>';
-  if (s.available) return '<span class="badge warn">待设置</span>';
-  return '<span class="badge off">未安装</span>';
+  if (s.ready) return `<span class="badge ok">${tr('可用')}</span>`;
+  if (s.available) return `<span class="badge warn">${tr('待设置')}</span>`;
+  return `<span class="badge off">${tr('未安装')}</span>`;
 }
 function renderEngineDots() {
   $('#engineDots').innerHTML = shownEngines().map((e) => `<i class="${e.status?.ready ? 'ready' : e.status?.available ? 'warn' : ''}" title="${esc(e.label)}"></i>`).join('');
@@ -242,24 +248,24 @@ async function openEnginesModal() {
   const gemCli = shownEngines().find((e) => e.id === 'gemini-cli');
   const PRESETS = [
     ['DeepSeek', 'https://api.deepseek.com', 'deepseek-chat'],
-    ['通义千问', 'https://dashscope.aliyuncs.com/compatible-mode/v1', 'qwen-plus'],
+    [tr('通义千问'), 'https://dashscope.aliyuncs.com/compatible-mode/v1', 'qwen-plus'],
     ['Kimi', 'https://api.moonshot.cn/v1', ''],
-    ['智谱', 'https://open.bigmodel.cn/api/paas/v4', ''],
+    [tr('智谱'), 'https://open.bigmodel.cn/api/paas/v4', ''],
     ['OpenAI', 'https://api.openai.com/v1', ''],
-    ['Ollama本地', 'http://localhost:11434/v1', ''],
+    [tr('Ollama本地'), 'http://localhost:11434/v1', ''],
   ];
 
   const providerHtml = (p, i) => {
     const e = engineOf(`openai:${p.id}`);
     return `<div class="conn" data-i="${i}">
-      <div class="conn-head">${markHtml(`openai:${p.id}`, '#7c3aed', `${p.name || ''} ${p.baseUrl || ''}`)}<b>${esc(p.name || '新接口')}</b>${e ? engineBadge(e) : ''}
-        <button class="icon-btn" type="button" data-act="del-provider" title="删除">${ICON.close}</button></div>
+      <div class="conn-head">${markHtml(`openai:${p.id}`, '#7c3aed', `${p.name || ''} ${p.baseUrl || ''}`)}<b>${esc(p.name || tr('新接口'))}</b>${e ? engineBadge(e) : ''}
+        <button class="icon-btn" type="button" data-act="del-provider" title="${tr('删除')}">${ICON.close}</button></div>
       ${e?.status?.note ? `<div class="note">${esc(e.status.note)}</div>` : ''}
       <div class="grid">
-        <label>名字<input data-k="name" value="${esc(p.name)}" maxlength="30"></label>
-        <label>默认模型<input data-k="model" value="${esc(p.model || '')}" placeholder="例如 deepseek-chat"></label>
-        <label class="wide">接口地址<input data-k="baseUrl" value="${esc(p.baseUrl || '')}" placeholder="https://…/v1"></label>
-        <label class="wide">API key<input type="password" data-k="apiKey" placeholder="${p.hasKey ? `已保存（${esc(p.keyHint)}），留空表示不变` : '填写 API key（本地模型可留空）'}"></label>
+        <label>${tr('名字')}<input data-k="name" value="${esc(p.name)}" maxlength="30"></label>
+        <label>${tr('默认模型')}<input data-k="model" value="${esc(p.model || '')}" placeholder="${tr('例如 deepseek-chat')}"></label>
+        <label class="wide">${tr('接口地址')}<input data-k="baseUrl" value="${esc(p.baseUrl || '')}" placeholder="https://…/v1"></label>
+        <label class="wide">API key<input type="password" data-k="apiKey" placeholder="${p.hasKey ? tr('已保存（{0}），留空表示不变', [esc(p.keyHint)]) : tr('填写 API key（本地模型可留空）')}"></label>
       </div></div>`;
   };
 
@@ -267,13 +273,15 @@ async function openEnginesModal() {
         <div class="conn-head">${markHtml(e.id, e.color)}<b>${esc(e.label)}</b>${engineBadge(e)}</div>
         <div class="note">${esc(e.status?.note || '')}${e.status?.version ? `（${esc(e.status.version)}）` : ''}</div>
         ${e.status?.command ? `<span class="cmd">${esc(e.status.command)}</span>` : ''}
-        <div class="grid"><label class="wide">程序位置<input data-path="${e.id}" value="${esc(settings.paths[e.id] || '')}" placeholder="${esc(e.status?.bin || '自动查找')}"></label></div>
+        <div class="grid"><label class="wide">${tr('程序位置')}<input data-path="${e.id}" value="${esc(settings.paths[e.id] || '')}" placeholder="${esc(e.status?.bin || tr('自动查找'))}"></label></div>
       </div>`;
 
   const html = `<div class="modal-inner">
-    <div class="modal-head"><h3>连接与登录</h3><button class="icon-btn" type="button" data-act="close">${ICON.close}</button></div>
+    <div class="modal-head"><h3>${tr('设置')}</h3><button class="icon-btn" type="button" data-act="close">${ICON.close}</button></div>
     <div class="modal-body">
-      <div class="section-title">本机 AI 应用</div>
+      <div class="field"><label for="appLanguage">${tr('语言')}</label>
+        <select id="appLanguage">${[['system', '跟随系统 / Follow system'], ['zh', '中文'], ['en', 'English']].map(([value, label]) => `<option value="${value}" ${value === settings.language ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
+      <div class="section-title">${tr('本机 AI 应用')}</div>
       ${cli.map(cliHtml).join('')}
       <div class="section-title">Gemini</div>
       ${gemCli ? cliHtml(gemCli) : ''}
@@ -281,22 +289,34 @@ async function openEnginesModal() {
         <div class="conn-head">${markHtml('gemini')}<b>Gemini API</b>${gem ? engineBadge(gem) : ''}</div>
         <div class="note">${esc(gem?.status?.note || '')}</div>
         <div class="grid">
-          <label class="wide">API key<input type="password" id="gemKey" placeholder="${settings.gemini.hasKey ? `已保存（${esc(settings.gemini.keyHint)}），留空表示不变` : '在 aistudio.google.com 创建'}"></label>
-          <label class="wide">接口地址<input id="gemBase" value="${esc(settings.gemini.baseUrl || '')}" placeholder="https://generativelanguage.googleapis.com"></label>
+          <label class="wide">API key<input type="password" id="gemKey" placeholder="${settings.gemini.hasKey ? tr('已保存（{0}），留空表示不变', [esc(settings.gemini.keyHint)]) : tr('在 aistudio.google.com 创建')}"></label>
+          <label class="wide">${tr('接口地址')}<input id="gemBase" value="${esc(settings.gemini.baseUrl || '')}" placeholder="https://generativelanguage.googleapis.com"></label>
         </div>
-        ${settings.gemini.hasKey ? '<button class="btn sm danger" type="button" data-act="clear-gem" style="margin-top:8px">清除 key</button>' : ''}
+        ${settings.gemini.hasKey ? `<button class="btn sm danger" type="button" data-act="clear-gem" style="margin-top:8px">${tr('清除 key')}</button>` : ''}
       </div>
-      <div class="section-title">OpenAI 兼容接口</div>
+      <div class="section-title">${tr('OpenAI 兼容接口')}</div>
       <div class="preset-row">${PRESETS.map(([n], i) => `<button class="btn sm" type="button" data-act="add-provider" data-preset="${i}">＋ ${esc(n)}</button>`).join('')}
-        <button class="btn sm ghost" type="button" data-act="add-provider">＋ 自定义</button></div>
+        <button class="btn sm ghost" type="button" data-act="add-provider">${tr('＋ 自定义')}</button></div>
       <div id="providerList">${providers.map(providerHtml).join('')}</div>
     </div>
     <div class="modal-foot"><span class="grow"></span>
-      <button class="btn" type="button" data-act="recheck">重新检测</button>
-      <button class="btn primary" type="button" data-act="save">保存</button></div>
+      <button class="btn" type="button" data-act="recheck">${tr('重新检测')}</button>
+      <button class="btn primary" type="button" data-act="save">${tr('保存')}</button></div>
   </div>`;
 
   const dlg = showModal(html);
+  $('#appLanguage', dlg).addEventListener('change', async (ev) => {
+    const select = ev.target;
+    select.disabled = true;
+    try {
+      await api('/api/settings', { method: 'PUT', body: { language: select.value } });
+      location.reload();
+    } catch (e) {
+      select.value = settings.language || 'system';
+      select.disabled = false;
+      toast(e.message, 'error');
+    }
+  });
   let clearGem = false;
   const collect = () => {
     $$('#providerList .conn', dlg).forEach((el) => {
@@ -316,8 +336,8 @@ async function openEnginesModal() {
     else if (act === 'add-provider') {
       collect();
       const pr = PRESETS[+b.dataset.preset];
-      let name = pr ? pr[0] : '自定义接口';
-      for (let k = 2; providers.some((p) => p.name === name); k++) name = `${pr ? pr[0] : '自定义接口'}${k}`;
+      let name = pr ? pr[0] : tr('自定义接口');
+      for (let k = 2; providers.some((p) => p.name === name); k++) name = `${pr ? pr[0] : tr('自定义接口')}${k}`;
       providers.push({ name, baseUrl: pr ? pr[1] : '', model: pr ? pr[2] : '' });
       rerenderProviders();
     } else if (act === 'del-provider') {
@@ -325,7 +345,7 @@ async function openEnginesModal() {
       providers.splice(+b.closest('.conn').dataset.i, 1);
       rerenderProviders();
     } else if (act === 'clear-gem') {
-      clearGem = true; b.textContent = '保存后清除'; b.disabled = true;
+      clearGem = true; b.textContent = tr('保存后清除'); b.disabled = true;
     } else if (act === 'recheck') {
       dlg.close(); openEnginesModal();
     } else if (act === 'save') {
@@ -338,7 +358,7 @@ async function openEnginesModal() {
       b.disabled = true;
       try {
         await api('/api/settings', { method: 'PUT', body: { paths, gemini, providers } });
-        toast('已保存');
+        toast(tr('已保存'));
         dlg.close();
         await refreshEngines(true);
         openEnginesModal();
@@ -376,7 +396,7 @@ function effortChoices(e, model) {
 function effortSelect(e, m) {
   const list = effortChoices(e, m.model);
   if (list.length <= 1) return '<span data-k="effort"></span>';
-  return `<select data-k="effort" title="思考深度">${list.map((v) => `<option value="${esc(v)}" ${v === (m.effort || '') ? 'selected' : ''}>思考：${esc(v || '默认')}</option>`).join('')}</select>`;
+  return `<select data-k="effort" title="${tr('思考深度')}">${list.map((v) => `<option value="${esc(v)}" ${v === (m.effort || '') ? 'selected' : ''}>${tr('思考：{0}', [esc(v || tr('默认'))])}</option>`).join('')}</select>`;
 }
 function memberEditor(container, members) {
   const render = () => {
@@ -386,19 +406,19 @@ function memberEditor(container, members) {
       const st = e.status || {};
       return `<div class="member-row" data-i="${i}" style="--c:${e.color || '#999'}">
         <div class="member-top">
-          <input data-k="name" value="${esc(m.name)}" maxlength="20" placeholder="名字">
-          <select data-k="engine">${state.engines.filter((x) => shownEngines().includes(x) || x.id === m.engine).map((x) => `<option value="${esc(x.id)}" ${x.id === m.engine ? 'selected' : ''}>${esc(x.label)}${x.status?.ready ? '' : '（未就绪）'}</option>`).join('')}</select>
-          <input data-k="model" value="${esc(m.model || '')}" list="models-${i}" placeholder="${esc(st.defaultModel ? `默认：${st.defaultModel}` : '默认模型')}">
+          <input data-k="name" value="${esc(m.name)}" maxlength="20" placeholder="${tr('名字')}">
+          <select data-k="engine">${state.engines.filter((x) => shownEngines().includes(x) || x.id === m.engine).map((x) => `<option value="${esc(x.id)}" ${x.id === m.engine ? 'selected' : ''}>${esc(x.label)}${x.status?.ready ? '' : tr('（未就绪）')}</option>`).join('')}</select>
+          <input data-k="model" value="${esc(m.model || '')}" list="models-${i}" placeholder="${esc(st.defaultModel ? tr('默认：{0}', [st.defaultModel]) : tr('默认模型'))}">
           <datalist id="models-${i}">${models.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('')}</datalist>
           ${effortSelect(e, m)}
-          <button class="icon-btn" type="button" data-act="del-member" title="移除" ${members.length <= 1 ? 'disabled' : ''}>${ICON.close}</button>
+          <button class="icon-btn" type="button" data-act="del-member" title="${tr('移除')}" ${members.length <= 1 ? 'disabled' : ''}>${ICON.close}</button>
         </div>
-        ${!st.ready ? `<div class="member-status warn">⚠ ${esc(st.note || '还不能用')}</div>` : ''}
-        <details ${m.persona ? 'open' : ''}><summary>设定</summary>
-          <textarea data-k="persona" rows="2" placeholder="例如：你负责挑毛病；或者：你是这份论文的审稿人">${esc(m.persona || '')}</textarea></details>
+        ${!st.ready ? `<div class="member-status warn">⚠ ${esc(st.note || tr('还不能用'))}</div>` : ''}
+        <details ${m.persona ? 'open' : ''}><summary>${tr('设定')}</summary>
+          <textarea data-k="persona" rows="2" placeholder="${tr('例如：你负责挑毛病；或者：你是这份论文的审稿人')}">${esc(m.persona || '')}</textarea></details>
       </div>`;
     }).join('')}</div>
-    <button class="btn sm ghost" type="button" data-act="add-member" ${members.length >= 8 ? 'disabled' : ''}>＋ 添加成员</button>`;
+    <button class="btn sm ghost" type="button" data-act="add-member" ${members.length >= 8 ? 'disabled' : ''}>${tr('＋ 添加成员')}</button>`;
   };
   container.addEventListener('input', (ev) => {
     const row = ev.target.closest('.member-row');
@@ -466,22 +486,22 @@ async function openNewSpaceModal() {
     $('input[name=ws][value=folder]', dlg).checked = true;
   };
   const dlg = showModal(`<div class="modal-inner">
-    <div class="modal-head"><h3>新建空间</h3><button class="btn sm ghost" type="button" data-act="from-chat">从对话开始</button><button class="icon-btn" type="button" data-act="close">${ICON.close}</button></div>
+    <div class="modal-head"><h3>${tr('新建空间')}</h3><button class="btn sm ghost" type="button" data-act="from-chat">${tr('从对话开始')}</button><button class="icon-btn" type="button" data-act="close">${ICON.close}</button></div>
     <div class="modal-body">
       <div id="nsImport"></div>
-      <div class="field"><label>名字</label><input id="nsTitle" maxlength="60" placeholder="例如：毕业论文第三章"></div>
-      <div class="field"><div class="label">成员</div><div id="nsMembers"></div></div>
-      <div class="field"><div class="label">共享文件夹</div>
+      <div class="field"><label>${tr('名字')}</label><input id="nsTitle" maxlength="60" placeholder="${tr('例如：毕业论文第三章')}"></div>
+      <div class="field"><div class="label">${tr('成员')}</div><div id="nsMembers"></div></div>
+      <div class="field"><div class="label">${tr('共享文件夹')}</div>
         <div class="choices">
-          <label class="choice"><input type="radio" name="ws" value="managed" checked><span><b>新建一个空文件夹</b><div class="d">适合写作和讨论</div></span></label>
-          <label class="choice"><input type="radio" name="ws" value="folder"><span><b>用电脑上已有的文件夹</b><div class="d">AI 会直接读写里面的文件</div>
-            <div class="folder-row"><input id="nsFolder" placeholder="点右边按钮选择" readonly><button class="btn sm" type="button" data-act="pick">选择…</button></div></span></label>
+          <label class="choice"><input type="radio" name="ws" value="managed" checked><span><b>${tr('新建一个空文件夹')}</b><div class="d">${tr('适合写作和讨论')}</div></span></label>
+          <label class="choice"><input type="radio" name="ws" value="folder"><span><b>${tr('用电脑上已有的文件夹')}</b><div class="d">${tr('AI 会直接读写里面的文件')}</div>
+            <div class="folder-row"><input id="nsFolder" placeholder="${tr('点右边按钮选择')}" readonly><button class="btn sm" type="button" data-act="pick">${tr('选择…')}</button></div></span></label>
         </div></div>
-      <div class="field"><div class="label">AI 的权限</div><div class="choices">${accessChoices('edit')}</div></div>
-      <div class="field"><label>每次最多来回几次</label>
+      <div class="field"><div class="label">${tr('AI 的权限')}</div><div class="choices">${accessChoices('edit')}</div></div>
+      <div class="field"><label>${tr('每次最多来回几次')}</label>
         <input id="nsTurns" type="number" min="1" max="30" value="6" style="width:100px"></div>
     </div>
-    <div class="modal-foot"><button class="btn" type="button" data-act="close">取消</button><button class="btn primary" type="button" data-act="create">创建</button></div>
+    <div class="modal-foot"><button class="btn" type="button" data-act="close">${tr('取消')}</button><button class="btn primary" type="button" data-act="create">${tr('创建')}</button></div>
   </div>`);
   memberEditor($('#nsMembers', dlg), members);
   $('#nsTitle', dlg).focus();
@@ -507,8 +527,8 @@ async function openNewSpaceModal() {
         box.replaceWith(fresh);
         memberEditor(fresh, members);
       }
-      $('#nsImport', dlg).innerHTML = `<div class="field"><div class="imp-pick"><b>${esc(imp.title)}</b><span class="hint">${esc(imp.sourceLabel)} · ${imp.count} 条 · ${wan(imp.chars)}</span>
-        <button class="icon-btn" type="button" data-act="drop-import" title="不导入">${ICON.close}</button></div>${importOptionsHtml(imp)}</div>`;
+      $('#nsImport', dlg).innerHTML = `<div class="field"><div class="imp-pick"><b>${esc(imp.title)}</b><span class="hint">${tr('{0} · {1} 条 · {2}', [esc(imp.sourceLabel), imp.count, wan(imp.chars)])}</span>
+        <button class="icon-btn" type="button" data-act="drop-import" title="${tr('不导入')}">${ICON.close}</button></div>${importOptionsHtml(imp)}</div>`;
       bindImportOptions($('#nsImport', dlg), syncFolder);
     }
     if (b.dataset.act === 'drop-import') { imp = null; $('#nsImport', dlg).innerHTML = ''; }
@@ -521,22 +541,22 @@ async function openNewSpaceModal() {
         access: $('input[name=access]:checked', dlg).value,
         maxTurns: $('#nsTurns', dlg).value,
       };
-      if (wsType === 'folder' && !body.workspace.path) { toast('请先选择文件夹', 'error'); return; }
+      if (wsType === 'folder' && !body.workspace.path) { toast(tr('请先选择文件夹'), 'error'); return; }
       if (imp) {
         const { memberId, writerId, ...opts } = readImportOptions($('#nsImport', dlg), imp);
         const topic = opts.mode === 'topic';
-        if (topic && !opts.topic) { toast('请填写主题', 'error'); $('#impTopic', dlg).focus(); return; }
+        if (topic && !opts.topic) { toast(tr('请填写主题'), 'error'); $('#impTopic', dlg).focus(); return; }
         const has = members.some((m) => m.engine === imp.engine);
-        if (engineOf(imp.engine) && !has && !topic) { toast(`导入这段对话需要一个 ${imp.sourceLabel} 成员`, 'error'); return; }
+        if (engineOf(imp.engine) && !has && !topic) { toast(tr('导入这段对话需要一个 {0} 成员', [imp.sourceLabel]), 'error'); return; }
         const folder = wsType === 'folder' ? body.workspace.path : '';
         const moved = has && imp.engine === 'claude-code' && imp.cwd && !samePath(folder, imp.cwd) && !(topic && folder && subOf(folder, imp.cwd));
-        if (moved && !confirm('共享文件夹和原对话的不同，原对话里的文件路径可能对不上。继续吗？')) return;
+        if (moved && !confirm(tr('共享文件夹和原对话的不同，原对话里的文件路径可能对不上。继续吗？'))) return;
         body.import = opts;
       }
       b.disabled = true;
       try {
         const sp = await api('/api/spaces', { method: 'POST', body });
-        if (sp.importError) toast(`空间建好了，但对话没导入：${sp.importError}`, 'error');
+        if (sp.importError) toast(tr('空间建好了，但对话没导入：{0}', [sp.importError]), 'error');
         dlg.close();
         await refreshSpaces();
         location.hash = `#/space/${sp.id}`;
@@ -552,19 +572,19 @@ async function openSpaceSettings() {
   await refreshEngines();
   const members = sp.members.map((m) => ({ ...m }));
   const allowed = [...(sp.allowedPrograms || [])];
-  const allowedHtml = () => allowed.map((p) => `<span class="allowed-chip"><code>${esc(p)}</code><button type="button" class="icon-btn" data-act="unallow" data-p="${esc(p)}" title="移除" aria-label="移除 ${esc(p)}">${ICON.close}</button></span>`).join('');
+  const allowedHtml = () => allowed.map((p) => `<span class="allowed-chip"><code>${esc(p)}</code><button type="button" class="icon-btn" data-act="unallow" data-p="${esc(p)}" title="${tr('移除')}" aria-label="${tr('移除 {0}', [esc(p)])}">${ICON.close}</button></span>`).join('');
   const dlg = showModal(`<div class="modal-inner">
-    <div class="modal-head"><h3>空间设置</h3><button class="icon-btn" type="button" data-act="close">${ICON.close}</button></div>
+    <div class="modal-head"><h3>${tr('空间设置')}</h3><button class="icon-btn" type="button" data-act="close">${ICON.close}</button></div>
     <div class="modal-body">
-      <div class="field"><label>名字</label><input id="ssTitle" maxlength="60" value="${esc(sp.title)}"></div>
-      <div class="field"><div class="label">成员</div><div id="ssMembers"></div></div>
-      <div class="field"><div class="label">AI 的权限</div><div class="choices">${accessChoices(sp.access)}</div></div>
-      ${allowed.length ? `<div class="field"><div class="label">运行前不再问的程序</div><div class="allowed-list" id="ssAllowed">${allowedHtml()}</div></div>` : ''}
-      <div class="field"><label>每次最多来回几次</label><input id="ssTurns" type="number" min="1" max="30" value="${sp.maxTurns}" style="width:100px"></div>
-      <div class="field"><div class="label">共享文件夹</div><span class="cmd">${esc(sp.workspacePath)}</span></div>
+      <div class="field"><label>${tr('名字')}</label><input id="ssTitle" maxlength="60" value="${esc(sp.title)}"></div>
+      <div class="field"><div class="label">${tr('成员')}</div><div id="ssMembers"></div></div>
+      <div class="field"><div class="label">${tr('AI 的权限')}</div><div class="choices">${accessChoices(sp.access)}</div></div>
+      ${allowed.length ? `<div class="field"><div class="label">${tr('运行前不再问的程序')}</div><div class="allowed-list" id="ssAllowed">${allowedHtml()}</div></div>` : ''}
+      <div class="field"><label>${tr('每次最多来回几次')}</label><input id="ssTurns" type="number" min="1" max="30" value="${sp.maxTurns}" style="width:100px"></div>
+      <div class="field"><div class="label">${tr('共享文件夹')}</div><span class="cmd">${esc(sp.workspacePath)}</span></div>
     </div>
-    <div class="modal-foot"><button class="btn danger" type="button" data-act="delete">删除这个空间</button><span class="grow"></span>
-      <button class="btn" type="button" data-act="close">取消</button><button class="btn primary" type="button" data-act="save">保存</button></div>
+    <div class="modal-foot"><button class="btn danger" type="button" data-act="delete">${tr('删除这个空间')}</button><span class="grow"></span>
+      <button class="btn" type="button" data-act="close">${tr('取消')}</button><button class="btn primary" type="button" data-act="save">${tr('保存')}</button></div>
   </div>`);
   memberEditor($('#ssMembers', dlg), members);
   dlg.addEventListener('click', async (ev) => {
@@ -573,7 +593,7 @@ async function openSpaceSettings() {
     if (b.dataset.act === 'close') dlg.close();
     if (b.dataset.act === 'unallow') {
       allowed.splice(allowed.indexOf(b.dataset.p), 1);
-      $('#ssAllowed', dlg).innerHTML = allowedHtml() || '<span class="hint">（无）</span>';
+      $('#ssAllowed', dlg).innerHTML = allowedHtml() || `<span class="hint">${tr('（无）')}</span>`;
     }
     if (b.dataset.act === 'save') {
       b.disabled = true;
@@ -592,15 +612,15 @@ async function openSpaceSettings() {
 function openDeleteSpaceModal(sp) {
   const managed = sp.workspace.type === 'managed';
   const dlg = showModal(`<div class="modal-inner">
-    <div class="modal-head"><h3>删除「${esc(sp.title)}」？</h3></div>
+    <div class="modal-head"><h3>${tr('删除「{0}」？', [esc(sp.title)])}</h3></div>
     <div class="modal-body">
-      <p>聊天记录、导入的对话和任务记录都会删除，无法恢复。正在进行的讨论和任务会先停止。</p>
-      <p>${managed ? '软件建的共享文件夹及里面的文件也会一起删除。' : '你的共享文件夹及里面的文件会保留。'}</p>
+      <p>${tr('聊天记录、导入的对话和任务记录都会删除，无法恢复。正在进行的讨论和任务会先停止。')}</p>
+      <p>${managed ? tr('软件建的共享文件夹及里面的文件也会一起删除。') : tr('你的共享文件夹及里面的文件会保留。')}</p>
       <span class="cmd">${esc(sp.workspacePath)}</span>
       <p class="err" data-delete-error role="alert" hidden></p>
     </div>
-    <div class="modal-foot"><span class="grow"></span><button class="btn" type="button" data-act="close" autofocus>取消</button>
-      <button class="btn danger" type="button" data-act="confirm-delete">确认删除</button></div>
+    <div class="modal-foot"><span class="grow"></span><button class="btn" type="button" data-act="close" autofocus>${tr('取消')}</button>
+      <button class="btn danger" type="button" data-act="confirm-delete">${tr('确认删除')}</button></div>
   </div>`);
   let deleting = false;
   dlg.addEventListener('cancel', (e) => { if (deleting) { e.preventDefault(); e.stopImmediatePropagation(); } }, true);
@@ -611,7 +631,7 @@ function openDeleteSpaceModal(sp) {
     if (b.dataset.act !== 'confirm-delete') return;
     deleting = true;
     $$('button', dlg).forEach((button) => { button.disabled = true; });
-    b.textContent = '正在删除…';
+    b.textContent = tr('正在删除…');
     $('[data-delete-error]', dlg).hidden = true;
     try {
       await api(`/api/spaces/${sp.id}`, { method: 'DELETE', body: {} });
@@ -624,7 +644,7 @@ function openDeleteSpaceModal(sp) {
       state.spaces = state.spaces.filter((s) => s.id !== sp.id);
       renderSpaceList();
       dlg.close();
-      toast('空间已删除');
+      toast(tr('空间已删除'));
       await refreshSpaces();
     } catch (err) {
       const error = $('[data-delete-error]', dlg);
@@ -632,7 +652,7 @@ function openDeleteSpaceModal(sp) {
       error.hidden = false;
       deleting = false;
       $$('button', dlg).forEach((button) => { button.disabled = false; });
-      b.textContent = '重试删除';
+      b.textContent = tr('重试删除');
     }
   });
 }
@@ -655,15 +675,15 @@ const plain = (s) => String(s)
   .trim();
 function renderSpaceList() {
   const list = $('#spaceList');
-  if (!state.spaces.length) { list.innerHTML = '<div class="empty-list">还没有空间</div>'; return; }
+  if (!state.spaces.length) { list.innerHTML = `<div class="empty-list">${tr('还没有空间')}</div>`; return; }
   // 右上角：需要你的事优先（等你确认 > 任务待处理），否则显示最后一条消息的时间
-  const side = (s) => (s.waiting ? '<b class="tag wait">等你确认</b>'
-    : s.needsYou ? '<b class="tag">任务待处理</b>'
+  const side = (s) => (s.waiting ? `<b class="tag wait">${tr('等你确认')}</b>`
+    : s.needsYou ? `<b class="tag">${tr('任务待处理')}</b>`
       : `<span class="when">${relTime(s.lastAt || s.updatedAt)}</span>`);
   list.innerHTML = state.spaces.map((s) => `
     <a class="space-item ${s.id === state.space?.id ? 'active' : ''}" href="#/space/${s.id}" data-space-id="${s.id}">
-      <div class="t">${s.running ? '<span class="live-dot" title="正在发言"></span>' : ''}<span class="title">${esc(s.title)}</span>${side(s)}</div>
-      <div class="p">${s.preview ? esc(plain(s.preview)) : '还没有消息'}</div>
+      <div class="t">${s.running ? `<span class="live-dot" title="${tr('正在发言')}"></span>` : ''}<span class="title">${esc(s.title)}</span>${side(s)}</div>
+      <div class="p">${s.preview ? esc(plain(s.preview)) : tr('还没有消息')}</div>
     </a>`).join('');
 }
 function hideSpaceMenu() { $('#spaceMenu').hidden = true; }
@@ -712,7 +732,7 @@ $('#newSpaceBtn').addEventListener('click', openNewSpaceModal);
 $('#enginesBtn').addEventListener('click', openEnginesModal);
 
 // ---------------- 主题：跟随系统 → 浅色 → 深色 ----------------
-const THEMES = { system: '跟随系统', light: '浅色', dark: '深色' };
+const THEMES = { system: tr('跟随系统'), light: tr('浅色'), dark: tr('深色') };
 let theme = 'system';
 function applyTheme(t) {
   theme = THEMES[t] ? t : 'system';
@@ -725,7 +745,7 @@ function applyTheme(t) {
   }
   const b = $('#themeBtn');
   b.innerHTML = ICON[theme];
-  b.title = `主题：${THEMES[theme]}`;
+  b.title = tr('主题：{0}', [THEMES[theme]]);
   b.setAttribute('aria-label', b.title);
 }
 $('#themeBtn').addEventListener('click', () => {
@@ -761,7 +781,7 @@ function openSpace(id) {
   if (state.space?.id !== id) {
     state.space = null;
     $('#messages').innerHTML = '';
-    $('#spaceTitle').textContent = '加载中…';
+    $('#spaceTitle').textContent = tr('加载中…');
     state.files.view = null;
     state.files.expanded = new Set();
   }
@@ -769,7 +789,7 @@ function openSpace(id) {
   state.es = es;
   es.onmessage = (e) => { try { handleEvent(JSON.parse(e.data)); } catch (err) { console.error(err); } };
   es.onerror = () => {
-    if (es.readyState === EventSource.CLOSED) { toast('这个空间不存在或已被删除', 'error'); location.hash = '#/'; }
+    if (es.readyState === EventSource.CLOSED) { toast(tr('这个空间不存在或已被删除'), 'error'); location.hash = '#/'; }
   };
 }
 
@@ -879,12 +899,12 @@ function renderHeader() {
   const sp = state.space;
   const next = (sp.queue || []).map((id) => memberOf(id)?.name).filter(Boolean);
   const q = $('#queueInfo');
-  q.textContent = next.length ? `接下来：${next.slice(0, 5).join(' → ')}` : '';
+  q.textContent = next.length ? tr('接下来：{0}', [next.slice(0, 5).join(' → ')]) : '';
   q.hidden = !next.length;
   const btns = sp.running
-    ? [['stop', '停止'], ...(sp.speaking ? [['skip', '跳过当前']] : [])]
-    : [['continue', '继续讨论']];
-  const icons = [['files', state.files.open ? '收起文件' : '共享文件', state.files.open], ['import', '导入对话'], ['settings', '设置'], ['export', '导出']];
+    ? [['stop', tr('停止')], ...(sp.speaking ? [['skip', tr('跳过当前')]] : [])]
+    : [['continue', tr('继续讨论')]];
+  const icons = [['files', state.files.open ? tr('收起文件') : tr('共享文件'), state.files.open], ['import', tr('导入对话')], ['settings', tr('空间设置')], ['export', tr('导出')]];
   $('#spaceActions').innerHTML = btns.map(([a, l]) => `<button type="button" class="btn sm ${a === 'stop' ? 'danger' : ''}" data-act="${a}">${l}</button>`).join('')
     + icons.map(([a, l, on]) => `<button type="button" class="icon-btn ${on ? 'on' : ''}" data-act="${a}" title="${l}" aria-label="${l}">${ICON[a]}</button>`).join('');
 }
@@ -899,8 +919,8 @@ function renderMembersBar() {
     const e = engineOf(m.engine);
     const ok = !e || e.status?.ready !== false;
     return `<button type="button" class="person ${speaking?.memberId === m.id ? 'speaking' : ''} ${ok ? '' : 'off'}" style="--c:${m.color}" data-id="${m.id}"
-      title="${esc(m.engineLabel)}${m.model ? ` · ${esc(m.model)}` : ''}${ok ? '' : `\n⚠ ${esc(e.status?.note || '')}`}">
-      ${avatarHtml(m.engine, m.name)}${esc(m.name)}${cannotRun(m) ? '<small>不能运行命令</small>' : ''}</button>`;
+      title="${esc(e.label || m.engineLabel)}${m.model ? ` · ${esc(m.model)}` : ''}${ok ? '' : `\n⚠ ${esc(e.status?.note || '')}`}">
+      ${avatarHtml(m.engine, m.name)}${esc(m.name)}${cannotRun(m) ? `<small>${tr('不能运行命令')}</small>` : ''}</button>`;
   }).join('');
 }
 
@@ -925,13 +945,13 @@ function renderMemberPop() {
   const models = modelChoices(e);
   if (m.model && !models.some(([v]) => v === m.model)) models.unshift([m.model, '']);
   $('#memberPop').innerHTML = `
-    <div class="mp-head">${avatarHtml(m.engine, m.name)}<b>${esc(m.name)}</b><span>${esc(m.engineLabel)}</span></div>
-    ${st.ready === false ? `<div class="member-status warn">⚠ ${esc(st.note || '还不能用')}</div>` : ''}
-    ${cannotRun(m) ? '<div class="hint">它没法在运行命令前先问你，所以这一档只能读写文件。</div>' : ''}
-    <select data-k="model" title="型号"><option value="">${esc(st.defaultModel ? `默认（${st.defaultModel}）` : '默认型号')}</option>
+    <div class="mp-head">${avatarHtml(m.engine, m.name)}<b>${esc(m.name)}</b><span>${esc(e.label || m.engineLabel)}</span></div>
+    ${st.ready === false ? `<div class="member-status warn">⚠ ${esc(st.note || tr('还不能用'))}</div>` : ''}
+    ${cannotRun(m) ? `<div class="hint">${tr('它没法在运行命令前先问你，所以这一档只能读写文件。')}</div>` : ''}
+    <select data-k="model" title="${tr('型号')}"><option value="">${esc(st.defaultModel ? tr('默认（{0}）', [st.defaultModel]) : tr('默认型号'))}</option>
       ${models.map(([v, l]) => `<option value="${esc(v)}" ${v === m.model ? 'selected' : ''}>${esc(l || v)}</option>`).join('')}</select>
     ${effortSelect(e, m)}
-    <button class="btn sm block" type="button" data-act="ask">让 ${esc(m.name)} 现在发言</button>`;
+    <button class="btn sm block" type="button" data-act="ask">${tr('让 {0} 现在发言', [esc(m.name)])}</button>`;
 }
 $('#memberPop').addEventListener('change', async (e) => {
   const k = e.target.dataset.k;
@@ -953,7 +973,7 @@ window.addEventListener('resize', hideMemberPop);
 
 // ---- 命令审批卡片 ----
 const noteDrafts = new Map(); // 卡片上正在写的附言：id -> 文字（消息重绘时不丢）
-const AP_DONE = { allowed: '已允许', always: '已允许，以后不再问', denied: '已拒绝', cancelled: '已取消' };
+const AP_DONE = { allowed: tr('已允许'), always: tr('已允许，以后不再问'), denied: tr('已拒绝'), cancelled: tr('已取消') };
 function approvalHtml(a) {
   if (a.status !== 'pending') {
     const one = a.command.replace(/\s+/g, ' ');
@@ -961,12 +981,12 @@ function approvalHtml(a) {
     return `<div class="ap-done ${a.status}"><span>${AP_DONE[a.status] || a.status}</span><code title="${esc(a.command)}">${esc(one)}</code>${note ? `<span class="why" title="${esc(note)}">${esc(note)}</span>` : ''}</div>`;
   }
   return `<div class="approval" data-ap="${a.id}">
-    <div class="ap-q">想运行</div>
+    <div class="ap-q">${tr('想运行')}</div>
     <pre class="ap-cmd">${esc(a.command)}</pre>
-    <input class="ap-note" data-apr maxlength="500" placeholder="附一句话（可不填）" value="${esc(noteDrafts.get(a.id) || '')}">
-    <div class="ap-actions"><button class="btn sm primary" type="button" data-apd="allow">允许</button>
-      ${a.programs?.length ? `<button class="btn sm" type="button" data-apd="always">一直允许 ${esc(a.programs.join('、'))}</button>` : ''}
-      <button class="btn sm" type="button" data-apd="deny">拒绝</button></div>
+    <input class="ap-note" data-apr maxlength="500" placeholder="${tr('附一句话（可不填）')}" value="${esc(noteDrafts.get(a.id) || '')}">
+    <div class="ap-actions"><button class="btn sm primary" type="button" data-apd="allow">${tr('允许')}</button>
+      ${a.programs?.length ? `<button class="btn sm" type="button" data-apd="always">${tr('一直允许 {0}', [esc(a.programs.join('、'))])}</button>` : ''}
+      <button class="btn sm" type="button" data-apd="deny">${tr('拒绝')}</button></div>
   </div>`;
 }
 const approvalsHtml = (m) => (m.approvals?.length ? `<div class="approvals">${m.approvals.map(approvalHtml).join('')}</div>` : '');
@@ -984,37 +1004,37 @@ $('#messages').addEventListener('input', (e) => {
 
 function activitiesHtml(acts, streaming) {
   if (!acts?.length) return '';
-  const row = (a) => `<div class="act"><i>${ACT_ICON[a.kind] || ACT_ICON.tool}</i><span title="${esc(a.label)}">${esc(a.label)}</span></div>`;
-  if (acts.length <= 5 || streaming) return `<div class="acts">${acts.slice(-5).map(row).join('')}${acts.length > 5 ? `<div class="act"><i></i><span>（共 ${acts.length} 步）</span></div>` : ''}</div>`;
-  return `<details class="acts"><summary>${acts.length} 个操作</summary>${acts.map(row).join('')}</details>`;
+  const row = (a) => `<div class="act"><i>${ACT_ICON[a.kind] || ACT_ICON.tool}</i><span title="${esc(localizeActivity(a.label))}">${esc(localizeActivity(a.label))}</span></div>`;
+  if (acts.length <= 5 || streaming) return `<div class="acts">${acts.slice(-5).map(row).join('')}${acts.length > 5 ? `<div class="act"><i></i><span>${tr('（共 {0} 步）', [acts.length])}</span></div>` : ''}</div>`;
+  return `<details class="acts"><summary>${tr('{0} 个操作', [acts.length])}</summary>${acts.map(row).join('')}</details>`;
 }
 
 function messageHtml(m) {
   if (m.kind === 'import') return importHtml(m);
   if (m.kind === 'user') {
-    return `<div class="msg user" id="m-${m.id}"><span class="avatar me">我</span>
-      <div class="msg-main"><div class="msg-head"><span class="n">我</span><span class="m">${clock(m.ts)}</span></div>
+    return `<div class="msg user" id="m-${m.id}"><span class="avatar me">${tr('我')}</span>
+      <div class="msg-main"><div class="msg-head"><span class="n">${tr('我')}</span><span class="m">${clock(m.ts)}</span></div>
       <div class="bubble"><div class="md">${md(m.text)}</div></div></div></div>`;
   }
   const mem = memberOf(m.memberId);
   const color = mem?.color || engineOf(m.engine)?.color || '#888';
   if (m.passed && !m.streaming) {
-    return `<div class="pass-line" id="m-${m.id}" style="--c:${color}"><b>${esc(m.name)}</b> 没有补充${m.changes?.length ? `，但修改了 ${m.changes.length} 个文件` : ''}</div>`;
+    return `<div class="pass-line" id="m-${m.id}" style="--c:${color}"><b>${esc(m.name)}</b> ${tr('没有补充{0}', [m.changes?.length ? tr('，但修改了 {0} 个文件', [m.changes.length]) : ''])}</div>`;
   }
   const meta = [];
-  if (m.durationMs) meta.push(`${(m.durationMs / 1000).toFixed(0)} 秒`);
+  if (m.durationMs) meta.push(tr('{0} 秒', [(m.durationMs / 1000).toFixed(0)]));
   if (m.model) meta.push(m.model);
   const last = m.activities?.[m.activities.length - 1];
   let body;
-  if (m.streaming && !m.text) body = `<span class="typing"><i></i><i></i><i></i>&nbsp;${esc(last ? last.label : '思考中')}</span>`;
+  if (m.streaming && !m.text) body = `<span class="typing"><i></i><i></i><i></i>&nbsp;${esc(last ? last.label : tr('思考中'))}</span>`;
   else body = m.text ? `<div class="md ${m.streaming ? 'cursor' : ''}">${md(m.text)}</div>` : '';
-  const changes = m.changes?.length ? `<div class="changes">${m.changes.map((c) => `<button type="button" class="change-chip" data-change="${c.id}">${ICON.file}${esc(c.path)} ${c.created ? '<span class="plus">新建</span>' : c.deleted ? '<span class="minus">删除</span>' : `<span class="plus">+${c.added}</span><span class="minus">−${c.removed}</span>`}</button>`).join('')}</div>` : '';
+  const changes = m.changes?.length ? `<div class="changes">${m.changes.map((c) => `<button type="button" class="change-chip" data-change="${c.id}">${ICON.file}${esc(c.path)} ${c.created ? `<span class="plus">${tr('新建')}</span>` : c.deleted ? `<span class="minus">${tr('删除')}</span>` : `<span class="plus">+${c.added}</span><span class="minus">−${c.removed}</span>`}</button>`).join('')}</div>` : '';
   return `<div class="msg ai ${m.error ? 'error' : ''}" id="m-${m.id}" style="--c:${color}">
     ${avatarHtml(mem?.engine || m.engine, m.name)}
     <div class="msg-main">
       <div class="msg-head"><span class="n">${esc(m.name)}</span><span class="m" title="${esc(meta.join(' · '))}">${clock(m.ts)}</span></div>
       <div class="bubble">${activitiesHtml(m.activities, m.streaming)}${approvalsHtml(m)}${body}
-        ${m.interrupted ? '<div class="note">（发言被中断）</div>' : ''}
+        ${m.interrupted ? `<div class="note">${tr('（发言被中断）')}</div>` : ''}
         ${m.note ? `<div class="note">${esc(m.note)}</div>` : ''}
         ${m.error ? `<div class="err">⚠ ${esc(m.error)}</div>` : ''}${changes}</div>
     </div></div>`;
@@ -1143,23 +1163,23 @@ function renderFilesBody() {
     body.innerHTML = list.length ? `<div class="history-list">${list.map((h) => {
       const mem = state.space.members.find((m) => m.name === h.by);
       const color = h.by === '我' ? 'var(--accent)' : mem?.color || 'var(--muted)';
-      const tag = h.undoOf ? '撤销' : h.created ? '新建' : h.deleted ? '删除' : '';
+      const tag = h.undoOf ? tr('撤销') : h.created ? tr('新建') : h.deleted ? tr('删除') : '';
       return `<div class="h-row" data-change="${h.id}" style="--c:${color}">
-        <span class="who">${esc(h.by)}</span><span class="hp">${esc(h.path)}</span>
+        <span class="who">${esc(authorName(h.by))}</span><span class="hp">${esc(h.path)}</span>
         <span>${tag ? `<span class="badge off">${tag}</span> ` : ''}<span class="plus">+${h.added}</span> <span class="minus">−${h.removed}</span></span>
-        <span class="ht">${new Date(h.ts).toLocaleString('zh-CN', { hour12: false })}</span></div>`;
-    }).join('')}</div>` : '<div class="empty-files">还没有改动</div>';
+        <span class="ht">${new Date(h.ts).toLocaleString(getLanguage(), { hour12: false })}</span></div>`;
+    }).join('')}</div>` : `<div class="empty-files">${tr('还没有改动')}</div>`;
     return;
   }
   const files = state.files.list;
-  body.innerHTML = `<div class="file-tools"><button class="btn sm" type="button" data-act="new-file">＋ 新建文件</button>
-      ${state.files.truncated ? '<span class="hint">文件太多，只显示一部分</span>' : ''}</div>
-    ${files.length ? `<div class="file-list">${treeHtml(fileTree(files))}</div>` : '<div class="empty-files">文件夹是空的</div>'}`;
+  body.innerHTML = `<div class="file-tools"><button class="btn sm" type="button" data-act="new-file">${tr('＋ 新建文件')}</button>
+      ${state.files.truncated ? `<span class="hint">${tr('文件太多，只显示一部分')}</span>` : ''}</div>
+    ${files.length ? `<div class="file-list">${treeHtml(fileTree(files))}</div>` : `<div class="empty-files">${tr('文件夹是空的')}</div>`}`;
   state.files.flash.clear();
 }
 
 // 文件夹树：文件夹在前，名字按自然顺序（9 在 10 前），子文件夹默认收起
-const byName = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' }).compare;
+const byName = new Intl.Collator(getLanguage(), { numeric: true, sensitivity: 'base' }).compare;
 function fileTree(list) {
   const root = { dirs: new Map(), files: [] };
   for (const f of list) {
@@ -1200,11 +1220,11 @@ async function openFile(p) {
 function renderEditor(body, v) {
   const dirty = v.draft !== v.content;
   body.innerHTML = `<div class="editor">
-    <div class="editor-head"><button class="icon-btn" type="button" data-act="back" title="返回">${ICON.back}</button>
+    <div class="editor-head"><button class="icon-btn" type="button" data-act="back" title="${tr('返回')}">${ICON.back}</button>
       <span class="ep" title="${esc(v.path)}">${esc(v.path)}${dirty ? ' ●' : ''}</span>
-      <button class="btn sm" type="button" data-act="toggle-preview">${v.preview ? '编辑' : '预览'}</button>
-      <button class="btn sm primary" type="button" data-act="save-file" ${dirty ? '' : 'disabled'}>保存</button></div>
-    ${v.stale ? `<div class="editor-warn">⚠ 这个文件刚被改过了。<button class="btn sm" type="button" data-act="reload-file">载入最新内容</button>${dirty ? '<span class="hint">（会丢掉你没保存的修改）</span>' : ''}</div>` : ''}
+      <button class="btn sm" type="button" data-act="toggle-preview">${v.preview ? tr('编辑') : tr('预览')}</button>
+      <button class="btn sm primary" type="button" data-act="save-file" ${dirty ? '' : 'disabled'}>${tr('保存')}</button></div>
+    ${v.stale ? `<div class="editor-warn">${tr('⚠ 这个文件刚被改过了。')}<button class="btn sm" type="button" data-act="reload-file">${tr('载入最新内容')}</button>${dirty ? `<span class="hint">${tr('（会丢掉你没保存的修改）')}</span>` : ''}</div>` : ''}
     ${v.preview ? `<div class="preview md">${md(v.draft)}</div>` : `<textarea spellcheck="false" id="editorText">${esc(v.draft)}</textarea>`}
   </div>`;
   const ta = $('#editorText', body);
@@ -1226,7 +1246,7 @@ async function saveFile() {
     await api(`/api/spaces/${state.space.id}/file`, { method: 'PUT', body: { path: v.path, content: v.draft } });
     v.content = v.draft;
     v.stale = false;
-    toast('已保存');
+    toast(tr('已保存'));
     renderFilesBody();
   } catch (e) { toast(e.message, 'error'); }
 }
@@ -1244,22 +1264,22 @@ function renderChange(body, c) {
   const undone = state.files.history.some((h) => h.undoOf === c.id);
   const canUndo = !undone && c.current === c.after;
   body.innerHTML = `<div class="diff-view">
-    <div class="editor-head"><button class="icon-btn" type="button" data-act="back" title="返回">${ICON.back}</button>
-      <span class="ep">${esc(c.by)} ${c.created ? '新建了' : c.deleted ? '删除了' : '修改了'} ${esc(c.path)}</span>
-      <button class="btn sm" type="button" data-act="open-file" data-path="${esc(c.path)}" ${c.deleted ? 'disabled' : ''}>打开文件</button>
-      <button class="btn sm danger" type="button" data-act="undo" ${undone ? 'disabled' : ''}>${undone ? '已撤销' : '撤销这次改动'}</button></div>
-    <div class="hint" style="padding:6px 12px">${new Date(c.ts).toLocaleString('zh-CN', { hour12: false })}${!canUndo && !undone ? ' · 这个文件之后又被改过' : ''}</div>
+    <div class="editor-head"><button class="icon-btn" type="button" data-act="back" title="${tr('返回')}">${ICON.back}</button>
+      <span class="ep">${esc(authorName(c.by))} ${c.created ? tr('新建了') : c.deleted ? tr('删除了') : tr('修改了')} ${esc(c.path)}</span>
+      <button class="btn sm" type="button" data-act="open-file" data-path="${esc(c.path)}" ${c.deleted ? 'disabled' : ''}>${tr('打开文件')}</button>
+      <button class="btn sm danger" type="button" data-act="undo" ${undone ? 'disabled' : ''}>${undone ? tr('已撤销') : tr('撤销这次改动')}</button></div>
+    <div class="hint" style="padding:6px 12px">${new Date(c.ts).toLocaleString(getLanguage(), { hour12: false })}${!canUndo && !undone ? tr(' · 这个文件之后又被改过') : ''}</div>
     <div class="diff">${diffHtml(c.before, c.after)}</div></div>`;
 }
 
 async function undoChange(c) {
   try {
     await api(`/api/spaces/${state.space.id}/history/${c.id}/undo`, { method: 'POST', body: {} });
-    toast(`已撤销对 ${c.path} 的改动`);
+    toast(tr('已撤销对 {0} 的改动', [c.path]));
   } catch (e) {
     if (!e.conflict) { toast(e.message, 'error'); return; }
-    if (!confirm(`${e.message}\n\n仍然要把 ${c.path} 恢复成这次改动之前的样子吗？之后的修改会丢失（但会留在改动记录里，可以再撤销回来）。`)) return;
-    try { await api(`/api/spaces/${state.space.id}/history/${c.id}/undo`, { method: 'POST', body: { force: true } }); toast('已撤销'); } catch (err) { toast(err.message, 'error'); return; }
+    if (!confirm(tr('{0}\n\n仍然要把 {1} 恢复成这次改动之前的样子吗？之后的修改会丢失（但会留在改动记录里，可以再撤销回来）。', [e.message, c.path]))) return;
+    try { await api(`/api/spaces/${state.space.id}/history/${c.id}/undo`, { method: 'POST', body: { force: true } }); toast(tr('已撤销')); } catch (err) { toast(err.message, 'error'); return; }
   }
   await loadHistory();
   openChange(c.id);
@@ -1297,7 +1317,7 @@ $('#filesPanel').addEventListener('click', async (e) => {
   const v = state.files.view;
   switch (b.dataset.act) {
     case 'back':
-      if (v?.type === 'file' && v.draft !== v.content && !confirm('有没保存的修改，确定离开吗？')) return;
+      if (v?.type === 'file' && v.draft !== v.content && !confirm(tr('有没保存的修改，确定离开吗？'))) return;
       state.files.view = null; renderFilesBody(); break;
     case 'toggle-preview': v.preview = !v.preview; renderFilesBody(); break;
     case 'save-file': saveFile(); break;
@@ -1307,11 +1327,11 @@ $('#filesPanel').addEventListener('click', async (e) => {
     case 'new-file': {
       // 桌面版（Electron）不支持 prompt()，就地换成一个输入框
       const tools = b.closest('.file-tools');
-      tools.innerHTML = '<input id="newFileName" value="新文档.md" spellcheck="false" placeholder="notes/计划.md">';
+      tools.innerHTML = `<input id="newFileName" value="${tr('新文档.md')}" spellcheck="false" placeholder="${tr('notes/计划.md')}">`;
       const inp = $('#newFileName', tools);
       let done = false;
       inp.focus();
-      inp.setSelectionRange(0, 3);
+      inp.setSelectionRange(0, inp.value.lastIndexOf('.'));
       inp.addEventListener('keydown', (ev) => {
         if (ev.isComposing || ev.keyCode === 229) return;
         if (ev.key === 'Escape') { done = true; renderFilesBody(); }
@@ -1333,18 +1353,18 @@ $('#refreshFilesBtn').addEventListener('click', () => { loadFiles(); loadHistory
 $('#openFolderBtn').addEventListener('click', () => api('/api/open-path', { method: 'POST', body: { path: state.space.workspacePath } }).catch((e) => toast(e.message, 'error')));
 
 // ================= 任务协作 =================
-const RUN_STATUS = { planning: '规划中', plan_review: '等你确认计划', executing: '执行中', summarizing: '协调者在写总结', done: '已完成', failed: '没有完成规划', cancelled: '已取消' };
-const T_STATUS = { pending: '等前置任务', ready: '排队中', running: '进行中', review: '待你审查', approved: '已通过', failed: '失败', blocked: '等你回答', skipped: '已跳过', cancelled: '已取消' };
-const CHAT_PLACEHOLDER = '说点什么，@名字 点名';
+const RUN_STATUS = { planning: tr('规划中'), plan_review: tr('等你确认计划'), executing: tr('执行中'), summarizing: tr('协调者在写总结'), done: tr('已完成'), failed: tr('没有完成规划'), cancelled: tr('已取消') };
+const T_STATUS = { pending: tr('等前置任务'), ready: tr('排队中'), running: tr('进行中'), review: tr('待你审查'), approved: tr('已通过'), failed: tr('失败'), blocked: tr('等你回答'), skipped: tr('已跳过'), cancelled: tr('已取消') };
+const CHAT_PLACEHOLDER = tr('说点什么，@名字 点名');
 state.view = 'chat';
 let planDraft = null;
 const taskChecks = new Map();
 
 const runBlocksChat = (r) => !!r && (r.status === 'planning' || r.status === 'summarizing' || (r.status === 'executing' && r.mode === 'direct'));
 const needsUser = (r) => r.status === 'plan_review' || r.paused || r.tasks.some((t) => ['review', 'blocked', 'failed'].includes(t.status)) || (r.status === 'done' && r.mode === 'git' && !r.merged && r.tasks.some((t) => t.status === 'approved'));
-const memberName = (id) => memberOf(id)?.name || '（已移除）';
+const memberName = (id) => memberOf(id)?.name || tr('（已移除）');
 const memberColor = (id) => memberOf(id)?.color || '#888';
-const mins = (ms) => (ms < 60000 ? `${Math.round(ms / 1000)} 秒` : `${(ms / 60000).toFixed(1)} 分钟`);
+const mins = (ms) => (ms < 60000 ? tr('{0} 秒', [Math.round(ms / 1000)]) : tr('{0} 分钟', [(ms / 60000).toFixed(1)]));
 
 function applyView() {
   const task = state.view === 'task';
@@ -1369,19 +1389,19 @@ function renderTaskBar() {
   const bar = $('#taskBar');
   const items = [];
   if (r && needsUser(r)) {
-    if (r.status === 'plan_review') items.push(['等你确认计划']);
+    if (r.status === 'plan_review') items.push([tr('等你确认计划')]);
     for (const t of r.tasks) {
-      if (t.status === 'blocked') items.push([`${memberName(t.assigneeId)} 在问你「${t.title}」的事`, t.id]);
-      else if (t.status === 'review') items.push([`等你审查「${t.title}」`, t.id]);
-      else if (t.status === 'failed') items.push([`「${t.title}」失败了，等你处理`, t.id]);
+      if (t.status === 'blocked') items.push([tr('{0} 在问你「{1}」的事', [memberName(t.assigneeId), t.title]), t.id]);
+      else if (t.status === 'review') items.push([tr('等你审查「{0}」', [t.title]), t.id]);
+      else if (t.status === 'failed') items.push([tr('「{0}」失败了，等你处理', [t.title]), t.id]);
     }
-    if (!items.length) items.push([r.paused ? '任务已暂停，等你继续' : '任务做完了，等你合并']);
+    if (!items.length) items.push([r.paused ? tr('任务已暂停，等你继续') : tr('任务做完了，等你合并')]);
   }
   bar.hidden = !items.length;
   if (!items.length) return;
   const [text, taskId] = items[0];
-  bar.innerHTML = `<span class="tb-dot"></span><span class="tb-text">任务协作：${esc(text)}${items.length > 1 ? `<span class="hint">（还有 ${items.length - 1} 件）</span>` : ''}</span>
-    <button class="btn sm" type="button" data-task="${esc(taskId || '')}">去处理</button>`;
+  bar.innerHTML = `<span class="tb-dot"></span><span class="tb-text">${tr('任务协作：{0}{1}', [esc(text), items.length > 1 ? `<span class="hint">${tr('（还有 {0} 件）', [items.length - 1])}</span>` : ''])}</span>
+    <button class="btn sm" type="button" data-task="${esc(taskId || '')}">${tr('去处理')}</button>`;
 }
 $('#taskBar').addEventListener('click', (e) => {
   const b = e.target.closest('button');
@@ -1396,7 +1416,7 @@ function updateComposerLock() {
   $('#composer').classList.toggle('locked', lock);
   input.disabled = lock;
   $('#sendBtn').disabled = lock;
-  input.placeholder = lock ? '任务进行中，聊天暂停' : CHAT_PLACEHOLDER;
+  input.placeholder = lock ? tr('任务进行中，聊天暂停') : CHAT_PLACEHOLDER;
 }
 $('#viewSeg').addEventListener('click', (e) => {
   const b = e.target.closest('[data-view]');
@@ -1417,7 +1437,7 @@ function onRunEvent(run) {
   if (run && sp.run === null && prev === null && run.status !== 'planning') return; // 迟到的旧推送
   sp.run = run;
   if (run?.status === 'planning') planDraft = null;
-  if (run && prev?.status !== run.status && ['plan_review', 'done'].includes(run.status) && state.view !== 'task') toast(run.status === 'plan_review' ? '计划拟好了，请到“任务协作”里确认' : '任务完成了');
+  if (run && prev?.status !== run.status && ['plan_review', 'done'].includes(run.status) && state.view !== 'task') toast(run.status === 'plan_review' ? tr('计划拟好了，请到“任务协作”里确认') : tr('任务完成了'));
   scheduleTaskRender();
   const v = state.files.view;
   if (v?.type === 'task' && !detailTimer) detailTimer = setTimeout(() => { detailTimer = null; refreshTaskDetail(); }, 700);
@@ -1454,16 +1474,16 @@ function renderTaskView(force = false) {
 function startFormHtml() {
   const sp = state.space;
   return `<div class="card">
-    <textarea id="tkObjective" data-keep="tk-objective" rows="4" placeholder="要完成什么？例如：给这个项目加上导出 PDF 的功能"></textarea>
+    <textarea id="tkObjective" data-keep="tk-objective" rows="4" placeholder="${tr('要完成什么？例如：给这个项目加上导出 PDF 的功能')}"></textarea>
     <div class="opts">
       <span class="mode-tag" id="tkMode"></span>
-      <label>协调者 <select id="tkCoord">${sp.members.map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></label>
-      ${sp.members.length > 1 ? '<label><input type="checkbox" id="tkDiscuss" checked> 先让其他成员审阅计划</label>' : ''}
-      <label id="tkParWrap" hidden>最多同时 <input type="number" id="tkPar" min="1" max="6" value="3"> 个</label>
-      <label><input type="checkbox" id="tkAuto"> 做完自动通过</label>
+      <label>${tr('协调者')} <select id="tkCoord">${sp.members.map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></label>
+      ${sp.members.length > 1 ? `<label><input type="checkbox" id="tkDiscuss" checked> ${tr('先让其他成员审阅计划')}</label>` : ''}
+      <label id="tkParWrap" hidden>${tr('最多同时')} <input type="number" id="tkPar" min="1" max="6" value="3"> ${tr('个')}</label>
+      <label><input type="checkbox" id="tkAuto"> ${tr('做完自动通过')}</label>
     </div>
     <div class="mode-note warn" id="tkDirty" hidden></div>
-    <div style="display:flex;justify-content:flex-end"><button class="btn primary" type="button" data-tact="start">开始规划</button></div>
+    <div style="display:flex;justify-content:flex-end"><button class="btn primary" type="button" data-tact="start">${tr('开始规划')}</button></div>
   </div>`;
 }
 
@@ -1478,22 +1498,22 @@ async function loadTaskCheck() {
   if (!el) return;
   const v = c.v;
   const git = v.mode === 'git';
-  el.textContent = git ? `并行 · ${v.branch}` : '依次修改';
-  el.title = git ? '每个子任务在独立副本里进行，通过审查后合并' : (v.note || '子任务按顺序直接修改共享文件夹');
+  el.textContent = git ? tr('并行 · {0}', [v.branch]) : tr('依次修改');
+  el.title = git ? tr('每个子任务在独立副本里进行，通过审查后合并') : (v.note || tr('子任务按顺序直接修改共享文件夹'));
   $('#tkParWrap').hidden = !git;
   const dirty = $('#tkDirty');
   dirty.hidden = !(git && v.dirty);
-  if (git && v.dirty) dirty.textContent = `⚠ 有 ${v.dirtyFiles} 个文件改了还没提交，AI 的副本里看不到，建议先提交`;
+  if (git && v.dirty) dirty.textContent = tr('⚠ 有 {0} 个文件改了还没提交，AI 的副本里看不到，建议先提交', [v.dirtyFiles]);
 }
 
 function pastRunsHtml() {
   const list = state.space.pastRuns || [];
   if (!list.length) return '';
-  return `<div class="card past"><h3>以前的任务</h3>${list.map((p) => `<div class="past-row">
+  return `<div class="card past"><h3>${tr('以前的任务')}</h3>${list.map((p) => `<div class="past-row">
     <span class="po">${esc(p.objective.split('\n')[0].slice(0, 80))}</span>
     <span class="st ${p.status === 'done' ? 'approved' : 'cancelled'}">${RUN_STATUS[p.status] || p.status}</span>
-    <span class="hint">${p.approved}/${p.tasks} 通过 · ${new Date(p.createdAt).toLocaleDateString('zh-CN')}</span>
-    ${p.merged ? `<span class="hint">已合并到 ${esc(p.merged.branch)}</span>` : p.branch ? `<span class="hint">结果保存在分支 <code>${esc(p.branch)}</code></span>` : ''}
+    <span class="hint">${tr('{0}/{1} 通过 · {2}', [p.approved, p.tasks, new Date(p.createdAt).toLocaleDateString(getLanguage())])}</span>
+    ${p.merged ? `<span class="hint">${tr('已合并到 {0}', [esc(p.merged.branch)])}</span>` : p.branch ? `<span class="hint">${tr('结果保存在分支')} <code>${esc(p.branch)}</code></span>` : ''}
   </div>`).join('')}</div>`;
 }
 
@@ -1502,17 +1522,17 @@ function runBarHtml(r) {
   const ok = r.tasks.filter((t) => t.status === 'approved').length;
   const settled = r.tasks.filter((t) => ['approved', 'skipped', 'cancelled'].includes(t.status)).length;
   const btns = [];
-  if (r.paused && r.status === 'executing') btns.push('<button class="btn sm primary" type="button" data-tact="resume">继续执行</button>');
-  if (r.status === 'done' && r.mode === 'git' && !r.merged && ok) btns.push(`<button class="btn sm primary" type="button" data-tact="merge">合并到 ${esc(r.git?.baseBranch || '你的分支')}</button>`);
-  if (['done', 'cancelled', 'failed'].includes(r.status)) btns.push('<button class="btn sm" type="button" data-tact="close">结束并收起</button>');
-  else btns.push('<button class="btn sm danger" type="button" data-tact="cancel">取消任务</button>');
+  if (r.paused && r.status === 'executing') btns.push(`<button class="btn sm primary" type="button" data-tact="resume">${tr('继续执行')}</button>`);
+  if (r.status === 'done' && r.mode === 'git' && !r.merged && ok) btns.push(`<button class="btn sm primary" type="button" data-tact="merge">${tr('合并到 {0}', [esc(r.git?.baseBranch || tr('你的分支'))])}</button>`);
+  if (['done', 'cancelled', 'failed'].includes(r.status)) btns.push(`<button class="btn sm" type="button" data-tact="close">${tr('结束并收起')}</button>`);
+  else btns.push(`<button class="btn sm danger" type="button" data-tact="cancel">${tr('取消任务')}</button>`);
   return `<div class="card"><div class="run-bar">
       <div class="obj"><b>${esc(r.objective.split('\n')[0].slice(0, 100))}</b>
-        <span>${RUN_STATUS[r.status] || r.status}${r.paused ? '（已暂停）' : ''}</span></div>
+        <span>${RUN_STATUS[r.status] || r.status}${r.paused ? tr('（已暂停）') : ''}</span></div>
       ${btns.join('')}</div>
     ${total && r.status !== 'plan_review' && r.status !== 'planning' ? `<div class="progress"><i style="width:${Math.round((settled / total) * 100)}%"></i></div>` : ''}
     ${r.error ? `<div class="err">⚠ ${esc(r.error)}</div>` : ''}
-    ${r.merged ? `<div class="note">已合并到 ${esc(r.merged.branch)}</div>` : ''}
+    ${r.merged ? `<div class="note">${tr('已合并到 {0}', [esc(r.merged.branch)])}</div>` : ''}
   </div>`;
 }
 
@@ -1521,30 +1541,30 @@ const planMsgHtml = (m) => messageHtml({ ...m, kind: 'ai', id: `p-${m.id}` });
 function planningHtml(r) {
   const msgs = r.planning.messages.map(planMsgHtml).join('');
   if (r.status === 'planning') {
-    return `<div class="plan-msgs">${msgs}</div><div class="hint">${esc(memberName(r.coordinatorId))} 正在规划…</div>`;
+    return `<div class="plan-msgs">${msgs}</div><div class="hint">${tr('{0} 正在规划…', [esc(memberName(r.coordinatorId))])}</div>`;
   }
   if (!r.tasks.length) return `<div class="plan-msgs">${msgs}</div>`;
   if (!planDraft || planDraft.runId !== r.id) planDraft = { runId: r.id, tasks: r.tasks.map((t) => ({ id: t.id, title: t.title, assigneeId: t.assigneeId, deps: [...t.deps], spec: t.spec })) };
-  return `<details class="plan-msgs" ${msgs ? '' : 'hidden'}><summary>规划过程（${r.planning.messages.length} 条发言）</summary>${msgs}</details>
-    <div class="card plan-edit"><h3>计划</h3>
+  return `<details class="plan-msgs" ${msgs ? '' : 'hidden'}><summary>${tr('规划过程（{0} 条发言）', [r.planning.messages.length])}</summary>${msgs}</details>
+    <div class="card plan-edit"><h3>${tr('计划')}</h3>
       <div class="tasks" id="planTasks">${planEditorRows()}</div>
-      <button class="btn sm ghost" type="button" data-tact="pe-add" style="margin-top:8px">＋ 添加子任务</button>
+      <button class="btn sm ghost" type="button" data-tact="pe-add" style="margin-top:8px">${tr('＋ 添加子任务')}</button>
     </div>
     <div class="card">
-      <textarea data-keep="replan" id="replanText" rows="2" placeholder="不满意？写下意见"></textarea>
-      <div class="opts" style="justify-content:flex-end"><button class="btn sm" type="button" data-tact="replan">重新规划</button>
-        <button class="btn primary" type="button" data-tact="approve-plan">批准并执行</button></div></div>`;
+      <textarea data-keep="replan" id="replanText" rows="2" placeholder="${tr('不满意？写下意见')}"></textarea>
+      <div class="opts" style="justify-content:flex-end"><button class="btn sm" type="button" data-tact="replan">${tr('重新规划')}</button>
+        <button class="btn primary" type="button" data-tact="approve-plan">${tr('批准并执行')}</button></div></div>`;
 }
 
 function planEditorRows() {
   const sp = state.space;
   return planDraft.tasks.map((t, i) => `<div class="tcard" style="--c:${memberColor(t.assigneeId)}" data-pi="${i}">
     <div class="pe-row"><span class="tid">${esc(t.id)}</span>
-      <input data-pe="title" value="${esc(t.title)}" placeholder="标题">
+      <input data-pe="title" value="${esc(t.title)}" placeholder="${tr('标题')}">
       <select data-pe="assigneeId">${sp.members.map((m) => `<option value="${m.id}" ${m.id === t.assigneeId ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select>
-      <button class="icon-btn" type="button" data-tact="pe-del" title="删除">${ICON.close}</button></div>
-    <textarea data-pe="spec" rows="3" placeholder="说明：目标、要改什么、限制、怎样算完成">${esc(t.spec)}</textarea>
-    ${planDraft.tasks.length > 1 ? `<div class="deps">依赖：${planDraft.tasks.filter((o) => o.id !== t.id).map((o) => `<label><input type="checkbox" data-dep="${esc(o.id)}" ${t.deps.includes(o.id) ? 'checked' : ''}>${esc(o.id)}</label>`).join('')}</div>` : ''}
+      <button class="icon-btn" type="button" data-tact="pe-del" title="${tr('删除')}">${ICON.close}</button></div>
+    <textarea data-pe="spec" rows="3" placeholder="${tr('说明：目标、要改什么、限制、怎样算完成')}">${esc(t.spec)}</textarea>
+    ${planDraft.tasks.length > 1 ? `<div class="deps">${tr('依赖：{0}', [planDraft.tasks.filter((o) => o.id !== t.id).map((o) => `<label><input type="checkbox" data-dep="${esc(o.id)}" ${t.deps.includes(o.id) ? 'checked' : ''}>${esc(o.id)}</label>`).join('')])}</div>` : ''}
   </div>`).join('');
 }
 
@@ -1552,35 +1572,35 @@ const boardHtml = (r) => `<div class="tasks">${r.tasks.map((t) => taskCardHtml(r
 
 function taskCardHtml(r, t) {
   const a = t.attempts.at(-1);
-  let sub = t.deps.length ? `依赖 ${t.deps.join('、')}` : '';
+  let sub = t.deps.length ? tr('依赖 {0}', [t.deps.join('、')]) : '';
   const add = (s) => { if (s) sub += `${sub ? ' · ' : ''}${s}`; };
-  if (t.status === 'running') add(a?.activities?.at(-1)?.label || (a?.text ? a.text.trim().split('\n').at(-1).slice(0, 80) : '思考中…'));
-  else if (t.status === 'review' || t.status === 'approved') add(`${(a?.report || '').split('\n')[0].slice(0, 90)}${t.changes?.length ? `（改了 ${t.changes.length} 个文件）` : ''}`);
-  else if (t.status === 'failed') add(a?.error || '失败');
-  if (t.attempts.length > 1) add(`第 ${t.attempts.length} 次`);
+  if (t.status === 'running') add(a?.activities?.at(-1)?.label || (a?.text ? a.text.trim().split('\n').at(-1).slice(0, 80) : tr('思考中…')));
+  else if (t.status === 'review' || t.status === 'approved') add(`${(a?.report || '').split('\n')[0].slice(0, 90)}${t.changes?.length ? tr('（改了 {0} 个文件）', [t.changes.length]) : ''}`);
+  else if (t.status === 'failed') add(a?.error || tr('失败'));
+  if (t.attempts.length > 1) add(tr('第 {0} 次', [t.attempts.length]));
   if (a?.endedAt && a.startedAt) add(mins(a.endedAt - a.startedAt));
   const k = `${r.id}-${t.id}`;
   const acts = [];
   const live = r.status === 'executing';
-  if (t.status === 'running') acts.push(`<button class="btn sm" type="button" data-tact="stop-task" data-task="${t.id}">停止</button>`);
-  if (t.status === 'review') acts.push(`<button class="btn sm" type="button" data-tact="open" data-task="${t.id}">查看改动并审查</button><button class="btn sm primary" type="button" data-tact="approve-task" data-task="${t.id}">通过</button>`);
-  if (t.status === 'failed' && live) acts.push(`<button class="btn sm primary" type="button" data-tact="retry-task" data-task="${t.id}">重试</button>`);
+  if (t.status === 'running') acts.push(`<button class="btn sm" type="button" data-tact="stop-task" data-task="${t.id}">${tr('停止')}</button>`);
+  if (t.status === 'review') acts.push(`<button class="btn sm" type="button" data-tact="open" data-task="${t.id}">${tr('查看改动并审查')}</button><button class="btn sm primary" type="button" data-tact="approve-task" data-task="${t.id}">${tr('通过')}</button>`);
+  if (t.status === 'failed' && live) acts.push(`<button class="btn sm primary" type="button" data-tact="retry-task" data-task="${t.id}">${tr('重试')}</button>`);
   if (['failed', 'pending', 'ready', 'blocked'].includes(t.status) && live) {
-    acts.push(`<button class="btn sm" type="button" data-tact="skip-task" data-task="${t.id}">跳过</button>`);
-    acts.push(`<select data-reassign="${t.id}" title="改派给" style="width:auto">${state.space.members.map((m) => `<option value="${m.id}" ${m.id === t.assigneeId ? 'selected' : ''}>负责：${esc(m.name)}</option>`).join('')}</select>`);
+    acts.push(`<button class="btn sm" type="button" data-tact="skip-task" data-task="${t.id}">${tr('跳过')}</button>`);
+    acts.push(`<select data-reassign="${t.id}" title="${tr('改派给')}" style="width:auto">${state.space.members.map((m) => `<option value="${m.id}" ${m.id === t.assigneeId ? 'selected' : ''}>${tr('负责：{0}', [esc(m.name)])}</option>`).join('')}</select>`);
   }
   return `<div class="tcard ${state.files.view?.type === 'task' && state.files.view.taskId === t.id ? 'sel' : ''}" data-task="${t.id}" style="--c:${memberColor(t.assigneeId)}">
     <div class="tc-top"><span class="tid">${esc(t.id)}</span><span class="tt">${esc(t.title)}</span><span class="tc-who">@${esc(memberName(t.assigneeId))}</span><span class="st ${t.status}">${T_STATUS[t.status] || t.status}</span></div>
     ${sub ? `<div class="tc-sub">${esc(sub)}</div>` : ''}
-    ${t.status === 'blocked' ? `<div class="question"><b>${esc(memberName(t.assigneeId))} 问你：</b>${esc(t.question || '')}</div>
-      <div class="tc-actions"><input data-keep="ans-${k}" placeholder="写下回答，它会接着做"><button class="btn sm primary" type="button" data-tact="answer" data-task="${t.id}">回答</button></div>` : ''}
+    ${t.status === 'blocked' ? `<div class="question"><b>${tr('{0} 问你：', [esc(memberName(t.assigneeId))])}</b>${esc(t.question || '')}</div>
+      <div class="tc-actions"><input data-keep="ans-${k}" placeholder="${tr('写下回答，它会接着做')}"><button class="btn sm primary" type="button" data-tact="answer" data-task="${t.id}">${tr('回答')}</button></div>` : ''}
     ${acts.length ? `<div class="tc-actions">${acts.join('')}</div>` : ''}
   </div>`;
 }
 
 function summaryHtml(r) {
   const s = r.summary;
-  return `<div class="card"><h3>协调者的总结</h3>${s.streaming && !s.text ? '<span class="typing"><i></i><i></i><i></i>&nbsp;正在写</span>' : `<div class="md">${md(s.text || '')}</div>`}${s.error ? `<div class="err">⚠ ${esc(s.error)}</div>` : ''}</div>`;
+  return `<div class="card"><h3>${tr('协调者的总结')}</h3>${s.streaming && !s.text ? `<span class="typing"><i></i><i></i><i></i>${tr('&nbsp;正在写')}</span>` : `<div class="md">${md(s.text || '')}</div>`}${s.error ? `<div class="err">⚠ ${esc(s.error)}</div>` : ''}</div>`;
 }
 
 // ---- 子任务详情（右侧面板） ----
@@ -1600,37 +1620,37 @@ async function refreshTaskDetail() {
 function renderTaskDetail(body, v) {
   const t = v.detail;
   const r = state.space.run;
-  if (!t) { body.innerHTML = '<div class="empty-files">加载中…</div>'; return; }
+  if (!t) { body.innerHTML = `<div class="empty-files">${tr('加载中…')}</div>`; return; }
   if (t.error && !t.id) { body.innerHTML = `<div class="empty-files">${esc(t.error)}</div>`; return; }
   const k = `${r?.id}-${t.id}`;
   const changes = (t.changes || []).map((c) => `<div class="chg-row" data-tdiff="${esc(c.path)}">${c.status === 'A' || c.created ? '<span class="fst a">A</span>' : c.status === 'D' || c.deleted ? '<span class="fst d">D</span>' : '<span class="fst">M</span>'}<span class="fp">${esc(c.path)}</span><span class="plus">+${c.added}</span><span class="minus">−${c.removed}</span></div>`).join('');
   const live = r?.status === 'executing';
   const attempts = t.attempts.map((a, i) => ({ a, i })).reverse().map(({ a, i }) => `<div class="attempt">
-      <div class="attempt-head"><b>第 ${i + 1} 次</b><span>${new Date(a.startedAt).toLocaleTimeString('zh-CN', { hour12: false })}</span>${a.endedAt ? `<span>${mins(a.endedAt - a.startedAt)}</span>` : '<span class="typing"><i></i><i></i><i></i></span>'}
-        ${a.outcome ? `<span class="st ${a.outcome === 'done' ? 'approved' : a.outcome === 'question' ? 'blocked' : 'failed'}">${a.outcome === 'done' ? '报告完成' : a.outcome === 'question' ? '提了问题' : '失败'}</span>` : ''}</div>
-      ${a.conflict ? `<div class="note">这次是在解决合并冲突：${esc(a.conflict.join('、'))}</div>` : ''}
+      <div class="attempt-head"><b>${tr('第 {0} 次', [i + 1])}</b><span>${new Date(a.startedAt).toLocaleTimeString(getLanguage(), { hour12: false })}</span>${a.endedAt ? `<span>${mins(a.endedAt - a.startedAt)}</span>` : '<span class="typing"><i></i><i></i><i></i></span>'}
+        ${a.outcome ? `<span class="st ${a.outcome === 'done' ? 'approved' : a.outcome === 'question' ? 'blocked' : 'failed'}">${a.outcome === 'done' ? tr('报告完成') : a.outcome === 'question' ? tr('提了问题') : tr('失败')}</span>` : ''}</div>
+      ${a.conflict ? `<div class="note">${tr('这次是在解决合并冲突：{0}', [esc(a.conflict.join('、'))])}</div>` : ''}
       ${activitiesHtml(a.activities, !a.endedAt)}
       ${a.report || a.text ? `<div class="md">${md(a.report || a.text)}</div>` : ''}
       ${a.note ? `<div class="note">${esc(a.note)}</div>` : ''}
       ${a.error ? `<div class="err">⚠ ${esc(a.error)}</div>` : ''}
-      ${a.log?.length ? `<details><summary class="hint">原始输出</summary><div class="log">${esc(a.log.join('\n'))}</div></details>` : ''}
+      ${a.log?.length ? `<details><summary class="hint">${tr('原始输出')}</summary><div class="log">${esc(a.log.join('\n'))}</div></details>` : ''}
     </div>`).join('');
-  body.innerHTML = `<div class="editor-head"><button class="icon-btn" type="button" data-act="back" title="返回">${ICON.back}</button>
+  body.innerHTML = `<div class="editor-head"><button class="icon-btn" type="button" data-act="back" title="${tr('返回')}">${ICON.back}</button>
       <span class="ep">${esc(t.id)} ${esc(t.title)}</span><span class="st ${t.status}">${T_STATUS[t.status]}</span></div>
     <div class="td">
-      <div><h4>负责</h4><span style="color:${memberColor(t.assigneeId)};font-weight:600">@${esc(memberName(t.assigneeId))}</span>${t.deps.length ? `　<span class="hint">依赖 ${esc(t.deps.join('、'))}</span>` : ''}</div>
-      <div><h4>说明</h4><div class="spec">${esc(t.spec)}</div></div>
-      ${t.status === 'review' ? `<div class="review-box"><b>审查</b>
-        <textarea data-keep="fb-${k}" id="fbText" rows="3" placeholder="退回时写下要怎么改"></textarea>
-        <div class="row"><button class="btn sm primary" type="button" data-tact="approve-task" data-task="${t.id}">通过</button>
-          <button class="btn sm" type="button" data-tact="reject-task" data-task="${t.id}">带意见退回重做</button>
-          ${r.mode === 'direct' && t.changes?.length ? `<button class="btn sm danger" type="button" data-tact="undo-task" data-task="${t.id}">撤销它的全部改动</button>` : ''}</div></div>` : ''}
-      ${t.status === 'blocked' ? `<div class="review-box"><b>${esc(memberName(t.assigneeId))} 问你：</b><div>${esc(t.question || '')}</div>
-        <textarea data-keep="ans2-${k}" id="ansText" rows="2" placeholder="写下回答"></textarea><div class="row"><button class="btn sm primary" type="button" data-tact="answer-detail" data-task="${t.id}">回答</button></div></div>` : ''}
-      ${t.status === 'failed' && live ? `<div class="row"><button class="btn sm primary" type="button" data-tact="retry-task" data-task="${t.id}">重试</button> <button class="btn sm" type="button" data-tact="skip-task" data-task="${t.id}">跳过</button>${r.mode === 'direct' && t.changes?.length ? ` <button class="btn sm danger" type="button" data-tact="undo-task" data-task="${t.id}">撤销它的改动</button>` : ''}</div>` : ''}
-      ${t.feedbacks?.length ? `<div><h4>你的意见</h4>${t.feedbacks.map((f) => `<div class="note">• ${esc(f.text)}</div>`).join('')}</div>` : ''}
-      <div><h4>改动（${t.changes?.length || 0} 个文件）${t.undone ? ' · 已撤销' : ''}</h4>${changes || '<div class="hint">还没有改动</div>'}</div>
-      <div><h4>过程</h4>${attempts || '<div class="hint">还没开始</div>'}</div>
+      <div><h4>${tr('负责')}</h4><span style="color:${memberColor(t.assigneeId)};font-weight:600">@${esc(memberName(t.assigneeId))}</span>${t.deps.length ? `　<span class="hint">${tr('依赖 {0}', [esc(t.deps.join('、'))])}</span>` : ''}</div>
+      <div><h4>${tr('说明')}</h4><div class="spec">${esc(t.spec)}</div></div>
+      ${t.status === 'review' ? `<div class="review-box"><b>${tr('审查')}</b>
+        <textarea data-keep="fb-${k}" id="fbText" rows="3" placeholder="${tr('退回时写下要怎么改')}"></textarea>
+        <div class="row"><button class="btn sm primary" type="button" data-tact="approve-task" data-task="${t.id}">${tr('通过')}</button>
+          <button class="btn sm" type="button" data-tact="reject-task" data-task="${t.id}">${tr('带意见退回重做')}</button>
+          ${r.mode === 'direct' && t.changes?.length ? `<button class="btn sm danger" type="button" data-tact="undo-task" data-task="${t.id}">${tr('撤销它的全部改动')}</button>` : ''}</div></div>` : ''}
+      ${t.status === 'blocked' ? `<div class="review-box"><b>${tr('{0} 问你：', [esc(memberName(t.assigneeId))])}</b><div>${esc(t.question || '')}</div>
+        <textarea data-keep="ans2-${k}" id="ansText" rows="2" placeholder="${tr('写下回答')}"></textarea><div class="row"><button class="btn sm primary" type="button" data-tact="answer-detail" data-task="${t.id}">${tr('回答')}</button></div></div>` : ''}
+      ${t.status === 'failed' && live ? `<div class="row"><button class="btn sm primary" type="button" data-tact="retry-task" data-task="${t.id}">${tr('重试')}</button> <button class="btn sm" type="button" data-tact="skip-task" data-task="${t.id}">${tr('跳过')}</button>${r.mode === 'direct' && t.changes?.length ? ` <button class="btn sm danger" type="button" data-tact="undo-task" data-task="${t.id}">${tr('撤销它的改动')}</button>` : ''}</div>` : ''}
+      ${t.feedbacks?.length ? `<div><h4>${tr('你的意见')}</h4>${t.feedbacks.map((f) => `<div class="note">• ${esc(f.text)}</div>`).join('')}</div>` : ''}
+      <div><h4>${tr('改动（{0} 个文件）{1}', [t.changes?.length || 0, t.undone ? tr(' · 已撤销') : ''])}</h4>${changes || `<div class="hint">${tr('还没有改动')}</div>`}</div>
+      <div><h4>${tr('过程')}</h4>${attempts || `<div class="hint">${tr('还没开始')}</div>`}</div>
     </div>`;
 }
 async function openTaskDiff(taskId, file) {
@@ -1641,7 +1661,7 @@ async function openTaskDiff(taskId, file) {
   } catch (e) { toast(e.message, 'error'); }
 }
 function renderTaskDiff(body, v) {
-  body.innerHTML = `<div class="diff-view"><div class="editor-head"><button class="icon-btn" type="button" data-tact="back-task" data-task="${esc(v.taskId)}" title="返回">${ICON.back}</button>
+  body.innerHTML = `<div class="diff-view"><div class="editor-head"><button class="icon-btn" type="button" data-tact="back-task" data-task="${esc(v.taskId)}" title="${tr('返回')}">${ICON.back}</button>
     <span class="ep">${esc(v.taskId)} · ${esc(v.path)}</span></div><div class="diff">${diffHtml(v.before, v.after)}</div></div>`;
 }
 
@@ -1656,7 +1676,7 @@ async function onTaskAction(b, root) {
     switch (act) {
       case 'start': {
         const objective = $('#tkObjective').value.trim();
-        if (!objective) { toast('先写下目标', 'error'); return; }
+        if (!objective) { toast(tr('先写下目标'), 'error'); return; }
         b.disabled = true;
         await api(`/api/spaces/${sp.id}/runs`, { method: 'POST', body: { objective, coordinatorId: $('#tkCoord').value, discuss: $('#tkDiscuss')?.checked ?? false, maxParallel: $('#tkPar').value, autoApprove: $('#tkAuto').checked } });
         break;
@@ -1676,7 +1696,7 @@ async function onTaskAction(b, root) {
         return;
       }
       case 'approve-plan':
-        if (!planDraft.tasks.length || planDraft.tasks.some((t) => !t.title.trim() || !t.spec.trim())) { toast('每个子任务都要有标题和说明', 'error'); return; }
+        if (!planDraft.tasks.length || planDraft.tasks.some((t) => !t.title.trim() || !t.spec.trim())) { toast(tr('每个子任务都要有标题和说明'), 'error'); return; }
         b.disabled = true;
         await runAction('approve-plan', { tasks: planDraft.tasks });
         break;
@@ -1684,7 +1704,7 @@ async function onTaskAction(b, root) {
         await runAction('replan', { feedback: $('#replanText').value });
         break;
       case 'cancel':
-        if (!confirm(`取消这次任务吗？正在做的子任务会被中止。${sp.run.mode === 'git' ? '\n各 AI 的独立副本和临时分支会被删除，你的项目不受影响。' : '\n已经改了的文件不会自动还原（可以在改动记录里撤销）。'}`)) return;
+        if (!confirm(tr('取消这次任务吗？正在做的子任务会被中止。{0}', [sp.run.mode === 'git' ? tr('\n各 AI 的独立副本和临时分支会被删除，你的项目不受影响。') : tr('\n已经改了的文件不会自动还原（可以在改动记录里撤销）。')]))) return;
         await runAction('cancel');
         break;
       case 'close':
@@ -1694,28 +1714,28 @@ async function onTaskAction(b, root) {
       case 'merge': {
         b.disabled = true;
         const m = await runAction('merge');
-        toast(`已合并到 ${m.branch}`);
+        toast(tr('已合并到 {0}', [m.branch]));
         loadFiles(); loadHistory();
         break;
       }
       case 'open': case 'back-task': openTask(taskId); return;
       case 'answer': {
         const inp = $(`[data-keep="ans-${sp.run.id}-${taskId}"]`, root);
-        if (!inp?.value.trim()) { toast('先写下回答', 'error'); return; }
+        if (!inp?.value.trim()) { toast(tr('先写下回答'), 'error'); return; }
         await runAction('answer', { taskId, answer: inp.value });
         inp.value = '';
         break;
       }
       case 'answer-detail': {
         const inp = $('#ansText');
-        if (!inp?.value.trim()) { toast('先写下回答', 'error'); return; }
+        if (!inp?.value.trim()) { toast(tr('先写下回答'), 'error'); return; }
         await runAction('answer', { taskId, answer: inp.value });
         inp.value = '';
         break;
       }
       case 'reject-task': {
         const inp = $('#fbText');
-        if (!inp?.value.trim()) { toast('退回时请写下要怎么改', 'error'); inp?.focus(); return; }
+        if (!inp?.value.trim()) { toast(tr('退回时请写下要怎么改'), 'error'); inp?.focus(); return; }
         await runAction('reject-task', { taskId, feedback: inp.value });
         inp.value = '';
         break;
@@ -1723,11 +1743,11 @@ async function onTaskAction(b, root) {
       case 'approve-task': {
         b.disabled = true;
         const res = await runAction('approve-task', { taskId });
-        if (res.conflict) toast(`${taskId} 和已通过的改动冲突了（${(res.files || []).join('、')}），已让负责人去解决冲突`, 'error');
+        if (res.conflict) toast(tr('{0} 和已通过的改动冲突了（{1}），已让负责人去解决冲突', [taskId, (res.files || []).join('、')]), 'error');
         break;
       }
       case 'undo-task':
-        if (!confirm('撤销这个子任务对文件做的全部改动吗？')) return;
+        if (!confirm(tr('撤销这个子任务对文件做的全部改动吗？'))) return;
         await runAction('undo-task', { taskId });
         loadFiles(); loadHistory();
         break;
@@ -1771,11 +1791,11 @@ $('#filesBody').addEventListener('click', (e) => {
 }, true);
 
 // ---------------- 导入外部 AI 对话 ----------------
-const MODE_LABEL = { full: '全部原文', from: '从某一条开始', summary: '早期压成摘要', handoff: '写交接文档', topic: '按主题' };
+const MODE_LABEL = { full: tr('全部原文'), from: tr('从某一条开始'), summary: tr('早期压成摘要'), handoff: tr('写交接文档'), topic: tr('按主题') };
 const safeName = (s) => String(s || '').replace(/[\\/:*?"<>|\s]+/g, ' ').trim().slice(0, 40);
 const samePath = (a, b) => !!a && !!b && a.replace(/[\\/]+$/, '').toLowerCase() === b.replace(/[\\/]+$/, '').toLowerCase();
 const folderName = (p) => String(p || '').split(/[\\/]/).filter(Boolean).pop() || '';
-const wan = (n) => (n < 10000 ? `${n} 字` : `${(n / 10000).toFixed(1)} 万字`);
+const wan = (n) => getLanguage() === 'en' ? tr('{0} 字', [n.toLocaleString('en')]) : (n < 10000 ? tr('{0} 字', [n]) : tr('{0} 万字', [(n / 10000).toFixed(1)]));
 const importNew = {}; // 导入块 id -> 原对话里的新条数
 
 /** 选一段对话。cwd：当前空间的共享文件夹，默认只列同文件夹的。 */
@@ -1784,13 +1804,13 @@ function openSessionPicker({ cwd } = {}) {
     const dlg = document.createElement('dialog');
     dlg.className = 'modal picker';
     dlg.innerHTML = `<div class="modal-inner">
-      <div class="modal-head"><h3>选择对话</h3><button class="icon-btn" type="button" data-act="close">${ICON.close}</button></div>
-      <div class="picker-bar"><input id="pkQ" placeholder="搜索"><div class="seg" id="pkScope" hidden>
-        <button type="button" data-scope="here">同文件夹</button><button type="button" data-scope="all">全部</button></div>
-        <button class="btn sm" type="button" data-act="paste">粘贴或选文件</button></div>
+      <div class="modal-head"><h3>${tr('选择对话')}</h3><button class="icon-btn" type="button" data-act="close">${ICON.close}</button></div>
+      <div class="picker-bar"><input id="pkQ" placeholder="${tr('搜索')}"><div class="seg" id="pkScope" hidden>
+        <button type="button" data-scope="here">${tr('同文件夹')}</button><button type="button" data-scope="all">${tr('全部')}</button></div>
+        <button class="btn sm" type="button" data-act="paste">${tr('粘贴或选文件')}</button></div>
       <div class="modal-body picker-list" id="pkList"><span class="typing"><i></i><i></i><i></i></span></div>
-      <div class="modal-body pk-paste" id="pkPaste" hidden><textarea id="pkText" placeholder="把对话粘贴到这里，或把导出的文件拖进来"></textarea>
-        <div class="pk-paste-foot"><button class="btn" type="button" data-act="file">选择文件…</button><button class="btn primary" type="button" data-act="paste-go">下一步</button></div>
+      <div class="modal-body pk-paste" id="pkPaste" hidden><textarea id="pkText" placeholder="${tr('把对话粘贴到这里，或把导出的文件拖进来')}"></textarea>
+        <div class="pk-paste-foot"><button class="btn" type="button" data-act="file">${tr('选择文件…')}</button><button class="btn primary" type="button" data-act="paste-go">${tr('下一步')}</button></div>
         <input type="file" id="pkFile" hidden accept=".json,.jsonl,.md,.markdown,.txt,.zip"></div></div>`;
     document.body.appendChild(dlg);
     let result = null;
@@ -1805,7 +1825,7 @@ function openSessionPicker({ cwd } = {}) {
       $$('#pkScope button', dlg).forEach((b) => b.classList.toggle('active', b.dataset.scope === scope));
       $('#pkList', dlg).innerHTML = list.length ? list.map((s) => `<button type="button" class="pk-row" data-id="${esc(s.id)}" data-source="${esc(s.source)}" style="--c:${engineOf(s.engine)?.color || '#999'}">
           <b>${esc(s.title)}</b><span><i></i>${[esc(s.sourceLabel), esc(folderName(s.cwd)), relTime(s.updatedAt)].filter(Boolean).join(' · ')}</span></button>`).join('')
-        : '<div class="empty-list">没有对话</div>';
+        : `<div class="empty-list">${tr('没有对话')}</div>`;
     };
     const showPaste = (on) => {
       $('#pkPaste', dlg).hidden = !on;
@@ -1868,19 +1888,19 @@ function openSessionPicker({ cwd } = {}) {
 function importOptionsHtml(d, { members = null, cwd = '' } = {}) {
   const claude = d.engine === 'claude-code';
   const modes = Object.keys(MODE_LABEL).map((k) => `<label class="choice"><input type="radio" name="impMode" value="${k}" ${k === d.auto ? 'checked' : ''}>
-    <span><b>${MODE_LABEL[k]}</b>${k === 'from' ? `<select id="impFrom">${d.starts.map((s) => `<option value="${s.i}">${esc(s.text)}</option>`).join('')}</select>` : ''}${k === 'topic' ? '<input id="impTopic" maxlength="40" placeholder="例如：剧本">' : ''}</span></label>`).join('');
+    <span><b>${MODE_LABEL[k]}</b>${k === 'from' ? `<select id="impFrom">${d.starts.map((s) => `<option value="${s.i}">${esc(s.text)}</option>`).join('')}</select>` : ''}${k === 'topic' ? `<input id="impTopic" maxlength="40" placeholder="${tr('例如：剧本')}">` : ''}</span></label>`).join('');
   let extra = '';
   if (members) {
     const busy = (m) => claude && !!state.space?.memberState?.[m.id]?.importId;
     const same = members.filter((m) => m.engine === d.engine && !busy(m));
     const label = engineOf(d.engine)?.defaultName;
     // 来源在 Agenda 里没有对应的 AI 类型（粘贴的、Trae 等）时，只导入文字，不选成员
-    if (label) extra += `<div class="field"><div class="label">对应成员</div><select id="impMember">${same.map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}<option value="">新加一个 ${esc(label)}</option><option value="none">不加</option></select></div>`;
+    if (label) extra += `<div class="field"><div class="label">${tr('对应成员')}</div><select id="impMember">${same.map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}<option value="">${tr('新加一个 {0}', [esc(label)])}</option><option value="none">${tr('不加')}</option></select></div>`;
     const others = [...members.filter((m) => m.engine !== d.engine), ...members.filter((m) => m.engine === d.engine)];
-    if (others.length) extra += `<div class="field" id="impWriterRow" data-claude="${claude ? 1 : ''}"><div class="label">由谁整理</div><select id="impWriter">${others.map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></div>`;
+    if (others.length) extra += `<div class="field" id="impWriterRow" data-claude="${claude ? 1 : ''}"><div class="label">${tr('由谁整理')}</div><select id="impWriter">${others.map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></div>`;
   }
   const warn = members && claude && d.cwd && !samePath(d.cwd, cwd)
-    ? `<div class="note warn">原对话在 ${esc(d.cwd)}，和共享文件夹不同，原对话里的文件路径可能对不上。</div>` : '';
+    ? `<div class="note warn">${tr('原对话在 {0}，和共享文件夹不同，原对话里的文件路径可能对不上。', [esc(d.cwd)])}</div>` : '';
   return `<div class="field"><div class="choices">${modes}</div></div>${extra}${warn}`;
 }
 
@@ -1935,9 +1955,9 @@ async function openImportModal() {
   try { d = await api(`/api/import/session?source=${s.source}&id=${encodeURIComponent(s.id)}`); } catch (e) { toast(e.message, 'error'); return; }
   const dlg = showModal(`<div class="modal-inner">
     <div class="modal-head"><h3>${esc(d.title)}</h3><button class="icon-btn" type="button" data-act="close">${ICON.close}</button></div>
-    <div class="modal-body"><div class="hint imp-stat">${esc(d.sourceLabel)} · ${d.count} 条 · ${wan(d.chars)}</div>
+    <div class="modal-body"><div class="hint imp-stat">${tr('{0} · {1} 条 · {2}', [esc(d.sourceLabel), d.count, wan(d.chars)])}</div>
       ${importOptionsHtml(d, { members: sp.members, cwd: sp.workspacePath })}</div>
-    <div class="modal-foot"><button class="btn" type="button" data-act="close">取消</button><button class="btn primary" type="button" data-act="go">导入</button></div>
+    <div class="modal-foot"><button class="btn" type="button" data-act="close">${tr('取消')}</button><button class="btn primary" type="button" data-act="go">${tr('导入')}</button></div>
   </div>`);
   bindImportOptions(dlg);
   dlg.addEventListener('click', async (ev) => {
@@ -1946,7 +1966,7 @@ async function openImportModal() {
     if (b.dataset.act === 'close') dlg.close();
     if (b.dataset.act === 'go') {
       const opts = readImportOptions(dlg, d);
-      if (opts.mode === 'topic' && !opts.topic) { toast('请填写主题', 'error'); $('#impTopic', dlg).focus(); return; }
+      if (opts.mode === 'topic' && !opts.topic) { toast(tr('请填写主题'), 'error'); $('#impTopic', dlg).focus(); return; }
       b.disabled = true;
       try {
         await api(`/api/spaces/${sp.id}/imports`, { method: 'POST', body: opts });
@@ -1956,7 +1976,7 @@ async function openImportModal() {
   });
 }
 
-const ACT_KIND = [[/^读取/, 'read'], [/^(修改|写入|新建|删除)/, 'edit'], [/^(搜索|打开网页)/, 'search'], [/^运行/, 'command']];
+const ACT_KIND = [[/^(读取|Read )/i, 'read'], [/^(修改|写入|新建|删除|Edit |Write |Create |Delete )/i, 'edit'], [/^(搜索|打开网页|Search |Open page )/i, 'search'], [/^(运行|Run )/i, 'command']];
 const actKind = (label) => ACT_KIND.find(([re]) => re.test(label))?.[1] || 'tool';
 
 function importHtml(m, prefix = 'm') {
@@ -1965,18 +1985,18 @@ function importHtml(m, prefix = 'm') {
   const topic = m.mode === 'topic';
   const pend = m.briefPending;
   const foot = [
-    m.status === 'writing' ? '<span class="typing"><i></i><i></i><i></i>&nbsp;正在整理</span>' : '',
+    m.status === 'writing' ? `<span class="typing"><i></i><i></i><i></i>${tr('&nbsp;正在整理')}</span>` : '',
     pend ? `<span class="imp-pend">${briefChange(pend)}</span>
-      <button type="button" class="btn sm" data-imp="diff" data-id="${m.id}">看对比</button>
-      <button type="button" class="btn sm primary" data-imp="accept" data-id="${m.id}">采用</button>
-      <button type="button" class="btn sm" data-imp="revert" data-id="${m.id}">撤销</button>` : '',
-    topic && m.brief && m.briefText == null && m.status === 'ready' ? '<span class="hint">简报文件已删除</span>' : '',
-    fresh && !pend ? `<button type="button" class="btn sm" data-imp="refresh" data-id="${m.id}">补导 ${importNew[m.id]} 条新内容</button>` : '',
-    m.error ? `<span class="err">${esc(m.error)}</span><button type="button" class="btn sm" data-imp="retry" data-id="${m.id}" data-mode="${m.mode}">重试</button>` : '',
+      <button type="button" class="btn sm" data-imp="diff" data-id="${m.id}">${tr('看对比')}</button>
+      <button type="button" class="btn sm primary" data-imp="accept" data-id="${m.id}">${tr('采用')}</button>
+      <button type="button" class="btn sm" data-imp="revert" data-id="${m.id}">${tr('撤销')}</button>` : '',
+    topic && m.brief && m.briefText == null && m.status === 'ready' ? `<span class="hint">${tr('简报文件已删除')}</span>` : '',
+    fresh && !pend ? `<button type="button" class="btn sm" data-imp="refresh" data-id="${m.id}">${tr('补导 {0} 条新内容', [importNew[m.id]])}</button>` : '',
+    m.error ? `<span class="err">${esc(m.error)}</span><button type="button" class="btn sm" data-imp="retry" data-id="${m.id}" data-mode="${m.mode}">${tr('重试')}</button>` : '',
   ].join('');
   const head = topic
-    ? `<span class="imp-src">主题</span><b>${esc(m.topic)}</b><span class="m">${esc(m.sourceLabel)} · ${m.total} 条 · ${clock(m.ts)}</span>`
-    : `<span class="imp-src">${esc(m.parentId ? '补导' : m.sourceLabel)}</span><b>${esc(m.title)}</b><span class="m">${m.parentId ? m.entries.length : m.total} 条 · ${clock(m.ts)}</span>`;
+    ? `<span class="imp-src">${tr('主题')}</span><b>${esc(m.topic)}</b><span class="m">${tr('{0} · {1} 条 · {2}', [esc(m.sourceLabel), m.total, clock(m.ts)])}</span>`
+    : `<span class="imp-src">${esc(m.parentId ? tr('补导') : m.sourceLabel)}</span><b>${esc(m.title)}</b><span class="m">${tr('{0} 条 · {1}', [m.parentId ? m.entries.length : m.total, clock(m.ts)])}</span>`;
   return `<div class="msg import" id="${prefix}-${m.id}" style="--c:${color}">
     <details class="imp" data-import="${m.id}">
       <summary>${head}</summary>
@@ -2017,7 +2037,7 @@ function replaceImport(el, m, prefix = 'm') {
 function entriesHtml(m) {
   return m.entries.map((e) => {
     const acts = e.acts.map((label) => ({ kind: actKind(label), label }));
-    return `<div class="imp-e ${e.role}"><div class="n">${e.role === 'user' ? '我' : esc(m.name)}</div>${activitiesHtml(acts, false)}${e.text ? `<div class="md">${md(e.text)}</div>` : ''}</div>`;
+    return `<div class="imp-e ${e.role}"><div class="n">${e.role === 'user' ? tr('我') : esc(m.name)}</div>${activitiesHtml(acts, false)}${e.text ? `<div class="md">${md(e.text)}</div>` : ''}</div>`;
   }).join('');
 }
 
@@ -2026,13 +2046,13 @@ function importBodyHtml(m) {
     const parts = [];
     if (m.brief) parts.push(`<button type="button" class="change-chip" data-open-file="${esc(m.brief)}">${ICON.file}${esc(m.brief)}</button>`);
     if (m.briefText) parts.push(`<div class="imp-summary md">${md(m.briefText)}</div>`);
-    parts.push(`<details class="imp-raw" data-raw="${m.id}"><summary>原对话「${esc(m.title)}」· ${m.total} 条</summary><div></div></details>`);
+    parts.push(`<details class="imp-raw" data-raw="${m.id}"><summary>${tr('原对话「{0}」· {1} 条', [esc(m.title), m.total])}</summary><div></div></details>`);
     return parts.join('');
   }
   const parts = [];
   if (m.summary) parts.push(`<div class="imp-summary md">${md(m.summary)}</div>`);
   if (m.handoff) parts.push(`<button type="button" class="change-chip" data-open-file="${esc(m.handoff)}">${ICON.file}${esc(m.handoff)}</button>`);
-  if (m.skipped && !m.summary && !m.handoff && m.status !== 'writing') parts.push(`<div class="note">前面 ${m.skipped} 条没有导入</div>`);
+  if (m.skipped && !m.summary && !m.handoff && m.status !== 'writing') parts.push(`<div class="note">${tr('前面 {0} 条没有导入', [m.skipped])}</div>`);
   return parts.join('') + entriesHtml(m);
 }
 
@@ -2051,7 +2071,7 @@ function checkImports() {
   }
 }
 
-const briefChange = (p) => `${p.by === '外部修改' ? '有人在软件外' : `${esc(p.by)} `}${p.after == null ? '删除' : '改'}了简报`;
+const briefChange = (p) => tr('{0}{1}了简报', [p.by === '外部修改' ? tr('有人在软件外') : `${esc(authorName(p.by))} `, p.after == null ? tr('删除') : tr('改')]);
 
 async function briefAction(id, action) {
   try { await api(`/api/spaces/${state.space.id}/imports/${id}/brief`, { method: 'POST', body: { action } }); } catch (e) { toast(e.message, 'error'); }
@@ -2069,9 +2089,9 @@ function renderBriefDiff(body, v) {
   const p = m?.briefPending;
   if (!p) { state.files.view = null; renderFilesBody(); return; } // 采用或撤销后回到文件列表
   body.innerHTML = `<div class="diff-view">
-    <div class="editor-head"><button class="icon-btn" type="button" data-act="back" title="返回">${ICON.back}</button>
+    <div class="editor-head"><button class="icon-btn" type="button" data-act="back" title="${tr('返回')}">${ICON.back}</button>
       <span class="ep">${briefChange(p)} · ${esc(m.brief)}</span>
-      <button class="btn sm primary" type="button" data-brief-act="accept">采用</button><button class="btn sm" type="button" data-brief-act="revert">撤销</button></div>
+      <button class="btn sm primary" type="button" data-brief-act="accept">${tr('采用')}</button><button class="btn sm" type="button" data-brief-act="revert">${tr('撤销')}</button></div>
     <div class="diff">${diffHtml(m.briefText, p.after ?? '')}</div></div>`;
 }
 
@@ -2116,7 +2136,7 @@ $('#spaceView').addEventListener('click', async (e) => {
       delete importNew[b.dataset.id];
       const m = findMsg(b.dataset.id);
       if (m) updateMessage(m);
-      if (r.grown && confirm('导入的内容已经变长，要重新压缩吗？')) await api(`${base}/recompress`, { method: 'POST', body: {} });
+      if (r.grown && confirm(tr('导入的内容已经变长，要重新压缩吗？'))) await api(`${base}/recompress`, { method: 'POST', body: {} });
     } else if (b.dataset.imp === 'retry') {
       await api(`${base}/recompress`, { method: 'POST', body: { mode: b.dataset.mode } });
     }
@@ -2140,7 +2160,6 @@ setInterval(renderSpaceList, 60_000);
 new EventSource('/api/events').onmessage = refreshSpacesSoon;
 
 (async () => {
-  try { state.app = await api('/api/app'); } catch { state.app = {}; }
   $('#mockTag').hidden = !state.app.mock;
   applyTheme(window.desktop?.getTheme ? await window.desktop.getTheme() : load('rt:theme'));
   await Promise.all([refreshEngines(), refreshSpaces()]);

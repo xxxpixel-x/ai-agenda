@@ -1,6 +1,6 @@
 // 导入来源：WorkBuddy、Gemini CLI 的读取，粘贴文字 / 导出文件的整理，以及没有对应成员的导入。
 // 测试数据全是编造的，写在临时文件夹里；用户主目录指到临时文件夹。
-import test from 'node:test';
+import { testInChinese as test } from './helpers.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';

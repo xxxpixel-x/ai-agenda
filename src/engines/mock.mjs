@@ -1,18 +1,19 @@
 // 演示引擎：不调用任何 AI，按固定节奏吐出模拟发言，用于检查界面（npm run mock）。
 // 会真的往工作目录写文件，用来演示“改动记录 / 撤销 / 任务协作的副本与合并”。
+import { t as tr } from '../i18n.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { AbortedError } from './proc.mjs';
 
 export const meta = {
   id: 'mock',
-  label: '演示 AI',
-  vendor: '演示',
-  defaultName: '演示',
+  get label() { return tr('演示 AI'); },
+  get vendor() { return tr('演示'); },
+  get defaultName() { return tr('演示'); },
   color: '#64748b',
-  models: [['', '默认']],
+  get models() { return [['', tr('默认')]]; },
   efforts: [''],
-  capabilities: '模拟发言与改文件',
+  get capabilities() { return tr('模拟发言与改文件'); },
   approvals: true,
 };
 
@@ -22,7 +23,7 @@ const sleep = (ms, signal) => new Promise((resolve, reject) => {
 });
 
 export async function detect() {
-  return { available: true, ready: true, note: '演示模式，不调用任何 AI' };
+  return { available: true, ready: true, note: tr('演示模式，不调用任何 AI') };
 }
 
 async function stream(text, onDelta, signal) {
@@ -34,82 +35,81 @@ async function stream(text, onDelta, signal) {
 }
 
 export async function runTurn({ system, prompt, cwd, access, signal, onDelta, onActivity, onRaw, onApproval }) {
-  const me = (system.match(/你是「([^」]+)」/) || [])[1] || '演示';
-  const members = [...system.matchAll(/^- @([^（\s]+)/gm)].map((m) => m[1]);
+  const me = (system.match(/(?:你是「|You are “)([^」”]+)[」”]/) || [])[1] || tr('演示');
+  const members = [...system.matchAll(/^- @([^（(\s]+)/gm)].map((m) => m[1]);
   onRaw?.(`{"type":"mock.start","me":"${me}"}`);
   await sleep(400, signal);
 
   // ---- 任务协作：规划 / 审阅 / 子任务 / 总结 ----
-  if (system.includes('这次任务协作的协调者')) {
+  if (system.includes(tr('这次任务协作的协调者'))) {
     const all = [me, ...members.filter((n) => n !== me)];
     const tasks = [
-      { id: 'T1', title: '写需求要点', assignee: all[0], deps: [], spec: '在 需求.md 里写下 3 条核心需求。' },
-      { id: 'T2', title: '写实现思路', assignee: all[1] || all[0], deps: [], spec: '在 实现.md 里写下实现思路。' },
-      { id: 'T3', title: '汇总成方案', assignee: all[2] || all[0], deps: ['T1', 'T2'], spec: '读 需求.md 和 实现.md，写 方案.md。' },
+      { id: 'T1', title: tr('写需求要点'), assignee: all[0], deps: [], spec: tr('在 需求.md 里写下 3 条核心需求。') },
+      { id: 'T2', title: tr('写实现思路'), assignee: all[1] || all[0], deps: [], spec: tr('在 实现.md 里写下实现思路。') },
+      { id: 'T3', title: tr('汇总成方案'), assignee: all[2] || all[0], deps: ['T1', 'T2'], spec: tr('读 需求.md 和 实现.md，写 方案.md。') },
     ];
-    return stream(`我把目标拆成三步，前两步可以同时做。\n\n\`\`\`json\n${JSON.stringify({ tasks }, null, 1)}\n\`\`\``, onDelta, signal);
+    return stream(tr('我把目标拆成三步，前两步可以同时做。\n\n```json\n{0}\n```', [JSON.stringify({ tasks }, null, 1)]), onDelta, signal);
   }
-  if (system.includes('请你审阅计划')) return stream('[同意]', onDelta, signal);
+  if (system.includes(tr('请你审阅计划'))) return stream(tr('[同意]'), onDelta, signal);
   // ---- 整理导入的对话 ----
-  if (prompt.includes('Markdown 交接文档')) return stream('## 讨论到哪\n（演示）讨论到了导入功能。\n\n## 已经定下的\n- 演示内容\n\n## 还没解决的\n- 无\n\n## 下一步\n- 继续讨论\n\n## 涉及的文件\n- 无', onDelta, signal);
-  if (prompt.includes('原对话之后又有了下面这些新内容')) return stream('[无需修改]', onDelta, signal);
-  const topic = prompt.match(/只整理和「([^」]+)」这个主题有关的内容/);
-  if (topic) return stream(`# ${topic[1]}\n\n## 背景\n（演示）一个小游戏，${topic[1]}交给其他成员来写。\n\n## 已经定下的\n- 演示内容\n\n## 约束和接口\n- 对话写成 JSON：{ "speaker": "", "text": "" }\n\n## 待讨论\n- 结局有几个\n\n相关原文：1, 2`, onDelta, signal);
-  if (prompt.includes('把这段对话写成摘要')) return stream('（演示）较早的部分讨论了导入功能的需求，定下了按篇幅自动选择导入方式。', onDelta, signal);
-  if (system.includes('写一份简洁的总结')) return stream('### 完成了什么\n三个子任务都已完成（演示）。\n\n### 需要你注意的地方\n这是演示模式的模拟结果。', onDelta, signal);
-  const sub = system.match(/做被分派给你的子任务 ([A-Za-z0-9-]+)/);
+  if (prompt.includes(tr('Markdown 交接文档'))) return stream(tr('## 讨论到哪\n（演示）讨论到了导入功能。\n\n## 已经定下的\n- 演示内容\n\n## 还没解决的\n- 无\n\n## 下一步\n- 继续讨论\n\n## 涉及的文件\n- 无'), onDelta, signal);
+  if (prompt.includes(tr('原对话之后又有了下面这些新内容'))) return stream(tr('[无需修改]'), onDelta, signal);
+  const topic = prompt.match(/(?:只整理和「|Prepare only the content about “)([^」”]+)[」”]/);
+  if (topic) return stream(tr('# {0}\n\n## 背景\n（演示）一个小游戏，{1}交给其他成员来写。\n\n## 已经定下的\n- 演示内容\n\n## 约束和接口\n- 对话写成 JSON：{ "speaker": "", "text": "" }\n\n## 待讨论\n- 结局有几个\n\n相关原文：1, 2', [topic[1], topic[1]]), onDelta, signal);
+  if (prompt.includes(tr('把这段对话写成摘要'))) return stream(tr('（演示）较早的部分讨论了导入功能的需求，定下了按篇幅自动选择导入方式。'), onDelta, signal);
+  if (system.includes(tr('写一份简洁的总结'))) return stream(tr('### 完成了什么\n三个子任务都已完成（演示）。\n\n### 需要你注意的地方\n这是演示模式的模拟结果。'), onDelta, signal);
+  const sub = system.match(/(?:做被分派给你的子任务|working on your assigned task) ([A-Za-z0-9-]+)/);
   if (sub) {
     const id = sub[1];
     // 解决合并冲突：保留双方内容，去掉冲突标记
-    if (prompt.includes('# 合并冲突')) {
+    if (prompt.includes(tr('# 合并冲突'))) {
       const files = [...prompt.matchAll(/^- (.+)$/gm)].map((m) => m[1]).filter((f) => fs.existsSync(path.join(cwd, f)));
       for (const f of files) {
         const p = path.join(cwd, f);
         fs.writeFileSync(p, fs.readFileSync(p, 'utf8').split('\n').filter((l) => !/^(<<<<<<<|=======|>>>>>>>)/.test(l)).join('\n'));
-        onActivity?.({ kind: 'edit', label: `解决冲突 ${f}` });
+        onActivity?.({ kind: 'edit', label: tr('解决冲突 {0}', [f]) });
       }
-      return stream(`我解决了 ${files.join('、')} 里的冲突，保留了双方的内容。\n结果：完成`, onDelta, signal);
+      return stream(tr('我解决了 {0} 里的冲突，保留了双方的内容。\n结果：完成', [files.join('、')]), onDelta, signal);
     }
-    const forced = prompt.match(/写入文件 (\S+)/);
-    const file = forced ? forced[1] : ({ T1: '需求.md', T2: '实现.md', T3: '方案.md' }[id] || `${id}.md`);
-    if (prompt.includes('需要确认') && !prompt.includes('# 用户的回答')) {
-      return stream('我需要先知道周报是给谁看的。\n结果：需要确认：周报的读者是老板还是团队成员？', onDelta, signal);
+    const forced = prompt.match(/(?:写入文件|Write file) (\S+)/i);
+    const file = forced ? forced[1] : ({ T1: tr('需求.md'), T2: tr('实现.md'), T3: tr('方案.md') }[id] || `${id}.md`);
+    if (prompt.includes(tr('需要确认')) && !prompt.includes(tr('# 用户的回答'))) {
+      return stream(tr('我需要先知道周报是给谁看的。\n结果：需要确认：周报的读者是老板还是团队成员？'), onDelta, signal);
     }
-    const feedback = prompt.includes('# 用户的意见') ? '（已按意见修改）' : '';
-    onActivity?.({ kind: 'edit', label: `修改 ${file}` });
+    const feedback = prompt.includes(tr('# 用户的意见')) ? tr('（已按意见修改）') : '';
+    onActivity?.({ kind: 'edit', label: tr('修改 {0}', [file]) });
     onRaw?.(`{"type":"mock.write","file":"${file}"}`);
-    fs.writeFileSync(path.join(cwd, file), `# ${file.replace('.md', '')}\n\n- ${me} 写的内容${feedback}\n`);
+    fs.writeFileSync(path.join(cwd, file), tr('# {0}\n\n- {1} 写的内容{2}\n', [file.replace('.md', ''), me, feedback]));
     await sleep(800, signal);
-    return stream(`我在 ${file} 里写好了内容${feedback}。没有发现问题。没有剩下的事。\n结果：完成`, onDelta, signal);
+    return stream(tr('我在 {0} 里写好了内容{1}。没有发现问题。没有剩下的事。\n结果：完成', [file, feedback]), onDelta, signal);
   }
 
   // ---- 自由群聊 ----
-  const lines = prompt.split('\n').filter((l) => l.startsWith('【'));
-  const last = lines[lines.length - 1] || '';
-  const lastSpeaker = last.slice(1, last.indexOf('】'));
-  const myTurns = lines.filter((l) => l.startsWith(`【${me}】`)).length;
-  if (myTurns >= 2) return { text: '[跳过]' };
-  let text = lastSpeaker === '我' || !lastSpeaker
-    ? `收到。我是**${me}**，先说说我的看法：这个问题可以拆成两步——先明确目标，再挑最小的可行方案验证。`
-    : `同意 **${lastSpeaker}** 的思路。我补充一点：把结论记到共享文档里，方便之后回看。`;
+  const speakers = [...prompt.matchAll(/^<(?:消息 来自|message from)="([^"]+)"/gm)].map((m) => m[1]);
+  const lastSpeaker = speakers.at(-1) || '';
+  const myTurns = speakers.filter((name) => name === me).length;
+  if (myTurns >= 2) return { text: tr('[跳过]') };
+  let text = lastSpeaker === tr('我') || !lastSpeaker
+    ? tr('收到。我是**{0}**，先说说我的看法：这个问题可以拆成两步——先明确目标，再挑最小的可行方案验证。', [me])
+    : tr('同意 **{0}** 的思路。我补充一点：把结论记到共享文档里，方便之后回看。', [lastSpeaker]);
   if (access !== 'read' && myTurns === 0) {
-    onActivity?.({ kind: 'edit', label: '修改 共享文档.md' });
-    const f = path.join(cwd, '共享文档.md');
-    const old = fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '# 共享文档\n';
-    fs.writeFileSync(f, `${old.replace(/\n*$/, '\n')}- ${me}：先明确目标，再做最小验证。\n`);
-    text += '\n\n（我在 `共享文档.md` 里记了一条。）';
+    onActivity?.({ kind: 'edit', label: tr('修改 共享文档.md') });
+    const f = path.join(cwd, tr('共享文档.md'));
+    const old = fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : tr('# 共享文档\n');
+    fs.writeFileSync(f, tr('{0}- {1}：先明确目标，再做最小验证。\n', [old.replace(/\n*$/, '\n'), me]));
+    text += tr('\n\n（我在 `共享文档.md` 里记了一条。）');
   }
   // 「可运行命令」档：先问能不能跑测试
   if (access === 'run' && onApproval && myTurns === 0) {
     const d = await onApproval({ command: 'npm test && git status' });
     const note = d.note ? `（${d.note}）` : '';
     if (d.allow) {
-      onActivity?.({ kind: 'command', label: '运行 npm test && git status' });
-      text += '\n\n测试跑过了，全部通过。' + note;
+      onActivity?.({ kind: 'command', label: tr('运行 npm test && git status') });
+      text += tr('\n\n测试跑过了，全部通过。') + note;
     } else {
-      text += `\n\n好，先不跑测试${note}。`;
+      text += tr('\n\n好，先不跑测试{0}。', [note]);
     }
   }
-  if (myTurns === 1) text += ' [结束]';
+  if (myTurns === 1) text += tr(' [结束]');
   return stream(text, onDelta, signal);
 }

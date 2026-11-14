@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import nodeTest from 'node:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,6 +8,14 @@ import { Store } from '../src/store.mjs';
 import { Space } from '../src/space.mjs';
 import { createSettings } from '../src/settings.mjs';
 import { createRegistry } from '../src/engines/index.mjs';
+import { withLanguage } from '../src/i18n.mjs';
+
+// Existing fixtures assert Chinese copy. Bilingual tests choose their own context.
+export function testInChinese(name, options, fn) {
+  if (typeof options === 'function') { fn = options; options = {}; }
+  return nodeTest(name, options, (t) => withLanguage('zh', () => fn(t)));
+}
+testInChinese.skip = nodeTest.skip;
 
 export function tempDir(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenda-test-'));

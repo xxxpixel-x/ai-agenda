@@ -3,6 +3,7 @@
 // 旧版是一个 session-*.json，里面 { ..., messages: [...] }。两种都读。
 // 项目文件夹：新版 <项目>/.project_root 里写着；旧版的 <项目> 是路径的哈希，从 ~/.gemini/projects.json 反查不到就留空。
 // 只在真机上见过“只有登录记录”的会话，含 AI 回复和工具调用的部分按 Gemini CLI 公开的源码格式写，没在真机上验证过。
+import { t as tr } from '../i18n.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { EntryBuilder, readJsonl, relTo, brief, toTs, homeDir } from './common.mjs';
@@ -63,13 +64,13 @@ function actOf(t, cwd) {
   const a = t.args || {};
   const file = relTo(a.file_path || a.absolute_path || a.path, cwd);
   switch (t.name) {
-    case 'read_file': return `读取 ${file}`;
-    case 'read_many_files': return `读取 ${brief((a.paths || []).join('、'), 60)}`;
-    case 'write_file': return `写入 ${file}`;
-    case 'replace': case 'edit': return `修改 ${file}`;
-    case 'run_shell_command': return `运行 ${brief(a.command, 70)}`;
-    case 'google_web_search': return `搜索：${brief(a.query, 60)}`;
-    case 'web_fetch': return `打开网页 ${brief(a.url || a.prompt, 60)}`;
+    case 'read_file': return tr('读取 {0}', [file]);
+    case 'read_many_files': return tr('读取 {0}', [brief((a.paths || []).join('、'), 60)]);
+    case 'write_file': return tr('写入 {0}', [file]);
+    case 'replace': case 'edit': return tr('修改 {0}', [file]);
+    case 'run_shell_command': return tr('运行 {0}', [brief(a.command, 70)]);
+    case 'google_web_search': return tr('搜索：{0}', [brief(a.query, 60)]);
+    case 'web_fetch': return tr('打开网页 {0}', [brief(a.url || a.prompt, 60)]);
     default: return ''; // 列目录、查找文件、记忆等不记
   }
 }
@@ -90,7 +91,7 @@ export function list() {
 
 export function read(id) {
   const file = files().find((f) => idOf(f) === id);
-  if (!file) throw new Error('找不到这段 Gemini CLI 对话');
+  if (!file) throw new Error(tr('找不到这段 Gemini CLI 对话'));
   const { info, messages } = load(file);
   const cwd = cwdOf(file, info);
   const b = new EntryBuilder();

@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { testInChinese as test } from './helpers.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';

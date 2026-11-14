@@ -1,4 +1,5 @@
 // Claude Code（本机命令行，headless 模式）。使用 Claude Code 自己的登录，不需要 API key。
+import { t as tr } from '../i18n.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,15 +13,15 @@ export const meta = {
   defaultName: 'Claude',
   color: '#d97757',
   // 命令行列不出可用型号，只能写死；列表里没有的型号（含 opus / sonnet 这类别名）可以手填
-  models: [
-    ['', '默认'],
+  get models() { return [
+    ['', tr('默认')],
     ['claude-opus-5-5', 'Opus 5.5'], ['claude-opus-5', 'Opus 5'], ['claude-opus-4-8', 'Opus 4.8'], ['claude-opus-4-7', 'Opus 4.7'],
     ['claude-fable-5-2', 'Fable 5.2'], ['claude-fable-5-1', 'Fable 5.1'], ['claude-fable-5', 'Fable 5'],
     ['claude-sonnet-5-5', 'Sonnet 5.5'], ['claude-sonnet-5', 'Sonnet 5'], ['claude-sonnet-4-6', 'Sonnet 4.6'],
     ['claude-haiku-5-5', 'Haiku 5.5'], ['claude-haiku-4-5', 'Haiku 4.5'],
-  ],
+  ]; },
   efforts: ['', 'low', 'medium', 'high', 'xhigh', 'max'],
-  capabilities: '读写共享文件、联网搜索',
+  get capabilities() { return tr('读写共享文件、联网搜索'); },
   approvals: true, // 运行命令前可以先问你
 };
 
@@ -75,7 +76,7 @@ const loginCmd = (bin) => (/^[A-Za-z]:\\/.test(bin) ? `& "${bin}" auth login` : 
 export async function detect({ binOverride } = {}) {
   const bin = findBin(binOverride);
   if (!bin) {
-    return { available: false, ready: false, note: '没有找到 Claude Code。安装 Claude 桌面 app 或 Claude Code 命令行后重新检测。' };
+    return { available: false, ready: false, note: tr('没有找到 Claude Code。安装 Claude 桌面 app 或 Claude Code 命令行后重新检测。') };
   }
   const r = await capture(bin, ['auth', 'status']);
   let loggedIn = false;
@@ -89,7 +90,7 @@ export async function detect({ binOverride } = {}) {
     available: true,
     ready: loggedIn,
     bin,
-    note: loggedIn ? `已登录（${method}）` : '还没有登录。在终端运行下面的命令，在弹出的浏览器里用你的 Claude 账号登录：',
+    note: loggedIn ? tr('已登录（{0}）', [method]) : tr('还没有登录。在终端运行下面的命令，在弹出的浏览器里用你的 Claude 账号登录：'),
     command: loggedIn ? null : loginCmd(bin),
   };
 }
@@ -119,19 +120,19 @@ function accessArgs(access, ask = false) {
   ];
 }
 
-const refusal = (note) => `「我」没有同意运行这条命令${note ? `，理由：${note}` : ''}。按这个调整做法，不要换一种写法绕过。`;
-const approvalNote = (note) => `「我」同意了刚才那条命令，并补充：${note}`;
+const refusal = (note) => tr('「我」没有同意运行这条命令{0}。按这个调整做法，不要换一种写法绕过。', [note ? tr('，理由：{0}', [note]) : '']);
+const approvalNote = (note) => tr('「我」同意了刚才那条命令，并补充：{0}', [note]);
 
 function activityOf(block, cwd) {
   const i = block.input || {};
   switch (block.name) {
-    case 'Read': return { kind: 'read', label: `读取 ${relPath(i.file_path, cwd)}` };
-    case 'Edit': case 'MultiEdit': return { kind: 'edit', label: `修改 ${relPath(i.file_path, cwd)}` };
-    case 'Write': return { kind: 'edit', label: `写入 ${relPath(i.file_path, cwd)}` };
-    case 'Glob': case 'Grep': return { kind: 'read', label: `查找 ${brief(i.pattern, 40)}` };
-    case 'WebSearch': return { kind: 'search', label: `搜索：${brief(i.query, 60)}` };
-    case 'WebFetch': return { kind: 'search', label: `打开网页 ${brief(i.url, 60)}` };
-    case 'Bash': case 'PowerShell': return { kind: 'command', label: `运行 ${brief(i.command, 70)}` };
+    case 'Read': return { kind: 'read', label: tr('读取 {0}', [relPath(i.file_path, cwd)]) };
+    case 'Edit': case 'MultiEdit': return { kind: 'edit', label: tr('修改 {0}', [relPath(i.file_path, cwd)]) };
+    case 'Write': return { kind: 'edit', label: tr('写入 {0}', [relPath(i.file_path, cwd)]) };
+    case 'Glob': case 'Grep': return { kind: 'read', label: tr('查找 {0}', [brief(i.pattern, 40)]) };
+    case 'WebSearch': return { kind: 'search', label: tr('搜索：{0}', [brief(i.query, 60)]) };
+    case 'WebFetch': return { kind: 'search', label: tr('打开网页 {0}', [brief(i.url, 60)]) };
+    case 'Bash': case 'PowerShell': return { kind: 'command', label: tr('运行 {0}', [brief(i.command, 70)]) };
     default: return { kind: 'tool', label: block.name };
   }
 }
@@ -139,10 +140,10 @@ function activityOf(block, cwd) {
 function friendly(text, bin) {
   const t = brief(text, 300);
   if (/not logged in|\/login|invalid api key|authentication/i.test(t)) {
-    return `Claude Code 还没有登录（${t}）。请在终端运行 ${loginCmd(bin)}，登录后再试。`;
+    return tr('Claude Code 还没有登录（{0}）。请在终端运行 {1}，登录后再试。', [t, loginCmd(bin)]);
   }
-  if (/rate limit|usage limit|limit reached|\b429\b/i.test(t)) return `Claude 账号额度已用完或被限流（${t}）。`;
-  return t || 'Claude Code 没有返回内容';
+  if (/rate limit|usage limit|limit reached|\b429\b/i.test(t)) return tr('Claude 账号额度已用完或被限流（{0}）。', [t]);
+  return t || tr('Claude Code 没有返回内容');
 }
 
 /**
@@ -153,7 +154,7 @@ function friendly(text, bin) {
 export async function runTurn({ system, prompt, model, effort, cwd, access = 'edit', signal, onDelta, onActivity, onRaw, onApproval, binOverride, sessionId, fork = false }) {
   const ask = access === 'run' && !!onApproval;
   const bin = findBin(binOverride);
-  if (!bin) throw new Error('没有找到 Claude Code');
+  if (!bin) throw new Error(tr('没有找到 Claude Code'));
   const sysFile = path.join(os.tmpdir(), `rt-sys-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`);
   fs.writeFileSync(sysFile, system, 'utf8');
 
@@ -192,7 +193,7 @@ export async function runTurn({ system, prompt, model, effort, cwd, access = 'ed
       response = d.allow ? { behavior: 'allow', updatedInput: input } : { behavior: 'deny', message: refusal(d.note) };
       if (d.allow) note = d.note;
     } else {
-      response = { behavior: 'deny', message: '超出了当前权限。' };
+      response = { behavior: 'deny', message: tr('超出了当前权限。') };
     }
     ctl.send({ type: 'control_response', response: { subtype: 'success', request_id: msg.request_id, response } });
     // 同意时附的话：紧跟着发一条消息，Claude 在这一轮里就会读到（Claude Code 2.1.321 实测）
@@ -241,7 +242,7 @@ export async function runTurn({ system, prompt, model, effort, cwd, access = 'ed
       return err;
     };
     if (result?.is_error) throw fail(result.result || result.subtype);
-    if (!result && r.code !== 0) throw fail(r.stderr || `退出码 ${r.code}`);
+    if (!result && r.code !== 0) throw fail(r.stderr || tr('退出码 {0}', [r.code]));
     if (!text && result?.result) emit(result.result);
     if (!text.trim()) throw fail(r.stderr);
     return { text, sessionId: sessionId ? result?.session_id || null : undefined };

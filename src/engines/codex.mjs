@@ -1,4 +1,5 @@
 // OpenAI Codex 命令行（codex exec）。使用 Codex 自己的登录（ChatGPT 账号或其配置的服务商）。
+import { t as tr } from '../i18n.mjs';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -12,10 +13,10 @@ export const meta = {
   vendor: 'OpenAI',
   defaultName: 'Codex',
   color: '#10a37f',
-  models: [['', '默认']],
+  get models() { return [['', tr('默认')]]; },
   freeModel: true, // 允许手动填模型名
   efforts: ['', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'], // 具体型号支持哪些，detect 时从 codex debug models 查
-  capabilities: '读写共享文件、在共享文件夹内运行命令（沙箱）、联网搜索',
+  get capabilities() { return tr('读写共享文件、在共享文件夹内运行命令（沙箱）、联网搜索'); },
   approvals: true, // 运行命令前可以先问你（走 app-server）
 };
 
@@ -47,7 +48,7 @@ export async function findBin(override) {
 
 export async function detect({ binOverride } = {}) {
   const bin = await findBin(binOverride);
-  if (!bin) return { available: false, ready: false, note: '没有找到 Codex。安装 Codex 桌面版或 Codex 命令行后重新检测。' };
+  if (!bin) return { available: false, ready: false, note: tr('没有找到 Codex。安装 Codex 桌面版或 Codex 命令行后重新检测。') };
   const [ver, login, catalog] = await Promise.all([capture(bin, ['--version']), capture(bin, ['login', 'status']), capture(bin, ['debug', 'models'])]);
   const status = brief(login.stdout || login.stderr, 120);
   const loggedIn = login.ok && /logged in/i.test(status) && !/not logged in/i.test(status);
@@ -57,7 +58,7 @@ export async function detect({ binOverride } = {}) {
     bin,
     version: brief(ver.stdout, 40),
     ...modelsOf(catalog.stdout),
-    note: loggedIn ? `已登录（${status}）` : `还没有登录（${status || '未知状态'}）。打开 Codex 桌面版登录，或在终端运行：`,
+    note: loggedIn ? tr('已登录（{0}）', [status]) : tr('还没有登录（{0}）。打开 Codex 桌面版登录，或在终端运行：', [status || tr('未知状态')]),
     command: loggedIn ? null : `& "${bin}" login`,
   };
 }
@@ -95,7 +96,7 @@ export function isolationArgs(home = process.env.CODEX_HOME || path.join(os.home
 
 export async function runTurn({ system, prompt, model, effort, cwd, access = 'edit', signal, onDelta, onActivity, onRaw, onApproval, binOverride }) {
   const bin = await findBin(binOverride);
-  if (!bin) throw new Error('没有找到 Codex');
+  if (!bin) throw new Error(tr('没有找到 Codex'));
   if (access === 'run' && onApproval) return runAsking({ bin, input: `${system}\n\n${prompt}`, model, effort, cwd, signal, onDelta, onActivity, onRaw, onApproval });
 
   // Codex 的沙箱：只读档 = read-only；全部权限 = 不设沙箱；其余 = 只能写共享文件夹（它运行命令也被限制在这个沙箱里）
@@ -126,32 +127,32 @@ export async function runTurn({ system, prompt, model, effort, cwd, access = 'ed
     onEvent(ev, ctl) {
       const item = ev.item || {};
       if (ev.type === 'item.started') {
-        if (item.type === 'command_execution') onActivity?.({ kind: 'command', label: `运行 ${shortCommand(item.command)}` });
-        else if (item.type === 'web_search' && item.query) onActivity?.({ kind: 'search', label: `搜索：${brief(item.query, 60)}` });
+        if (item.type === 'command_execution') onActivity?.({ kind: 'command', label: tr('运行 {0}', [shortCommand(item.command)]) });
+        else if (item.type === 'web_search' && item.query) onActivity?.({ kind: 'search', label: tr('搜索：{0}', [brief(item.query, 60)]) });
       } else if (ev.type === 'item.completed') {
         if (item.type === 'agent_message') emit(item.text);
         else if (item.type === 'file_change') {
           // changes 可能是数组 [{ path }]，也可能是 { 路径: {...} }
           const list = Array.isArray(item.changes) ? item.changes.map((c) => c.path) : Object.keys(item.changes || {});
-          for (const p of list) onActivity?.({ kind: 'edit', label: `修改 ${path.basename(p || '')}` });
-        } else if (item.type === 'web_search' && item.query) onActivity?.({ kind: 'search', label: `搜索：${brief(item.query, 60)}` });
-        else if (item.type === 'mcp_tool_call') onActivity?.({ kind: 'tool', label: `${item.server || ''} ${item.tool || ''}`.trim() || '工具' });
+          for (const p of list) onActivity?.({ kind: 'edit', label: tr('修改 {0}', [path.basename(p || '')]) });
+        } else if (item.type === 'web_search' && item.query) onActivity?.({ kind: 'search', label: tr('搜索：{0}', [brief(item.query, 60)]) });
+        else if (item.type === 'mcp_tool_call') onActivity?.({ kind: 'tool', label: `${item.server || ''} ${item.tool || ''}`.trim() || tr('工具') });
         else if (item.type === 'error' && !/Ignored unsupported/i.test(item.message || '')) warnings.push(item.message);
       } else if (ev.type === 'turn.completed') {
         ctl.finish(); // 回合结束后进程还会逗留几十秒，不等它
       } else if (ev.type === 'turn.failed') {
-        failure = ev.error?.message || '回合失败';
+        failure = ev.error?.message || tr('回合失败');
         ctl.finish();
       } else if (ev.type === 'error') {
-        failure = ev.message || '未知错误';
+        failure = ev.message || tr('未知错误');
       }
     },
   });
 
   if (failure) throw new Error(`Codex：${brief(failure, 300)}`);
   if (!text.trim()) {
-    const why = warnings[0] || r.stderr || `退出码 ${r.code}`;
-    throw new Error(`Codex 没有返回内容：${brief(why, 300)}`);
+    const why = warnings[0] || r.stderr || tr('退出码 {0}', [r.code]);
+    throw new Error(tr('Codex 没有返回内容：{0}', [brief(why, 300)]));
   }
   return { text };
 }
@@ -161,8 +162,8 @@ export async function runTurn({ system, prompt, model, effort, cwd, access = 'ed
 // 它在运行命令之前发来审批请求，回答之后才继续。只读的常见命令（ls、cat 之类）它自己判断为安全，不会来问。
 
 const rpc = (obj) => ({ jsonrpc: '2.0', ...obj });
-const refusal = (note) => `「我」没有同意运行刚才那条命令${note ? `，理由：${note}` : ''}。按这个调整做法，不要换一种写法绕过。`;
-const approvalNote = (note) => `「我」同意了刚才那条命令，并补充：${note}`;
+const refusal = (note) => tr('「我」没有同意运行刚才那条命令{0}。按这个调整做法，不要换一种写法绕过。', [note ? tr('，理由：{0}', [note]) : '']);
+const approvalNote = (note) => tr('「我」同意了刚才那条命令，并补充：{0}', [note]);
 
 async function runAsking({ bin, input, model, effort, cwd, signal, onDelta, onActivity, onRaw, onApproval }) {
   let text = '';
@@ -190,7 +191,7 @@ async function runAsking({ bin, input, model, effort, cwd, signal, onDelta, onAc
     } else if (m.method === 'item/fileChange/requestApproval') {
       reply({ decision: 'decline' }); // 共享文件夹里的修改不会来问；来问的是文件夹以外的，超出权限
     } else {
-      ctl.send(rpc({ id: m.id, error: { code: -32601, message: '这里不支持这个请求' } }));
+      ctl.send(rpc({ id: m.id, error: { code: -32601, message: tr('这里不支持这个请求') } }));
     }
   }
 
@@ -209,7 +210,7 @@ async function runAsking({ bin, input, model, effort, cwd, signal, onDelta, onAc
     onEvent(m, ctl) {
       if (m.method && m.id != null) { answer(m, ctl); return; }          // 它来问我们
       if (m.id != null) {                                                // 我们请求的结果
-        if (m.error && !String(m.id).startsWith('steer-')) { failure = m.error.message || '请求失败'; ctl.finish(); }
+        if (m.error && !String(m.id).startsWith('steer-')) { failure = m.error.message || tr('请求失败'); ctl.finish(); }
         else if (m.id === 'thread') {
           const params = { threadId: m.result.thread.id, input: [{ type: 'text', text: input, text_elements: [] }] };
           if (effort) params.effort = effort;
@@ -220,16 +221,16 @@ async function runAsking({ bin, input, model, effort, cwd, signal, onDelta, onAc
       const p = m.params || {};
       const item = p.item || {};
       if (m.method === 'item/started') {
-        if (item.type === 'commandExecution') onActivity?.({ kind: 'command', label: `运行 ${shortCommand(item.command)}` });
+        if (item.type === 'commandExecution') onActivity?.({ kind: 'command', label: tr('运行 {0}', [shortCommand(item.command)]) });
       } else if (m.method === 'item/completed') {
         if (item.type === 'agentMessage') emit(item.text);
-        else if (item.type === 'fileChange') for (const c of item.changes || []) onActivity?.({ kind: 'edit', label: `修改 ${path.basename(c.path || '')}` });
-        else if (item.type === 'webSearch' && item.query) onActivity?.({ kind: 'search', label: `搜索：${brief(item.query, 60)}` });
-        else if (item.type === 'mcpToolCall') onActivity?.({ kind: 'tool', label: `${item.server || ''} ${item.tool || ''}`.trim() || '工具' });
+        else if (item.type === 'fileChange') for (const c of item.changes || []) onActivity?.({ kind: 'edit', label: tr('修改 {0}', [path.basename(c.path || '')]) });
+        else if (item.type === 'webSearch' && item.query) onActivity?.({ kind: 'search', label: tr('搜索：{0}', [brief(item.query, 60)]) });
+        else if (item.type === 'mcpToolCall') onActivity?.({ kind: 'tool', label: `${item.server || ''} ${item.tool || ''}`.trim() || tr('工具') });
       } else if (m.method === 'error' && !p.willRetry) {
         warnings.push(p.error?.message);
       } else if (m.method === 'turn/completed') {
-        if (p.turn?.status === 'failed') failure = p.turn.error?.message || '回合失败';
+        if (p.turn?.status === 'failed') failure = p.turn.error?.message || tr('回合失败');
         ctl.finish();
       }
     },
@@ -237,8 +238,8 @@ async function runAsking({ bin, input, model, effort, cwd, signal, onDelta, onAc
 
   if (failure) throw new Error(`Codex：${brief(failure, 300)}`);
   if (!text.trim()) {
-    const why = warnings.find(Boolean) || r.stderr || `退出码 ${r.code}`;
-    throw new Error(`Codex 没有返回内容：${brief(why, 300)}`);
+    const why = warnings.find(Boolean) || r.stderr || tr('退出码 {0}', [r.code]);
+    throw new Error(tr('Codex 没有返回内容：{0}', [brief(why, 300)]));
   }
   return { text };
 }

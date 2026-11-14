@@ -20,6 +20,12 @@
 - 用户可见行为变化时，同步更新 README 或使用指南。
 - 一个 PR 聚焦一个问题，说明改前、改后和验证结果。真实 AI 没有实测时请明确写出。
 
+## Adding a language / translations
+
+UI translations live in `public/i18n.js`. Backend messages, Electron dialog text and AI prompts live in `src/i18n.mjs`. Both export `zh`, `en` and `t(key, vars)` (usually imported as `tr`). Short keys use the Chinese source text, which also supplies the fallback. Long prompts have named keys with explicit Chinese entries. Add the English entry alongside each new key and keep `{0}` / `{name}` placeholders consistent. Add static HTML labels with `data-i18n`, or `data-i18n-title`, `data-i18n-placeholder` and `data-i18n-aria-label` for attributes.
+
+To add a language, extend the tables, locale resolver, settings validation and language selector in `public/app.js`. Backend translations run in a language context that reads the current settings, so queued turns use the latest choice. Keep parsers compatible with every supported protocol marker, including stored Chinese history. Add made-up fixtures in `test/i18n.test.mjs` and run `npm run verify`.
+
 ## 反馈与数据
 
 Issue 中附上复现步骤、Windows / Node.js / CLI 版本、脱敏报错。不要提交 `data/`、`data-mock/`、API key、真实会话或原始调试日志；测试样例应自行构造。

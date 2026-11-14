@@ -8,7 +8,7 @@ Started something in another AI and got halfway? Bring that conversation in and 
 
 **Desktop app · Windows / macOS / Linux · MIT licensed**
 
-> The app's interface is currently in Chinese only.
+In Settings (bottom left), choose the interface language: Follow system (default; non-Chinese systems show English), 中文 or English. The interface and AI prompts switch immediately.
 
 ## How it works
 
@@ -68,7 +68,7 @@ To open it with a double-click like a regular app, run `npm run build:launcher -
 
 ## Connecting AIs
 
-After opening the app, click "连接与登录" (Connections & sign-in) at the bottom left:
+After opening the app, click Settings at the bottom left.
 
 | AI | How it connects | What you need to do |
 | --- | --- | --- |
@@ -83,7 +83,7 @@ Command-line AIs use your account and quota in that tool, no API key needed. Whi
 
 ## Permissions
 
-Each space has one level, changeable any time in Settings:
+Each space has one level, changeable any time in Space settings:
 
 | Level | What the AIs can do |
 | --- | --- |

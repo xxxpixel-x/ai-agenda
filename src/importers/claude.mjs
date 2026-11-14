@@ -1,6 +1,7 @@
 // Claude Code 的会话记录：~/.claude/projects/<项目>/<会话ID>.jsonl
 // 记录是一棵树（倒回重来、编辑消息会分叉），从最后一条沿 parentUuid 往回找，只取当前这条线；
 // 压缩过的会话在 compact_boundary 处断开，用 logicalParentUuid 接上压缩前的部分。
+import { t as tr } from '../i18n.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -52,13 +53,13 @@ function userText(o) {
 function actOf(b, cwd) {
   const i = b.input || {};
   switch (b.name) {
-    case 'Read': return `读取 ${relTo(i.file_path, cwd)}`;
-    case 'Edit': case 'MultiEdit': return `修改 ${relTo(i.file_path, cwd)}`;
-    case 'Write': return `写入 ${relTo(i.file_path, cwd)}`;
-    case 'NotebookEdit': return `修改 ${relTo(i.notebook_path, cwd)}`;
-    case 'Bash': case 'PowerShell': return `运行 ${brief(i.command, 70)}`;
-    case 'WebSearch': return `搜索：${brief(i.query, 60)}`;
-    case 'WebFetch': return `打开网页 ${brief(i.url, 60)}`;
+    case 'Read': return tr('读取 {0}', [relTo(i.file_path, cwd)]);
+    case 'Edit': case 'MultiEdit': return tr('修改 {0}', [relTo(i.file_path, cwd)]);
+    case 'Write': return tr('写入 {0}', [relTo(i.file_path, cwd)]);
+    case 'NotebookEdit': return tr('修改 {0}', [relTo(i.notebook_path, cwd)]);
+    case 'Bash': case 'PowerShell': return tr('运行 {0}', [brief(i.command, 70)]);
+    case 'WebSearch': return tr('搜索：{0}', [brief(i.query, 60)]);
+    case 'WebFetch': return tr('打开网页 {0}', [brief(i.url, 60)]);
     default: return ''; // 查找文件、任务清单、内部工具等不记
   }
 }
@@ -113,7 +114,7 @@ export function list() {
 
 export function read(id) {
   const file = fileOf(id);
-  if (!file) throw new Error('找不到这段 Claude Code 对话');
+  if (!file) throw new Error(tr('找不到这段 Claude Code 对话'));
   const lines = readJsonl(fs.readFileSync(file, 'utf8'));
   const cwd = lines.find((o) => o.cwd)?.cwd || '';
   const b = new EntryBuilder();

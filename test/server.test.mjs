@@ -11,7 +11,7 @@ test('local HTTP service', { timeout: 30000 }, async (t) => {
   t.after(() => server?.close());
   const root = tempDir(t);
   const dataDir = path.join(root, 'data');
-  server = await startServer({ port: 0, dataDir, mock: true });
+  server = await startServer({ port: 0, dataDir, mock: true, hooks: { locales: () => ['zh-CN'] } });
   const base = `http://127.0.0.1:${server.port}`;
   function request(url, { method = 'GET', body, raw, headers = {} } = {}) {
     return new Promise((resolve, reject) => {

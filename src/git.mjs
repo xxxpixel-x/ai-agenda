@@ -1,4 +1,5 @@
 // git 辅助：任务协作模式用它给每个 AI 建独立副本（git worktree）、提交、对比、合并。
+import { t as tr } from './i18n.mjs';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 
@@ -11,7 +12,7 @@ export function git(args, { cwd, input, author = 'Agenda', allowFail = false, ti
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C.UTF-8' },
     }, (err, stdout, stderr) => {
       if (err && !allowFail) {
-        const e = new Error(`git ${args[0]} 失败：${String(stderr || err.message).trim().slice(0, 500)}`);
+        const e = new Error(tr('git {0} 失败：{1}', [args[0], String(stderr || err.message).trim().slice(0, 500)]));
         e.stdout = stdout; e.stderr = stderr; e.code = err.code;
         return reject(e);
       }
@@ -88,7 +89,7 @@ export async function changedFiles(cwd, base, head) {
 export async function showFile(cwd, rev, file) {
   const r = await git(['show', `${rev}:${file}`], { cwd, allowFail: true });
   if (!r.ok) return null;
-  return r.stdout.includes('\u0000') ? '（二进制文件）' : r.stdout;
+  return r.stdout.includes('\u0000') ? tr('（二进制文件）') : r.stdout;
 }
 
 /** 在 cwd 所在副本里合并 branch。冲突时返回冲突文件（并保持合并中状态，除非 abortOnConflict）。 */

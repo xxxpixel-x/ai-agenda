@@ -2,6 +2,7 @@
 // 同一套格式的 CodeBuddy Code 命令行（~/.codebuddy/projects）也一起读（按格式推断，没在真机上验证过）。
 // 记录是一棵树（编辑消息会分叉），从最后一条沿 parentId 往回找，只取当前这条线。
 // 你打的字包在 <user_query> 里，前面附带的 <system-reminder> 等是系统加的；子代理的记录在 <会话ID>/subagents/ 下，不单独列出。
+import { t as tr } from '../i18n.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { EntryBuilder, readJsonl, readEdges, relTo, brief, homeDir } from './common.mjs';
@@ -42,12 +43,12 @@ function actOf(o, cwd) {
   let a = {};
   try { a = typeof o.arguments === 'string' ? JSON.parse(o.arguments) : o.arguments || {}; } catch { /* 参数不是 JSON */ }
   switch (o.name) {
-    case 'Read': return `读取 ${relTo(a.file_path, cwd)}`;
-    case 'Edit': case 'MultiEdit': return `修改 ${relTo(a.file_path, cwd)}`;
-    case 'Write': return `写入 ${relTo(a.file_path, cwd)}`;
-    case 'Bash': case 'PowerShell': return `运行 ${brief(a.command, 70)}`;
-    case 'WebSearch': return `搜索：${brief(a.query, 60)}`;
-    case 'WebFetch': return `打开网页 ${brief(a.url, 60)}`;
+    case 'Read': return tr('读取 {0}', [relTo(a.file_path, cwd)]);
+    case 'Edit': case 'MultiEdit': return tr('修改 {0}', [relTo(a.file_path, cwd)]);
+    case 'Write': return tr('写入 {0}', [relTo(a.file_path, cwd)]);
+    case 'Bash': case 'PowerShell': return tr('运行 {0}', [brief(a.command, 70)]);
+    case 'WebSearch': return tr('搜索：{0}', [brief(a.query, 60)]);
+    case 'WebFetch': return tr('打开网页 {0}', [brief(a.url, 60)]);
     default: return ''; // 查找文件、任务清单、界面组件等不记
   }
 }
@@ -98,7 +99,7 @@ export function list() {
 
 export function read(id) {
   const hit = ID_RE.test(id) && files().find((f) => idOf(f.file) === id);
-  if (!hit) throw new Error('找不到这段对话');
+  if (!hit) throw new Error(tr('找不到这段对话'));
   const lines = readJsonl(fs.readFileSync(hit.file, 'utf8'));
   const cwd = lines.find((o) => o.cwd)?.cwd || '';
   const b = new EntryBuilder();

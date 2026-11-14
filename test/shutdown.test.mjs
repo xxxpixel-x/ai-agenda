@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { testInChinese as test } from './helpers.mjs';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';

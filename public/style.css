@@ -376,7 +376,7 @@ button.person { font: inherit; font-size: 13px; color: inherit; }
 .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .member-rows { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
 .member-row { border: 1px solid var(--border); border-left: 3px solid var(--c); border-radius: 9px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; background: var(--panel); }
-.member-top { display: grid; grid-template-columns: 120px minmax(150px, 1fr) minmax(110px, 160px) 112px auto; gap: 6px; align-items: center; }
+.member-top { display: grid; grid-template-columns: 120px minmax(150px, 1fr) minmax(110px, 160px) minmax(112px, max-content) auto; gap: 6px; align-items: center; }
 .member-top select, .member-top input { padding: 5px 8px; font-size: 13px; }
 .member-row details summary { cursor: pointer; font-size: 12.5px; color: var(--muted); }
 .member-row details textarea { margin-top: 6px; font-size: 13px; }

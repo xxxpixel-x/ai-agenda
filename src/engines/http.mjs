@@ -1,5 +1,6 @@
 // API 引擎共用的 HTTP 工具。
 // 在桌面版里会换成 Electron 的 net.fetch：它走系统代理（访问 Google 等服务通常需要）。
+import { t as tr } from '../i18n.mjs';
 import { AbortedError, brief } from './proc.mjs';
 
 let fetchImpl = (...a) => globalThis.fetch(...a);
@@ -16,7 +17,7 @@ export async function request(url, { method = 'GET', headers = {}, body, signal 
     });
   } catch (e) {
     if (signal?.aborted) throw new AbortedError();
-    throw new Error(`网络请求失败（${brief(e.cause?.message || e.message, 200)}）。如果需要代理才能访问，请确认代理已开启。`);
+    throw new Error(tr('网络请求失败（{0}）。如果需要代理才能访问，请确认代理已开启。', [brief(e.cause?.message || e.message, 200)]));
   }
   return res;
 }

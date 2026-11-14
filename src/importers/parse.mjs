@@ -5,6 +5,7 @@
 //   Google Takeout 里的 Gemini 活动记录（MyActivity.json / .zip，按天分成一段段）—— 按公开说明写的，没拿真实导出验证过
 //   通用 JSON / JSONL：消息数组 [{ role, content }]，或 { messages: [...] }
 //   文字和 Markdown：按「You said:」「ChatGPT said:」「## User」「我：」「豆包：」这类说话人标记切开；认不出就整段作一条
+import { t as tr } from '../i18n.mjs';
 import zlib from 'node:zlib';
 import { brief, toTs } from './common.mjs';
 
@@ -15,7 +16,7 @@ const AI_NAMES = ['assistant', 'ai', 'bot', 'model', 'answer', 'response', 'chat
   'copilot', 'grok', 'perplexity', 'qwen', 'glm', 'chatglm', 'mistral', 'llama', 'doubao', 'yuanbao',
   '助手', '回答', '答', '豆包', '元宝', '腾讯元宝', '通义', '通义千问', '千问', '文心', '文心一言', '智谱', '智谱清言', '讯飞星火', '星火', '海螺', '秘塔'];
 const DISPLAY = { chatgpt: 'ChatGPT', gpt: 'ChatGPT', gemini: 'Gemini', bard: 'Gemini', claude: 'Claude', deepseek: 'DeepSeek', kimi: 'Kimi',
-  copilot: 'Copilot', grok: 'Grok', perplexity: 'Perplexity', qwen: '通义千问', glm: '智谱清言', chatglm: '智谱清言', doubao: '豆包', yuanbao: '元宝' };
+  copilot: 'Copilot', grok: 'Grok', perplexity: 'Perplexity', get qwen() { return tr('通义千问'); }, get glm() { return tr('智谱清言'); }, get chatglm() { return tr('智谱清言'); }, get doubao() { return tr('豆包'); }, get yuanbao() { return tr('元宝'); } };
 
 // 一行里的说话人标记：「## User」「**ChatGPT:**」「You said:」「Gemini said」「我：」「User: 你好」
 const MARK = /^\s{0,3}(?:#{1,6}\s*)?(?:\*\*|__)?\s*([^\s:：*_#][^:：*_\n]{0,23}?)\s*(?:\*\*|__)?\s*(?:[:：]\s*(?:\*\*|__)?|(?:\*\*|__)?\s*$)(.*)$/;
@@ -97,9 +98,9 @@ function fromChatGPT(c) {
     ai.key = m.id;
     const to = String(m.recipient || 'all');
     if (to === 'all' && text) ai.text = ai.text ? `${ai.text}\n\n${text}` : text;
-    else if (/^(web|browser)/.test(to)) ai.acts.push(`搜索：${brief(partsText(m.content?.text || m.content?.parts), 60)}`);
-    else if (to === 'python') ai.acts.push('运行 Python 代码');
-    else if (/dalle|image/.test(to)) ai.acts.push('生成图片');
+    else if (/^(web|browser)/.test(to)) ai.acts.push(tr('搜索：{0}', [brief(partsText(m.content?.text || m.content?.parts), 60)]));
+    else if (to === 'python') ai.acts.push(tr('运行 Python 代码'));
+    else if (/dalle|image/.test(to)) ai.acts.push(tr('生成图片'));
   }
   const list = entries.filter((e) => e.text || e.acts.length);
   return list.length ? { title: c.title || brief(list[0].text, 40), sourceLabel: 'ChatGPT', entries: list } : null;
@@ -113,7 +114,7 @@ function fromClaudeAi(c) {
     if (!role) continue;
     const blocks = Array.isArray(m.content) && m.content.length ? m.content : [{ type: 'text', text: m.text }];
     const text = blocks.filter((b) => b.type === 'text').map((b) => b.text || '').join('\n').trim();
-    const acts = blocks.filter((b) => b.type === 'tool_use').map((b) => (b.name === 'web_search' ? `搜索：${brief(b.input?.query, 60)}` : b.name === 'repl' ? '运行代码' : '')).filter(Boolean);
+    const acts = blocks.filter((b) => b.type === 'tool_use').map((b) => (b.name === 'web_search' ? tr('搜索：{0}', [brief(b.input?.query, 60)]) : b.name === 'repl' ? tr('运行代码') : '')).filter(Boolean);
     if (!text && !acts.length) continue;
     entries.push({ key: m.uuid || String(entries.length), role, text, acts, ts: toTs(m.created_at || 0) });
   }
@@ -161,7 +162,7 @@ function unzip(buf) {
   const out = [];
   let end = buf.length - 22;
   while (end >= 0 && buf.readUInt32LE(end) !== 0x06054b50) end--;
-  if (end < 0) throw new Error('zip 文件不完整');
+  if (end < 0) throw new Error(tr('zip 文件不完整'));
   let p = buf.readUInt32LE(end + 16);
   const count = buf.readUInt16LE(end + 10);
   for (let k = 0; k < count && buf.readUInt32LE(p) === 0x02014b50; k++) {
@@ -192,7 +193,7 @@ export function parseImport(input, fileName = '') {
       const hit = files.find((f) => re.test(f.name) && !f.name.startsWith('__MACOSX'));
       if (hit) return parseImport(hit.read(), hit.name);
     }
-    throw new Error('压缩包里没有找到对话文件');
+    throw new Error(tr('压缩包里没有找到对话文件'));
   }
   const text = (Buffer.isBuffer(input) ? input.toString('utf8') : String(input || '')).replace(/^﻿/, '');
   const t = text.trim();

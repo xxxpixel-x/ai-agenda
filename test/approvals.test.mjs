@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { testInChinese as test } from './helpers.mjs';
 import assert from 'node:assert/strict';
 import { parseCommand, isPreapproved, normalizeAllowed } from '../src/approvals.mjs';
 import { tempDir, makeSpace, until, settleSpace } from './helpers.mjs';

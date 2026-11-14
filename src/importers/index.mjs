@@ -1,4 +1,5 @@
 // 外部 AI 会话记录的来源注册表。要支持新的来源：在这个文件夹里加一个模块，再加到 SOURCES（见 docs/importers.md）。
+import { t as tr } from '../i18n.mjs';
 import os from 'node:os';
 import path from 'node:path';
 import * as claude from './claude.mjs';
@@ -45,11 +46,11 @@ export function listSessions({ exclude = {} } = {}) {
 
 export function readSession(source, id) {
   const s = sourceOf(source);
-  if (!s) throw new Error('不支持的来源');
+  if (!s) throw new Error(tr('不支持的来源'));
   try {
     return { source, sourceLabel: s.meta.label, engine: s.meta.engine, ...s.read(String(id || '')) };
   } catch (e) {
-    throw new Error(`${s.meta.label} 的这段对话读不出来：${e.message}`);
+    throw new Error(tr('{0} 的这段对话读不出来：{1}', [s.meta.label, e.message]));
   }
 }
 

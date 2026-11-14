@@ -1,4 +1,5 @@
-// Google Gemini API（需要 Gemini API key，在“连接与登录”里填写）。支持 Google 搜索联网。
+// Google Gemini API（需要 Gemini API key，在“设置”里填写）。支持 Google 搜索联网。
+import { t as tr } from '../i18n.mjs';
 import { request, errorText, readSse } from './http.mjs';
 import { brief } from './proc.mjs';
 
@@ -9,10 +10,10 @@ export const meta = {
   kind: 'api',
   defaultName: 'Gemini',
   color: '#4285f4',
-  models: [['', '自动选择']],
+  get models() { return [['', tr('自动选择')]]; },
   freeModel: true,
   efforts: ['', 'minimal', 'low', 'medium', 'high'], // thinkingLevel；接口不说哪个型号支持哪几档，选了不支持的会看到报错
-  capabilities: '联网搜索（Google 搜索）；通过软件修改共享文件',
+  get capabilities() { return tr('联网搜索（Google 搜索）；通过软件修改共享文件'); },
 };
 
 const DEFAULT_BASE = 'https://generativelanguage.googleapis.com';
@@ -47,20 +48,20 @@ function pickDefault(list) {
 
 export async function detect({ conn } = {}) {
   if (!conn?.apiKey) {
-    return { available: true, ready: false, note: '需要 Gemini API key。在 Google AI Studio（aistudio.google.com）创建后填到下面。' };
+    return { available: true, ready: false, note: tr('需要 Gemini API key。在 Google AI Studio（aistudio.google.com）创建后填到下面。') };
   }
   try {
     const list = await listModels(conn);
-    return { available: true, ready: true, note: `API key 有效，可用模型 ${list.length} 个`, models: list, defaultModel: pickDefault(list) };
+    return { available: true, ready: true, note: tr('API key 有效，可用模型 {0} 个', [list.length]), models: list, defaultModel: pickDefault(list) };
   } catch (e) {
     return { available: true, ready: false, note: brief(e.message, 300) };
   }
 }
 
 export async function runTurn({ system, prompt, model, effort, conn, signal, onDelta, onActivity }) {
-  if (!conn?.apiKey) throw new Error('还没有填写 Gemini API key（左下角“连接与登录”）');
+  if (!conn?.apiKey) throw new Error(tr('还没有填写 Gemini API key（左下角“设置”）'));
   const name = model || pickDefault(await listModels(conn));
-  if (!name) throw new Error('Gemini：没有可用的模型');
+  if (!name) throw new Error(tr('Gemini：没有可用的模型'));
 
   const res = await request(`${baseOf(conn)}/v1beta/models/${encodeURIComponent(name)}:streamGenerateContent?alt=sse`, {
     method: 'POST',
@@ -81,18 +82,18 @@ export async function runTurn({ system, prompt, model, effort, conn, signal, onD
   await readSse(res, (chunk) => {
     const c = chunk.candidates?.[0];
     if (!c) {
-      if (chunk.promptFeedback?.blockReason) finish = `被拦截（${chunk.promptFeedback.blockReason}）`;
+      if (chunk.promptFeedback?.blockReason) finish = tr('被拦截（{0}）', [chunk.promptFeedback.blockReason]);
       return;
     }
     for (const p of c.content?.parts || []) {
       if (p.text && !p.thought) { text += p.text; onDelta?.(p.text); }
     }
     for (const q of c.groundingMetadata?.webSearchQueries || []) {
-      if (!searched.has(q)) { searched.add(q); onActivity?.({ kind: 'search', label: `搜索：${brief(q, 60)}` }); }
+      if (!searched.has(q)) { searched.add(q); onActivity?.({ kind: 'search', label: tr('搜索：{0}', [brief(q, 60)]) }); }
     }
     if (c.finishReason && c.finishReason !== 'STOP' && c.finishReason !== 'MAX_TOKENS') finish = c.finishReason;
   }, signal);
 
-  if (!text.trim()) throw new Error(`Gemini 没有返回内容${finish ? `（${finish}）` : ''}`);
+  if (!text.trim()) throw new Error(tr('Gemini 没有返回内容{0}', [finish ? `（${finish}）` : '']));
   return { text, model: name };
 }

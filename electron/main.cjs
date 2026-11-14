@@ -37,6 +37,10 @@ if (!app.requestSingleInstanceLock()) {
 
 let win = null;
 let srv = null;
+let i18n;
+let currentLanguage;
+const locales = () => app.getPreferredSystemLanguages?.()?.length ? app.getPreferredSystemLanguages() : [app.getLocale()];
+const tr = (key, vars) => i18n ? i18n.t(key, vars, currentLanguage?.() || i18n.resolveLanguage('system', locales())) : 'Agenda failed to start';
 
 function createWindow(url) {
   win = new BrowserWindow({
@@ -86,6 +90,7 @@ app.on('second-instance', () => {
 });
 
 app.whenReady().then(async () => {
+  i18n = await import(pathToFileURL(path.join(ROOT, 'src', 'i18n.mjs')).href);
   // macOS 没有菜单时复制、粘贴等快捷键也会失效，只保留最基本的应用和编辑菜单
   Menu.setApplicationMenu(process.platform === 'darwin' ? Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'editMenu' }]) : null);
   const saved = readUi().theme;
@@ -101,6 +106,8 @@ app.whenReady().then(async () => {
     mock: MOCK,
     hooks: {
       desktop: true,
+      locales,
+      onLanguage: (getLanguage) => { currentLanguage = getLanguage; },
       openPath: (p) => shell.openPath(p),
       // 有命令等你确认：窗口不在前台时让任务栏图标闪烁，切回窗口就停
       attention: () => { if (win && !win.isFocused()) win.flashFrame(true); },
@@ -110,7 +117,7 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle('pick-folder', async () => {
-    const r = await dialog.showOpenDialog(win, { title: '选择共享文件夹', properties: ['openDirectory', 'createDirectory'] });
+    const r = await dialog.showOpenDialog(win, { title: tr('选择共享文件夹'), properties: ['openDirectory', 'createDirectory'] });
     return r.canceled ? null : r.filePaths[0];
   });
 
@@ -122,10 +129,10 @@ app.whenReady().then(async () => {
     try { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(UI_FILE, JSON.stringify({ ...readUi(), theme: t })); } catch { /* 记不住也不影响使用 */ }
   });
 
-  console.log(`Agenda 桌面版已启动：${srv.url}`);
+  console.log(tr('Agenda 桌面版已启动：{0}', [srv.url]));
   createWindow(srv.url);
 }).catch((e) => {
-  dialog.showErrorBox('Agenda 启动失败', String(e?.stack || e));
+  dialog.showErrorBox(tr('Agenda 启动失败'), String(e?.stack || e));
   app.quit();
 });
 

@@ -1,5 +1,6 @@
 // 共享文件夹：所有成员（AI 和你）读写同一个文件夹。
 // 每次 AI 发言前后各扫描一次，比对出它改了哪些文件，记入改动记录；任何一条改动都能撤销。
+import { t as tr } from './i18n.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -50,9 +51,9 @@ export class Workspace {
   /** 把相对路径解析成文件夹内的绝对路径；越界则报错。 */
   resolve(rel) {
     const clean = String(rel || '').replace(/\\/g, '/').replace(/^\/+/, '');
-    if (!clean || clean.split('/').some((s) => s === '..')) throw new Error('文件路径不合法');
+    if (!clean || clean.split('/').some((s) => s === '..')) throw new Error(tr('文件路径不合法'));
     const abs = path.resolve(this.root, clean);
-    if (abs !== this.root && !abs.startsWith(this.root + path.sep)) throw new Error('只能访问共享文件夹里的文件');
+    if (abs !== this.root && !abs.startsWith(this.root + path.sep)) throw new Error(tr('只能访问共享文件夹里的文件'));
     return abs;
   }
 
@@ -131,7 +132,7 @@ export class Workspace {
       fs.writeFileSync(`${this.historyFile}.tmp`, JSON.stringify(this.history), 'utf8');
       fs.renameSync(`${this.historyFile}.tmp`, this.historyFile);
     } catch (e) {
-      console.error('保存改动记录失败：', e.message);
+      console.error(tr('保存改动记录失败：'), e.message);
     }
   }
 
@@ -154,9 +155,9 @@ export class Workspace {
   read(rel) {
     const abs = this.resolve(rel);
     const st = fs.statSync(abs);
-    if (st.size > MAX_FILE_BYTES * 5) throw new Error('文件太大，无法在软件里打开');
+    if (st.size > MAX_FILE_BYTES * 5) throw new Error(tr('文件太大，无法在软件里打开'));
     const text = readText(abs);
-    if (text === null) throw new Error('这是二进制文件，无法在软件里打开');
+    if (text === null) throw new Error(tr('这是二进制文件，无法在软件里打开'));
     return text;
   }
 
@@ -185,7 +186,7 @@ export class Workspace {
 
   change(id) {
     const e = this.history.find((h) => h.id === id);
-    if (!e) throw new Error('找不到这条改动记录');
+    if (!e) throw new Error(tr('找不到这条改动记录'));
     let current = null;
     try { current = this.read(e.path); } catch { current = null; }
     return { ...this.summary(e), before: e.before, after: e.after, current };
@@ -194,12 +195,12 @@ export class Workspace {
   /** 撤销一条改动：文件当前内容必须仍等于那次改动后的内容，否则拒绝（避免覆盖之后的修改）。 */
   undo(id, { force = false } = {}) {
     const e = this.history.find((h) => h.id === id);
-    if (!e) throw new Error('找不到这条改动记录');
+    if (!e) throw new Error(tr('找不到这条改动记录'));
     this.begin();
     const abs = this.resolve(e.path);
     const current = fs.existsSync(abs) ? readText(abs) : null;
     if (!force && current !== e.after) {
-      const err = new Error('这个文件在这次改动之后又被改过了，直接撤销会丢掉后面的修改。');
+      const err = new Error(tr('这个文件在这次改动之后又被改过了，直接撤销会丢掉后面的修改。'));
       err.conflict = true;
       throw err;
     }

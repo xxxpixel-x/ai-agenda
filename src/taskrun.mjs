@@ -8,6 +8,7 @@
 //   host.members / access / workspacePath / workspaceType / dir
 //   host.registry / ws / chatRunning / importBackground / deleting / track(promise) / emit(ev) / save()
 // 任务结束时发出 'done' 事件，由宿主决定要不要发到聊天里。
+import { t as tr } from './i18n.mjs';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
@@ -36,10 +37,10 @@ export async function preflight(host) {
   const info = await G.repoInfo(host.workspacePath).catch(() => null);
   // 只是碰巧位于用户主目录这种“大仓库”里的子文件夹：不要拿整个主目录建副本
   if (info && path.resolve(info.root).toLowerCase() === path.resolve(os.homedir()).toLowerCase() && path.resolve(host.workspacePath).toLowerCase() !== path.resolve(info.root).toLowerCase()) {
-    return { mode: 'direct', note: '这个文件夹位于你用户目录的 git 仓库里，但它本身不是项目根目录，所以按“依次直接改”的方式进行。' };
+    return { mode: 'direct', note: tr('这个文件夹位于你用户目录的 git 仓库里，但它本身不是项目根目录，所以按“依次直接改”的方式进行。') };
   }
   if (!info) return { mode: 'direct', gitAvailable: await G.gitAvailable() };
-  if (info.noCommits) return { mode: 'direct', note: '这是 git 仓库，但还没有任何提交，所以按“依次直接改”的方式进行。' };
+  if (info.noCommits) return { mode: 'direct', note: tr('这是 git 仓库，但还没有任何提交，所以按“依次直接改”的方式进行。') };
   return { mode: 'git', repo: info.root, branch: info.branch, dirty: info.dirty, dirtyFiles: info.dirtyFiles };
 }
 
@@ -72,13 +73,13 @@ export class TaskRun extends EventEmitter {
       if (t.status === 'running') {
         t.status = 'ready';
         const a = t.attempts.at(-1);
-        if (a && !a.endedAt) { a.endedAt = Date.now(); a.error = '软件关闭，这一次中断了'; }
+        if (a && !a.endedAt) { a.endedAt = Date.now(); a.error = tr('软件关闭，这一次中断了'); }
       }
     }
     for (const m of data.planning.messages) if (m.streaming) { m.streaming = false; m.interrupted = true; }
     if (data.status === 'planning') {
       data.status = data.tasks.length ? 'plan_review' : 'failed';
-      if (!data.tasks.length) data.error = '软件关闭，规划中断了。请重新开始。';
+      if (!data.tasks.length) data.error = tr('软件关闭，规划中断了。请重新开始。');
     }
     if (data.status === 'summarizing') data.status = 'executing';
     if (data.status === 'executing') data.paused = true;
@@ -111,7 +112,7 @@ export class TaskRun extends EventEmitter {
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
-    if (!data.objective) throw new Error('请写下这次要完成的目标');
+    if (!data.objective) throw new Error(tr('请写下这次要完成的目标'));
     return new TaskRun(host, data);
   }
 
@@ -145,7 +146,7 @@ export class TaskRun extends EventEmitter {
 
   task(id) {
     const t = this.data.tasks.find((x) => x.id === id);
-    if (!t) throw new Error('没有这个子任务');
+    if (!t) throw new Error(tr('没有这个子任务'));
     return t;
   }
 
@@ -214,7 +215,7 @@ export class TaskRun extends EventEmitter {
     try {
       const previous = d.tasks.length ? d.tasks.map((t) => ({ id: t.id, title: t.title, assignee: this.member(t.assigneeId)?.name, deps: t.deps, spec: t.spec })) : null;
       let raw = extractPlan(await say(coord, plannerSystem(this.host, d, coord), plannerPrompt(d, { feedback, previous })));
-      if (!raw) throw new Error(`${coord.name} 没有给出可识别的计划（需要 JSON 格式）。可以换一个协调者，或点“重新规划”。`);
+      if (!raw) throw new Error(tr('{0} 没有给出可识别的计划（需要 JSON 格式）。可以换一个协调者，或点“重新规划”。', [coord.name]));
       let tasks = normalizePlan(raw, this.host.members, coord.id);
 
       // 第一次规划且开启了“先商量”：其他成员各提一次意见，协调者再定稿
@@ -223,7 +224,7 @@ export class TaskRun extends EventEmitter {
         for (const m of this.host.members.filter((x) => x.id !== coord.id)) {
           const draft = tasks.map((t) => ({ ...t, assignee: this.member(t.assigneeId)?.name }));
           const text = await say(m, reviewerSystem(this.host, d, m, coord), reviewerPrompt(d, draft));
-          const mk = parseMarkers(text.replace('[同意]', '[跳过]'));
+          const mk = parseMarkers(text.replace(/\[(?:同意|Agree)\]/gi, '[Skip]'));
           if (!mk.passed && mk.text) opinions.push({ name: m.name, text: mk.text });
         }
         if (opinions.length) {
@@ -236,7 +237,7 @@ export class TaskRun extends EventEmitter {
       d.status = 'plan_review';
     } catch (e) {
       d.status = d.tasks.length ? 'plan_review' : 'failed';
-      d.error = e.aborted ? '规划被取消了' : e.message;
+      d.error = e.aborted ? tr('规划被取消了') : e.message;
     }
     this.changed();
   }
@@ -246,18 +247,18 @@ export class TaskRun extends EventEmitter {
   }
 
   replan(feedbackText) {
-    if (this.data.status !== 'plan_review' && this.data.status !== 'failed') throw new Error('现在不能重新规划');
+    if (this.data.status !== 'plan_review' && this.data.status !== 'failed') throw new Error(tr('现在不能重新规划'));
     const fb = str(feedbackText, 4000);
-    this.host.track(this.plan({ feedback: fb ? [{ name: '我', text: fb }] : [{ name: '我', text: '请重新考虑分工和拆分方式。' }] }));
+    this.host.track(this.plan({ feedback: fb ? [{ name: tr('我'), text: fb }] : [{ name: tr('我'), text: tr('请重新考虑分工和拆分方式。') }] }));
   }
 
   /** 你确认（可能改过的）计划后开始执行。 */
   async approvePlan(edited) {
     const d = this.data;
-    if (d.status !== 'plan_review') throw new Error('现在不是确认计划的时候');
-    if (d.mode === 'direct' && this.host.chatRunning) throw new Error('聊天里的讨论还在进行，先停止它（否则会和子任务同时改文件）');
+    if (d.status !== 'plan_review') throw new Error(tr('现在不是确认计划的时候'));
+    if (d.mode === 'direct' && this.host.chatRunning) throw new Error(tr('聊天里的讨论还在进行，先停止它（否则会和子任务同时改文件）'));
     if (Array.isArray(edited)) {
-      if (!edited.length) throw new Error('计划里至少要有一个子任务');
+      if (!edited.length) throw new Error(tr('计划里至少要有一个子任务'));
       d.tasks = normalizePlan(edited, this.host.members, this.coordinator.id).map((t) => this.blankTask(t));
     }
     if (d.mode === 'git') {
@@ -295,7 +296,7 @@ export class TaskRun extends EventEmitter {
   }
 
   resume() {
-    if (this.data.status !== 'executing') throw new Error('现在不需要继续');
+    if (this.data.status !== 'executing') throw new Error(tr('现在不需要继续'));
     this.data.paused = false;
     this.tick();
   }
@@ -308,7 +309,7 @@ export class TaskRun extends EventEmitter {
     task.attempts.push(attempt);
     this.changed();
     if (!member) {
-      attempt.error = '负责这个子任务的成员已经不在空间里了，请改派或跳过。';
+      attempt.error = tr('负责这个子任务的成员已经不在空间里了，请改派或跳过。');
       attempt.endedAt = Date.now();
       task.status = 'failed';
       return this.tick();
@@ -351,9 +352,9 @@ export class TaskRun extends EventEmitter {
       attempt.report = rep.report;
       attempt.outcome = rep.outcome;
       if (rep.outcome === 'question') { task.question = rep.detail || rep.report.split('\n').at(-1); task.answer = null; }
-      if (rep.outcome === 'failed') attempt.error = rep.detail || '它报告没有完成';
+      if (rep.outcome === 'failed') attempt.error = rep.detail || tr('它报告没有完成');
     } catch (e) {
-      attempt.error = e.aborted ? '被你中止了' : e.message;
+      attempt.error = e.aborted ? tr('被你中止了') : e.message;
       attempt.outcome = e.aborted ? 'cancelled' : 'failed';
     }
 
@@ -375,7 +376,7 @@ export class TaskRun extends EventEmitter {
         }
       }
     } catch (e) {
-      attempt.error = `${attempt.error ? `${attempt.error}；` : ''}记录改动失败：${e.message}`;
+      attempt.error = tr('{0}记录改动失败：{1}', [attempt.error ? `${attempt.error}；` : '', e.message]);
     }
 
     attempt.endedAt = Date.now();
@@ -395,8 +396,8 @@ export class TaskRun extends EventEmitter {
   async approveTask(taskId) {
     const d = this.data;
     const t = this.task(taskId);
-    if (t.status !== 'review') throw new Error('这个子任务现在不能通过');
-    if (this.merging.has(t.id)) throw new Error('这个子任务正在合并，请稍等');
+    if (t.status !== 'review') throw new Error(tr('这个子任务现在不能通过'));
+    if (this.merging.has(t.id)) throw new Error(tr('这个子任务正在合并，请稍等'));
     d.paused = false; // 你对子任务的任何操作都视为继续
     if (d.mode === 'git' && t.git && t.changes?.length) {
       this.merging.add(t.id);
@@ -434,22 +435,22 @@ export class TaskRun extends EventEmitter {
   async mergeIntoIntegration(t) {
     if (t.status !== 'review') return { skipped: true };
     const g = this.data.git;
-    const r = await G.merge(g.intPath, t.git.branch, `合并 ${t.id} ${t.title}`);
+    const r = await G.merge(g.intPath, t.git.branch, tr('合并 {0} {1}', [t.id, t.title]));
     if (r.ok) return { ok: true };
-    if (!r.conflicts.length) throw new Error(`合并进集成分支失败（不是内容冲突）：${r.error || '未知错误'}`);
+    if (!r.conflicts.length) throw new Error(tr('合并进集成分支失败（不是内容冲突）：{0}', [r.error || tr('未知错误')]));
     // 冲突：把集成分支合进它自己的副本（留下冲突标记），让负责人解决
-    const back = await G.merge(t.git.path, g.intBranch, `同步集成分支到 ${t.id}`, { abortOnConflict: false });
-    if (!back.ok && !back.conflicts.length) throw new Error(`把集成分支同步到 ${t.id} 的副本失败：${back.error || '未知错误'}`);
+    const back = await G.merge(t.git.path, g.intBranch, tr('同步集成分支到 {0}', [t.id]), { abortOnConflict: false });
+    if (!back.ok && !back.conflicts.length) throw new Error(tr('把集成分支同步到 {0} 的副本失败：{1}', [t.id, back.error || tr('未知错误')]));
     const files = back.ok ? [] : back.conflicts;
-    t.feedbacks.push({ ts: Date.now(), text: `合并时和其他已通过的子任务冲突（${(files.length ? files : r.conflicts).join('、')}），请解决冲突。` });
+    t.feedbacks.push({ ts: Date.now(), text: tr('合并时和其他已通过的子任务冲突（{0}），请解决冲突。', [(files.length ? files : r.conflicts).join('、')]) });
     return { conflict: true, files: files.length ? files : r.conflicts };
   }
 
   rejectTask(taskId, feedback) {
     const t = this.task(taskId);
-    if (!['review', 'failed'].includes(t.status)) throw new Error('这个子任务现在不能退回');
+    if (!['review', 'failed'].includes(t.status)) throw new Error(tr('这个子任务现在不能退回'));
     const text = str(feedback, 4000);
-    if (!text) throw new Error('请写下要怎么改');
+    if (!text) throw new Error(tr('请写下要怎么改'));
     this.data.paused = false;
     t.feedbacks.push({ ts: Date.now(), text });
     this.host.track(this.dispatch(t));
@@ -457,25 +458,25 @@ export class TaskRun extends EventEmitter {
 
   retryTask(taskId) {
     const t = this.task(taskId);
-    if (!['failed', 'ready', 'review'].includes(t.status)) throw new Error('这个子任务现在不能重试');
-    if (this.data.status !== 'executing') throw new Error('任务不在执行中');
+    if (!['failed', 'ready', 'review'].includes(t.status)) throw new Error(tr('这个子任务现在不能重试'));
+    if (this.data.status !== 'executing') throw new Error(tr('任务不在执行中'));
     this.data.paused = false;
     this.host.track(this.dispatch(t));
   }
 
   answer(taskId, text) {
     const t = this.task(taskId);
-    if (t.status !== 'blocked') throw new Error('这个子任务没有在等你回答');
+    if (t.status !== 'blocked') throw new Error(tr('这个子任务没有在等你回答'));
     t.answer = str(text, 4000);
-    if (!t.answer) throw new Error('请写下回答');
+    if (!t.answer) throw new Error(tr('请写下回答'));
     this.data.paused = false;
     this.host.track(this.dispatch(t));
   }
 
   reassign(taskId, memberId) {
     const t = this.task(taskId);
-    if (t.status === 'running') throw new Error('先停止这个子任务再改派');
-    if (!this.member(memberId)) throw new Error('没有这个成员');
+    if (t.status === 'running') throw new Error(tr('先停止这个子任务再改派'));
+    if (!this.member(memberId)) throw new Error(tr('没有这个成员'));
     t.assigneeId = memberId;
     this.changed();
   }
@@ -498,8 +499,8 @@ export class TaskRun extends EventEmitter {
   /** 依次直接改模式：撤销这个子任务做过的全部改动。 */
   undoTask(taskId) {
     const t = this.task(taskId);
-    if (this.data.mode !== 'direct') throw new Error('git 模式下没通过的改动本来就不会进入你的项目');
-    if (t.status === 'running') throw new Error('先停止这个子任务');
+    if (this.data.mode !== 'direct') throw new Error(tr('git 模式下没通过的改动本来就不会进入你的项目'));
+    if (t.status === 'running') throw new Error(tr('先停止这个子任务'));
     const ids = (t.changes || []).flatMap((c) => c.ids || [c.id]).reverse();
     for (const id of ids) {
       try { this.host.ws.undo(id); } catch (e) { if (!/找不到/.test(e.message)) throw e; }
@@ -522,7 +523,7 @@ export class TaskRun extends EventEmitter {
     try {
       sink.text = (await this.call(coord, { system: summarySystem(this.host, coord), prompt: summaryPrompt(this.host, d), cwd: this.host.workspacePath, access: 'read', key: 'summary', sink })).trim();
     } catch (e) {
-      sink.error = e.aborted ? '总结被取消了' : e.message;
+      sink.error = e.aborted ? tr('总结被取消了') : e.message;
     }
     sink.streaming = false;
     d.status = 'done';
@@ -534,15 +535,15 @@ export class TaskRun extends EventEmitter {
   /** git 模式：把集成分支合并到你当前的分支。 */
   async mergeIntoProject() {
     const d = this.data;
-    if (d.mode !== 'git' || d.status !== 'done') throw new Error('现在不能合并');
+    if (d.mode !== 'git' || d.status !== 'done') throw new Error(tr('现在不能合并'));
     const g = d.git;
     const approved = d.tasks.filter((t) => t.status === 'approved');
-    if (!approved.length) throw new Error('没有通过审查的子任务，不需要合并');
+    if (!approved.length) throw new Error(tr('没有通过审查的子任务，不需要合并'));
     const info = await G.repoInfo(g.repo);
-    if (info.dirtyTracked) throw new Error(`你的项目（${info.branch} 分支）有 ${info.dirtyTracked} 个文件改了还没提交。请先提交或暂存，再合并。`);
-    const r = await G.merge(g.repo, g.intBranch, `Agenda 任务：${d.objective.split('\n')[0].slice(0, 60)}`);
-    if (!r.ok && r.conflicts.length) throw new Error(`合并冲突（${r.conflicts.join('、')}）。已放弃这次合并，你的项目没有变化。可以手动合并分支 ${g.intBranch}。`);
-    if (!r.ok) throw new Error(`合并失败：${r.error || '未知错误'}。你的项目没有变化，可以稍后再试，或手动合并分支 ${g.intBranch}。`);
+    if (info.dirtyTracked) throw new Error(tr('你的项目（{0} 分支）有 {1} 个文件改了还没提交。请先提交或暂存，再合并。', [info.branch, info.dirtyTracked]));
+    const r = await G.merge(g.repo, g.intBranch, tr('Agenda 任务：{0}', [d.objective.split('\n')[0].slice(0, 60)]));
+    if (!r.ok && r.conflicts.length) throw new Error(tr('合并冲突（{0}）。已放弃这次合并，你的项目没有变化。可以手动合并分支 {1}。', [r.conflicts.join('、'), g.intBranch]));
+    if (!r.ok) throw new Error(tr('合并失败：{0}。你的项目没有变化，可以稍后再试，或手动合并分支 {1}。', [r.error || tr('未知错误'), g.intBranch]));
     d.merged = { at: Date.now(), branch: info.branch, head: r.head };
     await this.cleanup({ keepIntegration: false });
     this.changed();
@@ -567,14 +568,14 @@ export class TaskRun extends EventEmitter {
     for (const t of d.tasks) if (!SETTLED.has(t.status) && t.status !== 'failed') t.status = 'cancelled';
     d.status = 'cancelled';
     d.finishedAt = Date.now();
-    await this.cleanup({ keepIntegration: false }).catch((e) => { d.error = `清理副本失败：${e.message}`; });
+    await this.cleanup({ keepIntegration: false }).catch((e) => { d.error = tr('清理副本失败：{0}', [e.message]); });
     this.changed();
   }
 
   /** 结束这次任务（done / failed 后），收起面板。git 模式下未合并的分支保留。 */
   async close() {
     const d = this.data;
-    if (ACTIVE.has(d.status) && d.status !== 'plan_review') throw new Error('任务还在进行，先取消');
+    if (ACTIVE.has(d.status) && d.status !== 'plan_review') throw new Error(tr('任务还在进行，先取消'));
     if (d.status === 'plan_review') d.status = 'cancelled';
     d.closed = true;
     if (d.mode === 'git' && !d.merged) await this.cleanup({ keepIntegration: true }).catch(() => {});
@@ -585,7 +586,7 @@ export class TaskRun extends EventEmitter {
   async fileDiff(taskId, file) {
     const t = this.task(taskId);
     const c = (t.changes || []).find((x) => x.path === file);
-    if (!c) throw new Error('这个子任务没有改这个文件');
+    if (!c) throw new Error(tr('这个子任务没有改这个文件'));
     if (this.data.mode === 'git') {
       const cwd = t.git.removed ? this.data.git.repo : t.git.path;
       const base = t.git.reviewBase || t.git.base;

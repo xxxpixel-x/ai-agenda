@@ -108,6 +108,6 @@ $env:RT_DEBUG_DIR = Join-Path $PWD 'debug'
 npm start
 ```
 
-`debug/` 已忽略。日志可能包含对话和文件内容，提交 Issue 前先脱敏。首次 Electron 下载失败时，设置环境变量 `ELECTRON_MIRROR`（例如 `https://npmmirror.com/mirrors/electron/`）后重新执行 `npm ci`。
+`debug/` 已忽略。日志可能包含对话和文件内容，提交 Issue 前先脱敏。
 
 命令行 AI 连续 20 分钟没有任何输出，就算卡死：结束进程，这次发言或子任务报错，可以重试。等你确认命令的时间不计入。跑很久的构建或测试需要更长时间时，用环境变量 `RT_IDLE_MINUTES` 修改（`0` 表示不限）。退出软件时，聊天、任务协作和整理导入里所有正在运行的 AI 进程都会被结束；下次打开时，被打断的子任务显示「软件关闭，这一次中断了」，任务处于暂停状态。首次 Electron 下载失败时，设置环境变量 `ELECTRON_MIRROR`（例如 `https://npmmirror.com/mirrors/electron/`）后重新执行 `npm ci`。

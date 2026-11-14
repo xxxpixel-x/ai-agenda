@@ -1,6 +1,7 @@
 // 一个“空间”：一组 AI 成员 + 一个共享文件夹 + 一串聊天记录。
 // 发言规则：依次发言（同一时间只有一个 AI 在说话、改文件）；被 @ 的成员优先；
 // 所有成员连续表示“没有补充”，或者达到每轮来回上限，就停下来等你。
+import { t as tr, getLanguage } from './i18n.mjs';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
@@ -9,7 +10,7 @@ import { Workspace } from './workspace.mjs';
 import { systemPrompt, turnPrompt, parseMarkers, mentionsIn, ACCESS } from './prompts.mjs';
 import { runAgentTurn } from './turn-runner.mjs';
 import { TaskRun, preflight, cleanupRunFiles, runDir } from './taskrun.mjs';
-import { importsBackground, briefVersions, syncBriefs } from './imports.mjs';
+import { importsBackground, briefVersions, syncBriefs, resumeNote } from './imports.mjs';
 import { isPreapproved, parseCommand, normalizeAllowed } from './approvals.mjs';
 
 const MODEL_RE = /^[a-z0-9._:\-/[\]]{0,100}$/i;
@@ -27,13 +28,13 @@ export function normalizeMembers(input, engines) {
   const names = new Set();
   const list = (Array.isArray(input) ? input : []).slice(0, 8).map((m, i) => {
     const engine = byId.get(m?.engine);
-    if (!engine) throw new Error(`第 ${i + 1} 个成员的 AI 类型无效`);
+    if (!engine) throw new Error(tr('第 {0} 个成员的 AI 类型无效', [i + 1]));
     const name = str(m.name, 20).replace(/[@\s]/g, '') || engine.defaultName;
-    if (name === '我') throw new Error('成员不能叫「我」');
-    if (names.has(name)) throw new Error(`成员名「${name}」重复了，给它们起不同的名字`);
+    if (/^(me|我)$/i.test(name)) throw new Error(tr('成员不能叫「我」'));
+    if (names.has(name)) throw new Error(tr('成员名「{0}」重复了，给它们起不同的名字', [name]));
     names.add(name);
     const model = str(m.model, 100);
-    if (!MODEL_RE.test(model)) throw new Error(`成员「${name}」的模型名不合法`);
+    if (!MODEL_RE.test(model)) throw new Error(tr('成员「{0}」的模型名不合法', [name]));
     return {
       id: typeof m.id === 'string' && /^[a-z0-9-]{4,40}$/i.test(m.id) ? m.id : randomUUID().slice(0, 8),
       name,
@@ -45,7 +46,7 @@ export function normalizeMembers(input, engines) {
       color: /^#[0-9a-f]{6}$/i.test(m.color) ? m.color : engine.color,
     };
   });
-  if (!list.length) throw new Error('至少需要一个 AI 成员');
+  if (!list.length) throw new Error(tr('至少需要一个 AI 成员'));
   return list;
 }
 
@@ -109,13 +110,13 @@ export class Space extends EventEmitter {
     let workspace;
     if (input.workspace?.type === 'folder') {
       const p = str(input.workspace.path, 1000);
-      if (!p || !path.isAbsolute(p)) throw new Error('请选择一个文件夹');
-      if (!fs.existsSync(p) || !fs.statSync(p).isDirectory()) throw new Error('这个文件夹不存在');
+      if (!p || !path.isAbsolute(p)) throw new Error(tr('请选择一个文件夹'));
+      if (!fs.existsSync(p) || !fs.statSync(p).isDirectory()) throw new Error(tr('这个文件夹不存在'));
       workspace = { type: 'folder', path: path.resolve(p) };
     } else {
       workspace = { type: 'managed', path: path.join(deps.dataDir, 'spaces', id, 'files') };
     }
-    const title = str(input.title, 60) || '新的空间';
+    const title = str(input.title, 60) || tr('新的空间');
     const now = Date.now();
     const data = {
       id,
@@ -131,7 +132,7 @@ export class Space extends EventEmitter {
     };
     if (workspace.type === 'managed') {
       fs.mkdirSync(workspace.path, { recursive: true });
-      fs.writeFileSync(path.join(workspace.path, '共享文档.md'), `# ${title}\n\n`, 'utf8');
+      fs.writeFileSync(path.join(workspace.path, tr('共享文档.md')), `# ${title}\n\n`, 'utf8');
     }
     const space = new Space(data, deps);
     space.save();
@@ -167,15 +168,15 @@ export class Space extends EventEmitter {
       needsYou: runNeedsUser(this.run?.data),
       lastAt: last?.ts || null,
       members: d.members.map((m) => ({ name: m.name, color: m.color })),
-      preview: last ? `${last.kind === 'user' ? '我' : last.name}：${last.text.slice(0, 40)}` : '',
+      preview: last ? `${last.kind === 'user' ? tr('我') : last.name}：${last.text.slice(0, 40)}` : '',
       workspaceType: d.workspace.type,
     };
   }
 
   // ---------- 修改设置 ----------
   update(patch) {
-    if (this.running) throw new Error('请先停止当前讨论再修改设置');
-    if (this.run?.active && 'members' in patch) throw new Error('任务协作进行中，不能修改成员');
+    if (this.running) throw new Error(tr('请先停止当前讨论再修改设置'));
+    if (this.run?.active && 'members' in patch) throw new Error(tr('任务协作进行中，不能修改成员'));
     if ('title' in patch) this.data.title = str(patch.title, 60) || this.data.title;
     if ('members' in patch) {
       const next = normalizeMembers(patch.members, this.registry.list());
@@ -201,7 +202,7 @@ export class Space extends EventEmitter {
   /** 换某个成员的型号 / 思考档位：讨论进行中也可以，下一次发言生效。 */
   updateMember(memberId, patch = {}) {
     const i = this.data.members.findIndex((m) => m.id === memberId);
-    if (i < 0) throw new Error('没有这个成员');
+    if (i < 0) throw new Error(tr('没有这个成员'));
     const next = this.data.members.map((m, k) => (k === i ? { ...m, model: patch.model ?? m.model, effort: patch.effort ?? m.effort } : m));
     this.data.members = normalizeMembers(next, this.registry.list());
     this.save();
@@ -211,15 +212,15 @@ export class Space extends EventEmitter {
 
   // ---------- 对外操作 ----------
   assertChatAllowed() {
-    if (this.run?.blocksChat) throw new Error('任务协作进行中，聊天先暂停（避免和正在干活的 AI 冲突）。可以在任务面板里给子任务提意见。');
-    if (this.importing) throw new Error('正在整理导入的对话，稍等一下');
+    if (this.run?.blocksChat) throw new Error(tr('任务协作进行中，聊天先暂停（避免和正在干活的 AI 冲突）。可以在任务面板里给子任务提意见。'));
+    if (this.importing) throw new Error(tr('正在整理导入的对话，稍等一下'));
   }
 
   userMessage(text) {
     text = str(text, 20000);
-    if (!text) throw new Error('消息不能为空');
+    if (!text) throw new Error(tr('消息不能为空'));
     this.assertChatAllowed();
-    const msg = { id: randomUUID(), kind: 'user', name: '我', text, ts: Date.now() };
+    const msg = { id: randomUUID(), kind: 'user', name: tr('我'), text, ts: Date.now() };
     this.data.messages.push(msg);
     this.emitEvent({ type: 'message', message: msg });
     this.save();
@@ -254,7 +255,7 @@ export class Space extends EventEmitter {
 
   /** 让某个成员发言（点头像旁的“让 TA 说”）。 */
   ask(memberId) {
-    if (!this.data.members.some((m) => m.id === memberId)) throw new Error('没有这个成员');
+    if (!this.data.members.some((m) => m.id === memberId)) throw new Error(tr('没有这个成员'));
     this.assertChatAllowed();
     this.queue = [{ memberId, reason: 'mention' }, ...this.queue.filter((q) => q.memberId !== memberId)];
     if (!this.running) { this.turns = 0; this.passesInRow = 0; this.onlyQueued = true; }
@@ -340,7 +341,8 @@ export class Space extends EventEmitter {
     const access = this.data.access === 'run' && !api && !asks ? 'edit' : this.data.access;
 
     const build = (resume) => ({
-      system: systemPrompt(this.toJSON(), member, { api, access, approvals: asks }) + (resume && imported?.note ? `\n${imported.note}\n` : ''),
+      system: systemPrompt(this.toJSON(), member, { api, access, approvals: asks }) + (resume && imported
+        ? `\n${resumeNote(this.data.messages.find((m) => m.id === imported.importId) || { sourceLabel: member.engineLabel }, this.workspacePath)}\n` : ''),
       prompt: turnPrompt(this.data, member, {
         reason, api,
         files: api ? this.ws.snapshot() : null,
@@ -399,7 +401,7 @@ export class Space extends EventEmitter {
       result.mentions = mk.passed ? [] : mentionsIn(mk.text, this.data.members, member.id);
       if (imported && fellBack) {
         delete this.data.memberState[member.id];
-        this.emitEvent({ type: 'notice', level: 'error', text: `${member.name} 接不上导入的原会话了，之后按普通成员发言。` });
+        this.emitEvent({ type: 'notice', level: 'error', text: tr('{0} 接不上导入的原会话了，之后按普通成员发言。', [member.name]) });
       } else if (imported) {
         this.data.memberState[member.id] = { ...imported, sessionId: r.sessionId || imported.sessionId, fork: false, seen: this.data.messages.length, briefs: briefVersions(this.data.messages) };
       } else if (canResume) {
@@ -450,8 +452,8 @@ export class Space extends EventEmitter {
   /** decision：allow / always（这些程序以后都不问）/ deny。note：附给 AI 的一句话，同意、拒绝都可以带 */
   decideApproval(id, decision, note) {
     const p = this.approvals.get(id);
-    if (!p) throw new Error('这条请求已经处理过了');
-    if (!['allow', 'always', 'deny'].includes(decision)) throw new Error('未知的决定');
+    if (!p) throw new Error(tr('这条请求已经处理过了'));
+    if (!['allow', 'always', 'deny'].includes(decision)) throw new Error(tr('未知的决定'));
     if (decision === 'always') this.data.allowedPrograms = normalizeAllowed([...this.data.allowedPrograms, ...p.ap.programs]);
     const status = { allow: 'allowed', always: 'always', deny: 'denied' }[decision];
     this.settleApproval(id, status, str(note, 500));
@@ -482,7 +484,7 @@ export class Space extends EventEmitter {
   }
 
   undo(changeId, opts) {
-    if (this.running) throw new Error('讨论进行中，先停止再撤销');
+    if (this.running) throw new Error(tr('讨论进行中，先停止再撤销'));
     const changes = this.ws.undo(changeId, opts);
     if (changes.length) this.emitEvent({ type: 'files_changed', changes });
     return changes;
@@ -494,11 +496,11 @@ export class Space extends EventEmitter {
   }
 
   async startRun(opts) {
-    if (this.running) throw new Error('聊天里的讨论还在进行，先停止');
-    if (this.importing) throw new Error('正在整理导入的对话，稍等一下再开始任务');
-    if (this.run && !this.run.data.closed) throw new Error('还有一个任务没结束');
+    if (this.running) throw new Error(tr('聊天里的讨论还在进行，先停止'));
+    if (this.importing) throw new Error(tr('正在整理导入的对话，稍等一下再开始任务'));
+    if (this.run && !this.run.data.closed) throw new Error(tr('还有一个任务没结束'));
     const pre = await preflight(this.runHost);
-    if (this.deleting || this.deleted) throw new Error('这个空间正在删除');
+    if (this.deleting || this.deleted) throw new Error(tr('这个空间正在删除'));
     const run = this.attachRun(TaskRun.create(this.runHost, opts, pre));
     this.data.runs.push(run.data);
     this.run = run;
@@ -509,7 +511,7 @@ export class Space extends EventEmitter {
 
   async runAction(action, body = {}) {
     const run = this.run;
-    if (!run) throw new Error('没有进行中的任务');
+    if (!run) throw new Error(tr('没有进行中的任务'));
     const actions = {
       'approve-plan': () => run.approvePlan(body.tasks),
       replan: () => run.replan(body.feedback),
@@ -531,7 +533,7 @@ export class Space extends EventEmitter {
         this.emitEvent({ type: 'snapshot', space: this.toJSON() });
       },
     };
-    if (!actions[action]) throw new Error(`未知操作：${action}`);
+    if (!actions[action]) throw new Error(tr('未知操作：{0}', [action]));
     const r = await this.track(actions[action]());
     return r ?? { ok: true };
   }
@@ -544,7 +546,7 @@ export class Space extends EventEmitter {
     const done = run.data.tasks.filter((t) => t.status === 'approved').length;
     const msg = {
       id: randomUUID(), kind: 'ai', memberId: coord.id, name: coord.name, engine: coord.engine, ts: Date.now(), runId: run.id,
-      text: `**任务完成：${run.data.objective.split('\n')[0].slice(0, 80)}**（${done}/${run.data.tasks.length} 个子任务通过）\n\n${s?.text || s?.error || ''}`,
+      text: tr('**任务完成：{0}**（{1}/{2} 个子任务通过）\n\n{3}', [run.data.objective.split('\n')[0].slice(0, 80), done, run.data.tasks.length, s?.text || s?.error || '']),
       activities: [],
     };
     this.data.messages.push(msg);
@@ -581,7 +583,7 @@ export class Space extends EventEmitter {
   save() {
     if (this.deleted || this.closing) return;
     this.data.updatedAt = Date.now();
-    try { this.store.save(this.data); } catch (e) { console.error('保存失败：', e.message); }
+    try { this.store.save(this.data); } catch (e) { console.error(tr('保存失败：'), e.message); }
   }
 
   track(operation) {
@@ -621,13 +623,13 @@ export class Space extends EventEmitter {
 
   toMarkdown() {
     const d = this.data;
-    const lines = [`# ${d.title}`, '', `- 成员：${d.members.map((m) => `${m.name}（${m.engineLabel}）`).join('、')}`, `- 共享文件夹：${this.workspacePath}`, '', '---', ''];
+    const lines = [`# ${d.title}`, '', tr('- 成员：{0}', [d.members.map((m) => `${m.name}（${m.engineLabel}）`).join('、')]), tr('- 共享文件夹：{0}', [this.workspacePath]), '', '---', ''];
     for (const m of d.messages) {
       if (m.passed || (!m.text && !m.changes?.length)) continue;
-      const time = new Date(m.ts).toLocaleString('zh-CN', { hour12: false });
-      lines.push(`### ${m.kind === 'user' ? '我' : m.name}　<small>${time}</small>`, '');
+      const time = new Date(m.ts).toLocaleString(getLanguage(), { hour12: false });
+      lines.push(`### ${m.kind === 'user' ? tr('我') : m.name}　<small>${time}</small>`, '');
       if (m.text) lines.push(m.text, '');
-      if (m.changes?.length) lines.push(`> 修改了：${m.changes.map((c) => c.path).join('、')}`, '');
+      if (m.changes?.length) lines.push(tr('> 修改了：{0}', [m.changes.map((c) => c.path).join('、')]), '');
     }
     return lines.join('\n');
   }
