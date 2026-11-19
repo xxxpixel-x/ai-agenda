@@ -250,7 +250,7 @@ export class Space extends EventEmitter {
       needsYou: runNeedsUser(r),
       finished: !!r?.closed,
       lastAt: last?.ts || null,
-      members: d.members.map((m) => ({ name: m.name, color: m.color })),
+      members: d.members.map((m) => ({ name: m.name, color: m.color, engine: m.engine })),
       preview: last ? `${last.kind === 'user' ? tr('我') : last.name}：${(last.text || last.attachments[0].name).slice(0, 40)}` : (r ? r.objective.split('\n')[0].slice(0, 60) : ''),
       workspaceType: d.workspace.type,
       readOnly: !!this.readOnly,

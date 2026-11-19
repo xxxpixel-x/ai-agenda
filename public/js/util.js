@@ -43,7 +43,17 @@ export const ICON = {
   stop: svg('<rect x="7" y="7" width="10" height="10" rx="1.5"/>', 14),
   collapse: svg('<path d="M6 15l6-6 6 6"/>', 14),
   expand: svg('<path d="M6 9l6 6 6-6"/>', 14),
+  gear: svg('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>'),
+  library: svg('<path d="M5 4h4v16H5zM11 4h4v16h-4z"/><path d="M17.2 4.6l3.6 1 -3.9 14.8-3.6-1z"/>'),
+  panel: svg('<rect x="3.5" y="5" width="17" height="14" rx="2.5"/><path d="M14.5 5v14"/>'),
+  external: svg('<path d="M14 4h6v6M20 4l-9 9M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/>'),
+  refresh: svg('<path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5"/>'),
+  plug: svg('<path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4"/>'),
 };
+/** Agenda 的小脸（public/brand）：'thinking' 是它自己在忙（协调者规划、整理导入），'empty' 是空状态。AI 成员思考时用粒子，不用它。 */
+export const mascot = (kind, size = 20) => `<img class="mascot" src="/brand/agenda-${kind}.svg" width="${size}" height="${size}" alt="">`;
+/** 空状态：小脸加一句话。 */
+export const emptyHtml = (text, cls = 'empty-files') => `<div class="${cls} empty">${mascot('empty', 40)}<span>${esc(text)}</span></div>`;
 /** 出错 / 需要注意的提示：小三角图标加文字（不用 ⚠ 字符）。 */
 export const errHtml = (text) => `<div class="err">${ICON.alert}<span>${esc(text)}</span></div>`;
 export const ACT_ICON = {
@@ -60,8 +70,15 @@ export const state = {
   spaces: [],
   space: null,        // 当前空间（完整数据）
   es: null,
-  files: { open: load('rt:filesOpen') ?? true, tab: 'files', list: [], root: '', view: null, history: [], expanded: new Set(), flash: new Set() },
+  // 右侧栏里文件 / 改动 / 计划三个面板各有一个「正在看的详情」（打开的文件、某次改动、子任务……），
+  // 切面板不丢；state.files.view 读写的是当前面板（panel）的那一个，写入时按类型放回所属面板
+  files: { panel: 'files', views: {}, list: [], root: '', history: [], expanded: new Set(), flash: new Set() },
 };
+export const VIEW_PANEL = { file: 'files', change: 'changes', briefdiff: 'changes', task: 'plan', taskdiff: 'plan' };
+Object.defineProperty(state.files, 'view', {
+  get() { return this.views[this.panel] ?? null; },
+  set(v) { this.views[(v && VIEW_PANEL[v.type]) || this.panel] = v || null; },
+});
 
 // ---------------- 工具 ----------------
 export async function api(path, opts = {}) {

@@ -1,0 +1,115 @@
+/* Agenda 样式变量：颜色、字号、间距、圆角、阴影、动效。其他样式只用这里的变量，不写死颜色。
+   方向：友善、有点俏皮的小伙伴（logo 是一团薄荷绿的小脸）。底色是带一点墨绿的中性灰；
+   颜色各有用处：薄荷绿是品牌和选中，粉色（logo 的舌头）只给「等你处理」，奶黄和天蓝给进行中、提醒和链接，
+   卡片上的小图标块用这几种颜色区分类别。 */
+:root {
+  /* logo 的颜色和配套的几种（深浅两套通用） */
+  --mint: #7BDDC2;
+  --pink: #F5A1C7;
+  --ink: #173732;
+  --butter: #F6D77A;
+  --sky: #9CCBF2;
+
+  /* 表面 */
+  --bg: #f7f9f8;            /* 中间画布 */
+  --side: #eef2f0;          /* 侧栏、右侧栏 */
+  --panel: #ffffff;         /* 卡片、输入框、弹窗 */
+  --panel-2: #ecf1ef;       /* 次级填充：你发的消息、代码块 */
+  --hover: rgba(23, 55, 50, .055);
+  --border: #dee6e2;        /* 细线 */
+  --border-strong: #c8d3ce;
+  --scrim: rgba(12, 26, 23, .38);
+
+  /* 文字：主、次、弱 */
+  --text: #13211e;
+  --text-2: #4a5b56;
+  --muted: #687a74;
+
+  /* 主按钮：深墨绿；选中态：淡薄荷 */
+  --accent: #173732;
+  --accent-text: #ffffff;
+  --accent-weak: #d9f1e9;
+  --brand-text: #1d8468;    /* 薄荷绿当文字用（够对比度） */
+
+  /* 语义色 */
+  --link: #2c6cb3;
+  --info: #2c6cb3;
+  --ok: #1d8a5d;
+  --warn: #a5690a;
+  --danger: #c63b3b;
+  --signal: #b8326f;        /* 「等你处理」：粉色当文字用 */
+  --signal-dot: #ea6aa6;
+  --signal-soft: color-mix(in srgb, var(--pink) 34%, transparent);
+
+  /* 改动对比 */
+  --add-bg: #e1f4ec; --add-text: #146349;
+  --del-bg: #fbe9ea; --del-text: #9e2e2e;
+  --user-bg: var(--panel-2);
+  --code-bg: #edf2f0;
+  --log-bg: #0f1816; --log-text: #cfe0da;
+
+  /* 阴影：浅色下小而淡 */
+  --shadow-sm: 0 1px 2px rgba(12, 26, 23, .06);
+  --shadow: 0 1px 2px rgba(12, 26, 23, .05), 0 8px 24px rgba(12, 26, 23, .08);
+
+  /* 字体与字号 */
+  --font: "Segoe UI Variable Text", system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --mono: ui-monospace, "Cascadia Code", "JetBrains Mono", "SF Mono", Consolas, monospace;
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-md: 14px;
+  --fs-lg: 15px;
+  --fs-xl: 18px;
+  --fs-2xl: 24px;
+  --fs-3xl: 30px;
+
+  /* 间距（4 的倍数） */
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 20px;
+  --sp-6: 24px; --sp-8: 32px; --sp-10: 40px; --sp-12: 48px; --sp-16: 64px;
+
+  /* 圆角：控件 8，卡片 12，面板 16 */
+  --r-xs: 4px; --r-sm: 6px; --r-md: 8px; --r-lg: 12px; --r-xl: 16px;
+  --radius: var(--r-lg);
+
+  /* 布局 */
+  --side-w: 260px;
+  --col: 768px;             /* 聊天、内容的阅读宽度 */
+  --bar-h: 52px;
+
+  /* 动效 */
+  --ease: cubic-bezier(.22, 1, .36, 1);
+  --dur-fast: 140ms;
+  --dur: 200ms;
+  --dur-slow: 360ms;
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111816; --side: #0c1211; --panel: #172120; --panel-2: #1f2b28;
+    --hover: rgba(255, 255, 255, .05); --border: #24312d; --border-strong: #34443f; --scrim: rgba(0, 0, 0, .55);
+    --text: #e3eeea; --text-2: #a6b8b2; --muted: #84968f;
+    --accent: #7BDDC2; --accent-text: #0f2420; --accent-weak: #1a3832; --brand-text: #7BDDC2;
+    --link: #8fc4f1; --info: #8fc4f1; --ok: #6fd5a6; --warn: #f0c35c; --danger: #f07c7c;
+    --signal: #F5A1C7; --signal-dot: #F5A1C7; --signal-soft: color-mix(in srgb, var(--pink) 18%, transparent);
+    --add-bg: #15342a; --add-text: #8fe0bd; --del-bg: #3a1f22; --del-text: #f3a7a7;
+    --code-bg: #1c2725; --log-bg: #0a100f; --log-text: #cfe0da;
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, .3);
+    --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 12px 32px rgba(0, 0, 0, .4);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111816; --side: #0c1211; --panel: #172120; --panel-2: #1f2b28;
+  --hover: rgba(255, 255, 255, .05); --border: #24312d; --border-strong: #34443f; --scrim: rgba(0, 0, 0, .55);
+  --text: #e3eeea; --text-2: #a6b8b2; --muted: #84968f;
+  --accent: #7BDDC2; --accent-text: #0f2420; --accent-weak: #1a3832; --brand-text: #7BDDC2;
+  --link: #8fc4f1; --info: #8fc4f1; --ok: #6fd5a6; --warn: #f0c35c; --danger: #f07c7c;
+  --signal: #F5A1C7; --signal-dot: #F5A1C7; --signal-soft: color-mix(in srgb, var(--pink) 18%, transparent);
+  --add-bg: #15342a; --add-text: #8fe0bd; --del-bg: #3a1f22; --del-text: #f3a7a7;
+  --code-bg: #1c2725; --log-bg: #0a100f; --log-text: #cfe0da;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, .3);
+  --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 12px 32px rgba(0, 0, 0, .4);
+  color-scheme: dark;
+}

@@ -1,24 +1,38 @@
 // 空间视图：消息、成员标签、命令审批、输入框。聊天空间和任务空间共用，任务空间另有顶部的计划条（tasks.js）
 import { attachmentDraft, renderAttachments, messageAttachments } from './attachments.js';
-import { loadFiles, loadHistory, onFilesChanged, openChange, renderFilesBody, renderFilesPanel } from './files.js';
+import { loadFiles, loadHistory, onFilesChanged, openChange, renderFilesBody, renderFilesPanel, resetViews } from './files.js';
 import { checkImports, importHtml, openImportModal, replaceImport } from './imports.js';
 import { trackNoteView } from './notes.js';
+import { mountParticles } from './particles.js';
+import { onRightbarChange, rightbarAlert, rightbarOpen, setRightbarSpace, toggleRightbar } from './rightbar.js';
 import { refreshSpacesSoon, renderSpaceList } from './sidebar.js';
 import { effortChoices, effortSelect, modelChoices, openSpaceSettings } from './space-form.js';
-import { coordinatorText, decisionHtml, onRunEvent, renderTaskSpace, summaryCardHtml } from './tasks.js';
+import { coordinatorText, decisionHtml, onRunEvent, renderTaskSpace, summaryCardHtml, taskStatusText } from './tasks.js';
 import { pickBoxHtml, renderSelectBar, startPicking } from './transfer.js';
 import { $, $$, ACT_ICON, ICON, api, avatarHtml, clock, engineOf, errHtml, esc, localizeActivity, md, state, store, toast, tr } from './util.js';
 
 // ---------------- 空间视图 ----------------
 export function closeStream() { if (state.es) { state.es.close(); state.es = null; } }
 
-export function showWelcome() {
+// 欢迎页的粒子：只在欢迎页显示时画
+let welcomeFx = null;
+const stopWelcomeFx = () => { welcomeFx?.stop(); welcomeFx = null; };
+
+/** 离开空间（去整页设置等）：断开事件流，空间、欢迎页和文件面板都收起。 */
+export function leaveSpace() {
   closeStream();
   trackNoteView(null);
+  stopWelcomeFx();
   state.space = null;
+  setRightbarSpace(null);
   $('#spaceView').hidden = true;
-  $('#filesPanel').hidden = true;
+  $('#welcomeView').hidden = true;
+}
+
+export function showWelcome() {
+  leaveSpace();
   $('#welcomeView').hidden = false;
+  welcomeFx = mountParticles($('#welcomeArt'), { mode: 'ambient' });
   $('#mobileTitle').textContent = 'Agenda';
   document.title = 'Agenda';
   renderSpaceList();
@@ -26,14 +40,15 @@ export function showWelcome() {
 
 export function openSpace(id) {
   closeStream();
+  stopWelcomeFx();
   $('#welcomeView').hidden = true;
   $('#spaceView').hidden = false;
   if (state.space?.id !== id) {
     state.space = null;
     $('#messages').innerHTML = '';
     $('#spaceTitle').textContent = tr('加载中…');
-    state.files.view = null;
-    renderFilesPanel();
+    resetViews();
+    setRightbarSpace(null);
     state.files.expanded = new Set();
   }
   const es = new EventSource(`/api/spaces/${id}/events`);
@@ -157,8 +172,9 @@ function renderSpace() {
   renderTaskSpace();
   renderComposer();
   box.scrollTop = box.scrollHeight;
+  syncThinking();
   renderSpaceList();
-  renderFilesPanel();
+  setRightbarSpace(sp);
   checkImports();
 }
 
@@ -187,15 +203,18 @@ export function renderHeader() {
   const task = sp.kind === 'task';
   const next = (sp.queue || []).map((id) => memberOf(id)?.name).filter(Boolean);
   const q = $('#queueInfo');
-  q.textContent = next.length ? tr('接下来：{0}', [next.slice(0, 5).join(' → ')]) : '';
-  q.hidden = !next.length;
+  q.textContent = task ? taskStatusText() : next.length ? tr('接下来：{0}', [next.slice(0, 5).join(' → ')]) : '';
+  q.hidden = !q.textContent;
+  q.classList.toggle('link', task);
   const btns = task ? [] : sp.running
     ? [['stop', tr('停止')], ...(sp.speaking ? [['skip', tr('跳过当前')]] : [])]
     : [['continue', tr('继续讨论')]];
   const ended = task && !!sp.run?.closed;
-  const icons = [['files', state.files.open ? tr('收起文件') : tr('共享文件'), state.files.open], ...(ended ? [] : [['import', tr('导入对话')]]), ['settings', task ? tr('任务空间设置') : tr('空间设置')], ['export', tr('导出')]];
+  const side = rightbarOpen();
+  const icons = [...(ended ? [] : [['import', tr('导入对话')]]), ['settings', task ? tr('任务空间设置') : tr('空间设置')], ['export', tr('导出')], ['panel', side ? tr('收起侧栏') : tr('展开侧栏'), side, !side && rightbarAlert()]];
   $('#spaceActions').innerHTML = btns.map(([a, l]) => `<button type="button" class="btn sm ${a === 'stop' ? 'danger' : ''}" data-act="${a}">${l}</button>`).join('')
-    + icons.map(([a, l, on]) => `<button type="button" class="icon-btn ${on ? 'on' : ''}" data-act="${a}" title="${l}" aria-label="${l}">${ICON[a]}</button>`).join('');
+    + icons.map(([a, l, on, dot]) => `<button type="button" class="icon-btn ${on ? 'on' : ''} ${dot ? 'has-dot' : ''}" data-act="${a}" title="${l}" aria-label="${l}" ${a === 'panel' ? `aria-expanded="${!!on}"` : ''}>${ICON[a]}</button>`).join('');
+
 }
 
 // 「可运行命令」档下，没法在运行前先问你的命令行 AI 只能改文件
@@ -210,10 +229,35 @@ export function renderMembersBar() {
   $('#membersBar').innerHTML = sp.members.map((m) => {
     const e = engineOf(m.engine);
     const ok = !e || e.status?.ready !== false;
-    return `<button type="button" class="person ${speaking?.memberId === m.id || busy.has(m.id) ? 'speaking' : ''} ${ok ? '' : 'off'}" style="--c:${m.color}" data-id="${m.id}"
-      title="${esc(e?.label || m.engineLabel)}${m.model ? ` · ${esc(m.model)}` : ''}${ok ? '' : `\n${esc(e.status?.note || '')}`}">
-      ${avatarHtml(m.engine, m.name, m.model)}${esc(m.name)}${m.id === coord ? `<small>${tr('协调者')}</small>` : ''}${cannotRun(m) ? `<small>${tr('不能运行命令')}</small>` : ''}</button>`;
+    const title = `${e?.label || m.engineLabel}${m.model ? ` · ${m.model}` : ''}${ok ? '' : `\n${e.status?.note || ''}`}`;
+    return `<button type="button" class="person ${speaking?.memberId === m.id || busy.has(m.id) ? 'speaking' : ''} ${ok ? '' : 'off'}" style="--c:${m.color}" data-id="${m.id}" data-title="${esc(title)}" title="${esc(title)}">
+      <span class="pa">${avatarHtml(m.engine, m.name, m.model)}</span>${esc(m.name)}${m.id === coord ? `<small>${tr('协调者')}</small>` : ''}${cannotRun(m) ? `<small>${tr('不能运行命令')}</small>` : ''}</button>`;
   }).join('');
+  for (const id of meters.keys()) paintMeter(id);
+}
+
+// ---- 成员标签上的上下文小圈：由用量那部分调用 setMemberMeter 来填 ----
+const meters = new Map(); // memberId -> { ratio, tip }
+function paintMeter(memberId) {
+  const chip = $(`#membersBar .person[data-id="${CSS.escape(memberId)}"]`);
+  if (!chip) return;
+  const v = meters.get(memberId);
+  const ring = $('.pa', chip);
+  const ratio = Number.isFinite(v?.ratio) ? Math.min(1, Math.max(0, v.ratio)) : null;
+  ring.classList.toggle('metered', ratio !== null);
+  ring.classList.toggle('high', ratio !== null && ratio >= 0.7 && ratio < 0.9);
+  ring.classList.toggle('full', ratio !== null && ratio >= 0.9);
+  if (ratio === null) ring.style.removeProperty('--meter'); else ring.style.setProperty('--meter', ratio);
+  chip.title = [chip.dataset.title, v?.tip].filter(Boolean).join('\n');
+}
+/**
+ * 成员标签上的小圈。ratio 是 0–1 的上下文用量（拿不到就不传或传 null，小圈不显示），
+ * tip 是鼠标停上去时显示的一行字（例如「上下文 42%、额度 18%」）。传 null 清掉。
+ */
+export function setMemberMeter(memberId, meter) {
+  if (!memberId) return;
+  if (meter) meters.set(memberId, { ratio: meter.ratio ?? null, tip: meter.tip || '' }); else meters.delete(memberId);
+  paintMeter(memberId);
 }
 
 // ---- 点成员标签：换型号 / 思考档位，或者让 TA 现在发言 ----
@@ -312,9 +356,9 @@ export function messageHtml(m) {
   if (m.kind === 'task') return taskBackHtml(m, pick);
   if (m.kind === 'user') {
     const wait = m.queued ? `<div class="msg-note">${tr('等协调者看')}</div>` : m.unanswered ? `<div class="msg-note">${tr('软件关闭时协调者还没回这条，可以再发一次')}</div>` : '';
-    return `<div class="msg user ${pick ? 'pickable' : ''}" id="m-${m.id}">${pick}<span class="avatar me">${tr('我')}</span>
+    return `<div class="msg user ${pick ? 'pickable' : ''}" id="m-${m.id}">${pick}
       <div class="msg-main"><div class="msg-head"><span class="n">${tr('我')}</span><span class="m">${clock(m.ts)}</span>${transferBtn(m)}</div>
-      <div class="bubble">${m.text ? `<div class="md">${md(m.text)}</div>` : ''}${messageAttachments(m.attachments)}</div>${wait}</div></div>`;
+      <div class="msg-body">${m.text ? `<div class="md">${md(m.text)}</div>` : ''}${messageAttachments(m.attachments)}</div>${wait}</div></div>`;
   }
   const mem = memberOf(m.memberId);
   const color = mem?.color || engineOf(m.engine)?.color || '#888';
@@ -329,14 +373,15 @@ export function messageHtml(m) {
   // 协调者的判断：回复后面那段 JSON 只给软件看，不显示
   const text = m.replyTo ? coordinatorText(m.text, m.streaming) : m.text;
   let body;
-  if (m.streaming && !text) body = `<span class="typing"><i></i><i></i><i></i>&nbsp;${esc(last ? last.label : tr('思考中'))}</span>`;
+  // 还没吐字：粒子占位（开始输出就换成正文）
+  if (m.streaming && !text) body = `<div class="think"><span class="think-art"></span><span class="think-label">${esc(last ? localizeActivity(last.label) : tr('思考中'))}</span></div>`;
   else body = text ? `<div class="md ${m.streaming ? 'cursor' : ''}">${md(text)}</div>` : '';
   const changes = m.changes?.length ? `<div class="changes">${m.changes.map((c) => `<button type="button" class="change-chip" data-change="${c.id}">${ICON.file}${esc(c.path)} ${c.created ? `<span class="plus">${tr('新建')}</span>` : c.deleted ? `<span class="minus">${tr('删除')}</span>` : `<span class="plus">+${c.added}</span><span class="minus">−${c.removed}</span>`}</button>`).join('')}</div>` : '';
   return `<div class="msg ai ${m.error ? 'error' : ''} ${pick ? 'pickable' : ''}" id="m-${m.id}" style="--c:${color}">${pick}
     ${avatarHtml(mem?.engine || m.engine, m.name, m.model || mem?.model)}
     <div class="msg-main">${imageNote}
       <div class="msg-head"><span class="n">${esc(m.name)}</span>${m.replyTo ? `<span class="role">${tr('协调者')}</span>` : ''}<span class="m" title="${esc(meta.join(' · '))}">${clock(m.ts)}</span>${transferBtn(m)}</div>
-      <div class="bubble">${activitiesHtml(m.activities, m.streaming)}${approvalsHtml(m)}${body}
+      <div class="msg-body">${activitiesHtml(m.activities, m.streaming)}${approvalsHtml(m)}${body}
         ${m.interrupted ? `<div class="note">${tr('（发言被中断）')}</div>` : ''}
         ${m.note ? `<div class="note">${esc(m.note)}</div>` : ''}
         ${m.error ? errHtml(m.error) : ''}${changes}</div>
@@ -361,7 +406,15 @@ const scrollToBottom = () => { const b = $('#messages'); b.scrollTop = b.scrollH
 function appendMessage(m) {
   const stick = nearBottom() || m.kind === 'user';
   $('#messages').insertAdjacentHTML('beforeend', messageHtml(m));
+  syncThinking();
   if (stick) scrollToBottom();
+}
+
+// 思考中的粒子：新出现的占位挂上粒子，消息重绘时把正在动的那个搬过去，不重新开始
+const thinking = new Map(); // 元素 -> 粒子
+function syncThinking() {
+  for (const [el, fx] of thinking) if (!el.isConnected) { fx.stop(); thinking.delete(el); }
+  for (const el of $$('#messages .think-art')) if (!thinking.has(el)) thinking.set(el, mountParticles(el, { mode: 'thinking' }));
 }
 export function updateMessage(m) {
   const el = document.getElementById(`m-${m.id}`);
@@ -372,8 +425,12 @@ export function updateMessage(m) {
   // 正在卡片上写附言时消息重绘了：把光标放回原处
   const typing = el.contains(document.activeElement) && document.activeElement.matches('[data-apr]')
     ? { id: document.activeElement.closest('[data-ap]').dataset.ap, at: document.activeElement.selectionStart } : null;
+  const art = $('.think-art', el);
   if (m.kind === 'import') replaceImport(el, m);
   else el.outerHTML = messageHtml(m);
+  const slot = art && $(`#m-${CSS.escape(m.id)} .think-art`);
+  if (slot) slot.replaceWith(art);
+  syncThinking();
   if (typing) {
     const box = $(`[data-ap="${typing.id}"] [data-apr]`);
     if (box) { box.focus(); box.setSelectionRange(typing.at, typing.at); }
@@ -396,7 +453,7 @@ $('#spaceActions').addEventListener('click', async (e) => {
   const b = e.target.closest('[data-act]');
   if (!b || !state.space) return;
   const act = b.dataset.act;
-  if (act === 'files') { state.files.open = !state.files.open; store('rt:filesOpen', state.files.open); renderFilesPanel(); renderHeader(); return; }
+  if (act === 'panel') { toggleRightbar(); return; }
   if (act === 'settings') { openSpaceSettings(); return; }
   if (act === 'import') { openImportModal(); return; }
   if (act === 'export') { location.href = `/api/spaces/${state.space.id}/export`; return; }
@@ -417,6 +474,9 @@ $('#messages').addEventListener('click', (e) => {
   const d = e.target.closest('[data-apd]');
   if (d) decide(d.closest('[data-ap]'), d.dataset.apd);
 });
+
+// 右侧栏展开 / 收起、面板上的提醒变了：顶栏的开关按钮跟着变
+onRightbarChange(() => { if (state.space) renderHeader(); });
 
 // ---------------- 输入框 ----------------
 export const input = $('#input');

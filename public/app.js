@@ -1,23 +1,40 @@
 // Agenda —— 界面入口：路由与启动。各部分在 public/js/ 下。
-import { openSpace, showWelcome } from './js/chat.js';
+import { leaveSpace, openSpace, showWelcome } from './js/chat.js';
 import { refreshEngines } from './js/engines.js';
-import { applyTheme, refreshSpaces, refreshSpacesSoon, renderSpaceList, theme } from './js/sidebar.js';
-import { $, api, load, state, store, toast, tr } from './js/util.js';
+import { hidePage, pageRoute, setReturnHash, showPage } from './js/pages.js';
+import { applyTheme, refreshSpaces, refreshSpacesSoon, renderSideFoot, renderSpaceList } from './js/sidebar.js';
+import { $, load, state, store, toast, tr } from './js/util.js';
 import './js/space-form.js';
 import './js/files.js';
 import './js/tasks.js';
 import './js/imports.js';
+// 整页的分类：各自注册到 slots，新增一个分类就在这里加一行
+import './js/settings/general.js';
+import './js/settings/connections.js';
+// 空间设置的标签
+import './js/space-tabs.js';
 
 // ---------------- 路由与启动 ----------------
 function route() {
+  const page = pageRoute(location.hash);
+  if (page) {
+    leaveSpace();
+    if (!showPage(page.page, page.id)) { location.hash = '#/'; return; }
+    renderSideFoot();
+    renderSpaceList();
+    return;
+  }
+  hidePage();
+  renderSideFoot();
   const m = location.hash.match(/^#\/space\/([a-f0-9-]{36})/i);
+  setReturnHash(m ? location.hash : '#/');
   if (m) openSpace(m[1]);
   else if (state.spaces.length && !location.hash) location.hash = `#/space/${state.spaces[0].id}`;
   else showWelcome();
 }
 window.addEventListener('hashchange', route);
 window.addEventListener('beforeunload', (e) => {
-  const v = state.files.view;
+  const v = state.files.views.files;
   if (v?.type === 'file' && v.draft !== v.content) { e.preventDefault(); e.returnValue = ''; }
 });
 setInterval(renderSpaceList, 60_000);
@@ -37,4 +54,3 @@ window.desktop?.onOpenSpace?.((id) => { location.hash = `#/space/${id}`; });
     toast(tr('这个版本把空间分成了聊天空间和任务空间，旧版的 {0} 个空间已删除', [state.app.removedLegacy]));
   }
 })();
-
