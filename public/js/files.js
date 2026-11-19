@@ -1,9 +1,9 @@
-// 共享文件面板
-import { input, renderHeader } from './chat.js';
+// 右侧栏的「文件」「改动」两个面板：共享文件夹、Markdown 预览、右键菜单；每次改动、对比、逐行批注
 import { briefAction, renderBriefDiff } from './imports.js';
 import { chatNoteBar, renderNoteDiff, sendChatNotes, trackNoteView } from './notes.js';
-import { renderTaskDetail, renderTaskDiff } from './tasks.js';
-import { $, $$, ICON, api, authorName, esc, getLanguage, md, sizeText, state, store, toast, tr } from './util.js';
+import { currentPanel, onRightbarChange, renderPanelBody, renderRightbar, rightbarOpen, setPanelBadge, showPanel } from './rightbar.js';
+import { register } from './slots.js';
+import { $, $$, ICON, VIEW_PANEL, api, authorName, emptyHtml, esc, getLanguage, md, sizeText, state, toast, tr } from './util.js';
 
 // ---------------- 共享文件面板 ----------------
 export async function loadFiles() {
@@ -14,47 +14,65 @@ export async function loadFiles() {
     state.files.root = r.root;
     state.files.truncated = r.truncated;
   } catch (e) { toast(e.message, 'error'); }
-  if (state.files.tab === 'files' && !state.files.view && document.activeElement?.id !== 'newFileName') renderFilesBody();
+  if (currentPanel() === 'files' && !state.files.view && document.activeElement?.id !== 'newFileName') renderFilesBody();
 }
 export async function loadHistory() {
   if (!state.space) return;
   try { state.files.history = await api(`/api/spaces/${state.space.id}/history`); } catch { state.files.history = []; }
-  $('#historyCount').textContent = state.files.history.length || '';
-  if (state.files.tab === 'history' && !state.files.view) renderFilesBody();
+  setPanelBadge('changes', state.files.history.length || null);
+  if (currentPanel() === 'changes' && !state.files.view) renderFilesBody();
 }
 
 /** 文件暂时只读（同一个文件夹的任务空间在依次直接改）或任务已结束：不能编辑、撤销。 */
 export const filesLocked = () => !!state.space?.readOnly || (state.space?.kind === 'task' && !!state.space.run?.closed);
 
-export function renderFilesPanel() {
+/** 整个右侧栏重画（标签和当前面板）。 */
+export const renderFilesPanel = () => { hideFileMenu(); renderRightbar(); };
+/** 只重画当前面板。 */
+export const renderFilesBody = () => { hideFileMenu(); renderPanelBody(); };
+/** 打开一个详情（文件、改动、子任务……），切到它所属的面板。 */
+export function showView(view) {
+  state.files.view = view;
+  if (!showPanel(VIEW_PANEL[view.type])) renderFilesBody();
+}
+/** 换空间：各面板的详情都清掉。 */
+export function resetViews() { state.files.views = {}; }
+
+// 面板渲染时记下当前是哪个面板（state.files.view 读的是它的详情），并告诉批注模块现在看的是什么
+export function enterPanel(id) {
   hideFileMenu();
-  const panel = $('#filesPanel');
-  panel.hidden = !state.space || !state.files.open;
-  if (panel.hidden) { trackNoteView(null); return; }
-  $('#filesTitle').title = state.space.workspacePath;
-  // 只在标题旁放一个小锁，鼠标停上去显示原因
-  const lock = $('#filesLock');
-  const ro = state.space.readOnly;
-  lock.hidden = !ro;
+  state.files.panel = id;
+  trackNoteView(rightbarOpen() && state.space, state.files.view);
+}
+onRightbarChange(() => { if (!rightbarOpen()) { hideFileMenu(); trackNoteView(null); } });
+
+const folderName = (p) => String(p || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p;
+function renderFilesPane(body) {
+  enterPanel('files');
+  const v = state.files.view;
+  if (v?.type === 'file') return renderEditor(body, v);
+  const sp = state.space;
+  const ro = sp.readOnly;
   const why = ro ? tr('任务空间「{0}」正在依次修改这个文件夹，做完之前文件只能看、不能改', [ro.title]) : '';
-  lock.title = why;
-  lock.setAttribute('aria-label', why);
-  $('#openFolderBtn').hidden = !state.app.desktop;
-  $$('.tab', panel).forEach((t) => t.classList.toggle('active', t.dataset.tab === state.files.tab));
-  renderFilesBody();
+  const files = state.files.list;
+  body.innerHTML = `<div class="panel-bar">
+      <span class="pb-title" title="${esc(sp.workspacePath)}">${ICON.folder}<span>${esc(folderName(sp.workspacePath))}</span></span>
+      ${ro ? `<span class="files-lock" tabindex="0" title="${esc(why)}" aria-label="${esc(why)}">${ICON.lock}</span>` : ''}
+      <span class="grow"></span>
+      <button class="icon-btn" type="button" data-act="new-file" title="${tr('新建文件')}" aria-label="${tr('新建文件')}" ${filesLocked() ? 'disabled' : ''}>${ICON.plus}</button>
+      ${state.app.desktop ? `<button class="icon-btn" type="button" data-act="open-folder" title="${tr('在资源管理器中打开')}" aria-label="${tr('在资源管理器中打开')}">${ICON.external}</button>` : ''}
+      <button class="icon-btn" type="button" data-act="refresh" title="${tr('刷新')}" aria-label="${tr('刷新')}">${ICON.refresh}</button></div>
+    ${state.files.truncated ? `<div class="hint panel-note">${tr('文件太多，只显示一部分')}</div>` : ''}
+    ${files.length ? `<div class="file-list">${treeHtml(fileTree(files))}</div>` : emptyHtml(tr('文件夹是空的'))}`;
+  state.files.flash.clear();
 }
 
-export function renderFilesBody() {
-  hideFileMenu();
-  const body = $('#filesBody');
+function renderChangesPane(body) {
+  enterPanel('changes');
   const v = state.files.view;
-  trackNoteView(state.files.open && state.space, v);
-  if (v?.type === 'task') return renderTaskDetail(body, v);
-  if (v?.type === 'taskdiff') return renderTaskDiff(body, v);
-  if (v?.type === 'file') return renderEditor(body, v);
   if (v?.type === 'change') return renderChange(body, v);
   if (v?.type === 'briefdiff') return renderBriefDiff(body, v);
-  if (state.files.tab === 'history') {
+  {
     const list = state.files.history;
     body.innerHTML = list.length ? `<div class="history-list">${list.map((h) => {
       const mem = state.space.members.find((m) => m.name === h.by);
@@ -64,15 +82,10 @@ export function renderFilesBody() {
         <span class="who">${esc(authorName(h.by))}</span><span class="hp">${esc(h.path)}</span>
         <span>${tag ? `<span class="badge off">${tag}</span> ` : ''}<span class="plus">+${h.added}</span> <span class="minus">−${h.removed}</span></span>
         <span class="ht">${new Date(h.ts).toLocaleString(getLanguage(), { hour12: false })}</span></div>`;
-    }).join('')}</div>` : `<div class="empty-files">${tr('还没有改动')}</div>`;
-    return;
+    }).join('')}</div>` : emptyHtml(tr('还没有改动'));
   }
-  const files = state.files.list;
-  body.innerHTML = `<div class="file-tools"><button class="btn sm" type="button" data-act="new-file" ${filesLocked() ? 'disabled' : ''}>${ICON.plus}${tr('新建文件')}</button>
-      ${state.files.truncated ? `<span class="hint">${tr('文件太多，只显示一部分')}</span>` : ''}</div>
-    ${files.length ? `<div class="file-list">${treeHtml(fileTree(files))}</div>` : `<div class="empty-files">${tr('文件夹是空的')}</div>`}`;
-  state.files.flash.clear();
 }
+
 
 // 文件夹树：文件夹在前，名字按自然顺序（9 在 10 前），子文件夹默认收起
 const byName = new Intl.Collator(getLanguage(), { numeric: true, sensitivity: 'base' }).compare;
@@ -109,9 +122,7 @@ export async function openFile(p) {
   try {
     const r = await api(`/api/spaces/${spaceId}/file?path=${encodeURIComponent(p)}`);
     if (state.space?.id !== spaceId) return;
-    state.files.view = { type: 'file', path: p, content: r.content, draft: r.content, preview: /\.md$/i.test(p), stale: false };
-    if (!state.files.open) { state.files.open = true; renderHeader(); }
-    renderFilesPanel();
+    showView({ type: 'file', path: p, content: r.content, draft: r.content, preview: /\.md$/i.test(p), stale: false });
   } catch (e) { toast(e.message, 'error'); }
 }
 
@@ -154,9 +165,7 @@ export async function openChange(id) {
   try {
     const c = await api(`/api/spaces/${spaceId}/history/${id}`);
     if (state.space?.id !== spaceId) return;
-    state.files.view = { type: 'change', ...c };
-    if (!state.files.open) { state.files.open = true; renderHeader(); }
-    renderFilesPanel();
+    showView({ type: 'change', ...c });
   } catch (e) { toast(e.message, 'error'); }
 }
 
@@ -192,10 +201,10 @@ export function onFilesChanged(changes) {
   for (const c of changes) if (!c.deleted) { revealFile(c.path); state.files.flash.add(c.path); }
   loadFiles();
   loadHistory();
-  const v = state.files.view;
+  const v = state.files.views.files;
   if (v?.type === 'file' && changes.some((c) => c.path === v.path)) {
     if (v.draft === v.content) openFile(v.path); // 没有未保存的修改：直接刷新
-    else { v.stale = true; renderFilesBody(); }
+    else { v.stale = true; if (currentPanel() === 'files') renderFilesBody(); }
   }
 }
 
@@ -289,9 +298,7 @@ fileMenu.addEventListener('click', async (e) => {
   } catch (err) { toast(err.message, 'error'); }
 });
 
-$('#filesPanel').addEventListener('click', async (e) => {
-  const tab = e.target.closest('.tab');
-  if (tab) { state.files.tab = tab.dataset.tab; state.files.view = null; renderFilesPanel(); return; }
+$('#filesBody').addEventListener('click', async (e) => {
   const dir = e.target.closest('.dir-row');
   if (dir) {
     const p = dir.dataset.dir;
@@ -320,11 +327,14 @@ $('#filesPanel').addEventListener('click', async (e) => {
     case 'toggle-preview': v.preview = !v.preview; renderFilesBody(); break;
     case 'save-file': saveFile(); break;
     case 'reload-file': openFile(v.path); break;
-    case 'open-file': state.files.tab = 'files'; openFile(b.dataset.path); break;
+    case 'open-file': openFile(b.dataset.path); break;
+    case 'refresh': loadFiles(); loadHistory(); break;
+    case 'open-folder': api('/api/open-path', { method: 'POST', body: { path: state.space.workspacePath } }).catch((err) => toast(err.message, 'error')); break;
     case 'undo': undoChange(v); break;
     case 'new-file': {
       // 桌面版（Electron）不支持 prompt()，就地换成一个输入框
-      const tools = b.closest('.file-tools');
+      let tools = $('.file-tools', $('#filesBody'));
+      if (!tools) { $('.panel-bar', $('#filesBody')).insertAdjacentHTML('afterend', '<div class="file-tools"></div>'); tools = $('.file-tools', $('#filesBody')); }
       tools.innerHTML = `<input id="newFileName" value="${tr('新文档.md')}" spellcheck="false" placeholder="${tr('notes/计划.md')}">`;
       const inp = $('#newFileName', tools);
       let done = false;
@@ -346,7 +356,7 @@ async function createFile(name) {
   if (state.files.list.some((f) => f.path === p)) { openFile(p); return; }
   try { await api(`/api/spaces/${state.space.id}/file`, { method: 'PUT', body: { path: p, content: '' } }); openFile(p); } catch (err) { toast(err.message, 'error'); renderFilesBody(); }
 }
-$('#closeFilesBtn').addEventListener('click', () => { state.files.open = false; store('rt:filesOpen', false); renderFilesPanel(); if (state.space) renderHeader(); });
-$('#refreshFilesBtn').addEventListener('click', () => { loadFiles(); loadHistory(); });
-$('#openFolderBtn').addEventListener('click', () => api('/api/open-path', { method: 'POST', body: { path: state.space.workspacePath } }).catch((e) => toast(e.message, 'error')));
 
+// 两个面板放在最后注册（注册会立刻触发一次右侧栏重画，上面的变量要先定义好）
+register('panels', { id: 'files', label: tr('文件'), icon: ICON.files, order: 10, render: renderFilesPane });
+register('panels', { id: 'changes', label: tr('改动'), icon: ICON.transfer, order: 20, render: renderChangesPane });

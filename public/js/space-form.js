@@ -1,8 +1,9 @@
 // 成员编辑器：新建空间 / 空间设置共用
-import { closeStream, input, showWelcome } from './chat.js';
+import { closeStream, showWelcome } from './chat.js';
 import { refreshEngines, showModal } from './engines.js';
 import { bindImportOptions, importOptionsHtml, openSessionPicker, readImportOptions, safeName, samePath, wan } from './imports.js';
 import { refreshSpaces, renderSpaceList } from './sidebar.js';
+import { list } from './slots.js';
 import { $, $$, ACCESS, ICON, api, engineOf, esc, load, shownEngines, state, store, toast, tr } from './util.js';
 
 // ---------------- 成员编辑器（新建空间 / 空间设置共用） ----------------
@@ -25,13 +26,13 @@ export function effortSelect(e, m) {
   if (list.length <= 1) return '<span data-k="effort"></span>';
   return `<select data-k="effort" title="${tr('思考深度')}">${list.map((v) => `<option value="${esc(v)}" ${v === (m.effort || '') ? 'selected' : ''}>${tr('思考：{0}', [esc(v || tr('默认'))])}</option>`).join('')}</select>`;
 }
-function memberEditor(container, members, onChange) {
+export function memberEditor(container, members, onChange) {
   const render = () => {
     container.innerHTML = `<div class="member-rows">${members.map((m, i) => {
       const e = engineOf(m.engine) || {};
       const models = modelChoices(e);
       const st = e.status || {};
-      return `<div class="member-row" data-i="${i}" style="--c:${e.color || '#999'}">
+      return `<div class="member-row" data-i="${i}" style="--c:${esc(e.color || '#999')}">
         <div class="member-top">
           <input data-k="name" value="${esc(m.name)}" maxlength="20" placeholder="${tr('名字')}">
           <select data-k="engine">${state.engines.filter((x) => shownEngines().includes(x) || x.id === m.engine).map((x) => `<option value="${esc(x.id)}" ${x.id === m.engine ? 'selected' : ''}>${esc(x.label)}${x.status?.ready ? '' : tr('（未就绪）')}</option>`).join('')}</select>
@@ -96,7 +97,7 @@ function defaultMembers() {
   list = list.filter((e) => !builtin(e) || (!seen.has(e.defaultName) && seen.add(e.defaultName)));
   return list.slice(0, 4).map((e) => ({ engine: e.id, name: e.defaultName, model: '', effort: '', persona: '' }));
 }
-const accessChoices = (cur) => Object.entries(ACCESS).map(([k, v]) => `
+export const accessChoices = (cur) => Object.entries(ACCESS).map(([k, v]) => `
   <label class="choice"><input type="radio" name="access" value="${k}" ${k === cur ? 'checked' : ''}>
     <span><b>${v.label}</b><div class="d">${v.desc}</div></span></label>`).join('');
 
@@ -105,17 +106,17 @@ const PLAN_CONFIRM = {
   manual: { label: tr('等我确认'), desc: tr('协调者定好计划（包括中途改过的计划）后，等你点确认再开始') },
   auto: { label: tr('自动开始执行'), desc: tr('计划定好直接开始，照样显示在计划条里，随时可以停') },
 };
-function taskOptionsHtml(o = {}) {
+export function taskOptionsHtml(o = {}) {
   const pc = o.planConfirm || 'manual';
   return `<div class="field"><div class="label">${tr('计划确认方式')}</div><div class="choices row">${Object.entries(PLAN_CONFIRM).map(([k, v]) => `
       <label class="choice"><input type="radio" name="planConfirm" value="${k}" ${k === pc ? 'checked' : ''}><span><b>${v.label}</b><div class="d">${v.desc}</div></span></label>`).join('')}</div></div>
     <div class="field opts-list">
       <label class="check-row"><input type="checkbox" data-opt="discuss" ${o.discuss !== false ? 'checked' : ''}> ${tr('其他成员先审阅计划')}</label>
       <label class="check-row"><input type="checkbox" data-opt="autoApprove" ${o.autoApprove ? 'checked' : ''}> ${tr('子任务做完自动通过')}</label>
-      <label class="check-row">${tr('Git 项目最多同时做')} <input type="number" data-opt="maxParallel" min="1" max="6" value="${o.maxParallel || 3}"> ${tr('个子任务')}</label>
+      <label class="check-row">${tr('Git 项目最多同时做')} <input type="number" data-opt="maxParallel" min="1" max="6" value="${esc(o.maxParallel || 3)}"> ${tr('个子任务')}</label>
     </div>`;
 }
-function readTaskOptions(root) {
+export function readTaskOptions(root) {
   return {
     planConfirm: $('input[name=planConfirm]:checked', root)?.value || 'manual',
     discuss: $('[data-opt=discuss]', root).checked,
@@ -148,6 +149,7 @@ export async function openNewSpaceModal(opts = {}) {
     const box = $('#nsImport', dlg);
     const topic = $('input[name=impMode]:checked', box)?.value === 'topic' ? safeName($('#impTopic', box).value) : '';
     autoFolder = topic ? `${imp.cwd.replace(/[\\/]+$/, '')}\\${topic}` : imp.cwd;
+    if (f.value !== autoFolder) moreOptions.open = true;
     f.value = autoFolder;
     $('input[name=ws][value=folder]', dlg).checked = true;
   };
@@ -162,24 +164,34 @@ export async function openNewSpaceModal(opts = {}) {
       <div id="nsImport"></div>
       <div class="field" data-for="task"><label for="nsGoal">${tr('目标')}</label>
         <textarea id="nsGoal" rows="6" placeholder="${tr('要完成什么？例如：给这个项目加上导出 PDF 的功能')}">${esc(opts.objective || '')}</textarea>
-        <div class="hint" id="nsGoalHint">${opts.source ? tr('从聊天空间「{0}」选了 {1} 条消息', [esc(opts.from?.title || ''), opts.source.messages]) : ''}</div></div>
+        <div class="hint" id="nsGoalHint">${opts.source ? esc(tr('从聊天空间「{0}」选了 {1} 条消息', [opts.from?.title || '', opts.source.messages])) : ''}</div></div>
       <div class="field"><label for="nsTitle">${tr('名字')}</label><input id="nsTitle" maxlength="60"></div>
       <div class="field"><div class="label">${tr('成员')}</div><div id="nsMembers"></div></div>
       <div class="field" data-for="task"><label for="nsCoord">${tr('协调者')}</label><select id="nsCoord" class="w-auto"></select>
         <div class="hint">${tr('拆分计划、分配子任务、处理你中途发来的消息、写总结')}</div></div>
-      <div class="field"><div class="label">${tr('共享文件夹')}</div>
-        <div class="choices">${sharedChoice}
-          <label class="choice"><input type="radio" name="ws" value="managed" ${sharedChoice || opts.folder ? '' : 'checked'}><span><b>${tr('新建一个空文件夹')}</b><div class="d">${tr('适合写作和讨论')}</div></span></label>
-          <label class="choice"><input type="radio" name="ws" value="folder" ${!sharedChoice && opts.folder ? 'checked' : ''}><span><b>${tr('用电脑上已有的文件夹')}</b><div class="d">${tr('AI 会直接读写里面的文件')}</div>
-            <div class="folder-row"><input id="nsFolder" placeholder="${tr('点右边按钮选择')}" readonly value="${esc(opts.folder || '')}"><button class="btn sm" type="button" data-act="pick">${tr('选择…')}</button></div></span></label>
-        </div></div>
-      <div class="field"><div class="label">${tr('AI 的权限')}</div><div class="choices">${accessChoices(opts.access || (ACCESS[load('lastAccess')] ? load('lastAccess') : 'edit'))}</div></div>
-      <div data-for="task">${taskOptionsHtml(opts.task)}</div>
-      <div class="field" data-for="chat"><label for="nsTurns">${tr('每次最多来回几次')}</label>
-        <input id="nsTurns" type="number" min="1" max="30" value="6" class="w-num"></div>
+      <details class="more-opts" ${opts.from || opts.folder ? 'open' : ''}>
+        <summary>${tr('更多选项')}</summary>
+        <div class="field"><div class="label">${tr('共享文件夹')}</div>
+          <div class="choices">${sharedChoice}
+            <label class="choice"><input type="radio" name="ws" value="managed" ${sharedChoice || opts.folder ? '' : 'checked'}><span><b>${tr('新建一个空文件夹')}</b><div class="d">${tr('适合写作和讨论')}</div></span></label>
+            <label class="choice"><input type="radio" name="ws" value="folder" ${!sharedChoice && opts.folder ? 'checked' : ''}><span><b>${tr('用电脑上已有的文件夹')}</b><div class="d">${tr('AI 会直接读写里面的文件')}</div>
+              <div class="folder-row"><input id="nsFolder" placeholder="${tr('点右边按钮选择')}" readonly value="${esc(opts.folder || '')}"><button class="btn sm" type="button" data-act="pick">${tr('选择…')}</button></div></span></label>
+          </div></div>
+        <div class="field"><div class="label">${tr('AI 的权限')}</div><div class="choices">${accessChoices(opts.access || (ACCESS[load('lastAccess')] ? load('lastAccess') : 'edit'))}</div></div>
+        <div data-for="task">${taskOptionsHtml(opts.task)}</div>
+        <div class="field" data-for="chat"><label for="nsTurns">${tr('每次最多来回几次')}</label>
+          <input id="nsTurns" type="number" min="1" max="30" value="6" class="w-num"></div>
+      </details>
     </div>
     <div class="modal-foot"><button class="btn" type="button" data-act="close">${tr('取消')}</button><button class="btn primary" type="button" data-act="create" id="nsCreate">${tr('创建')}</button></div>
   </div>`);
+  const moreOptions = $('.more-opts', dlg);
+  const fieldError = (selector, message) => {
+    const field = $(selector, dlg);
+    if (moreOptions.contains(field)) moreOptions.open = true;
+    field.focus();
+    toast(message, 'error');
+  };
   const renderCoord = () => {
     coordIndex = Math.min(coordIndex, members.length - 1);
     $('#nsCoord', dlg).innerHTML = members.map((m, i) => `<option value="${i}" ${i === coordIndex ? 'selected' : ''}>${esc(m.name || tr('成员 {0}', [i + 1]))}</option>`).join('');
@@ -227,7 +239,12 @@ export async function openNewSpaceModal(opts = {}) {
       if (!s) return;
       try { imp = await api(`/api/import/session?source=${s.source}&id=${encodeURIComponent(s.id)}`); } catch (e) { toast(e.message, 'error'); return; }
       $('#nsTitle', dlg).value = imp.title;
-      if (imp.cwd) { autoFolder = imp.cwd; $('#nsFolder', dlg).value = imp.cwd; $('input[name=ws][value=folder]', dlg).checked = true; }
+      if (imp.cwd) {
+        moreOptions.open = true;
+        autoFolder = imp.cwd;
+        $('#nsFolder', dlg).value = imp.cwd;
+        $('input[name=ws][value=folder]', dlg).checked = true;
+      }
       const e = engineOf(imp.engine);
       if (e && !members.some((m) => m.engine === imp.engine)) {
         members.unshift({ engine: imp.engine, name: uniqueName(members, e.defaultName), model: '', effort: '', persona: '' });
@@ -237,7 +254,7 @@ export async function openNewSpaceModal(opts = {}) {
         memberEditor(fresh, members, renderCoord);
         renderCoord();
       }
-      $('#nsImport', dlg).innerHTML = `<div class="field"><div class="imp-pick"><b>${esc(imp.title)}</b><span class="hint">${tr('{0} · {1} 条 · {2}', [esc(imp.sourceLabel), imp.count, wan(imp.chars)])}</span>
+      $('#nsImport', dlg).innerHTML = `<div class="field"><div class="imp-pick"><b>${esc(imp.title)}</b><span class="hint">${esc(tr('{0} · {1} 条 · {2}', [imp.sourceLabel, imp.count, wan(imp.chars)]))}</span>
         <button class="icon-btn" type="button" data-act="drop-import" title="${tr('不导入')}">${ICON.close}</button></div>${importOptionsHtml(imp)}</div>`;
       bindImportOptions($('#nsImport', dlg), syncFolder);
     }
@@ -252,10 +269,10 @@ export async function openNewSpaceModal(opts = {}) {
         workspace,
         access: $('input[name=access]:checked', dlg).value,
       };
-      if (wsType === 'folder' && !workspace.path) { toast(tr('请先选择文件夹'), 'error'); return; }
+      if (wsType === 'folder' && !workspace.path) return fieldError('[data-act=pick]', tr('请先选择文件夹'));
       if (kind === 'task') {
         body.objective = $('#nsGoal', dlg).value;
-        if (!body.objective.trim()) { toast(tr('先写下目标'), 'error'); $('#nsGoal', dlg).focus(); return; }
+        if (!body.objective.trim()) return fieldError('#nsGoal', tr('先写下目标'));
         body.coordinatorIndex = coordIndex;
         Object.assign(body, readTaskOptions(dlg));
         if (opts.source) body.source = opts.source;
@@ -265,7 +282,7 @@ export async function openNewSpaceModal(opts = {}) {
       if (imp && kind === 'chat') {
         const { memberId, writerId, ...io } = readImportOptions($('#nsImport', dlg), imp);
         const topic = io.mode === 'topic';
-        if (topic && !io.topic) { toast(tr('请填写主题'), 'error'); $('#impTopic', dlg).focus(); return; }
+        if (topic && !io.topic) return fieldError('#impTopic', tr('请填写主题'));
         const has = members.some((m) => m.engine === imp.engine);
         if (engineOf(imp.engine) && !has && !topic) { toast(tr('导入这段对话需要一个 {0} 成员', [imp.sourceLabel]), 'error'); return; }
         const folder = wsType === 'folder' ? workspace.path : '';
@@ -307,56 +324,75 @@ export async function openSpaceSettings() {
   const sp = state.space;
   if (!sp) return;
   await refreshEngines();
-  const task = sp.kind === 'task';
-  const r = sp.run;
-  const ended = task && !!r?.closed;
-  const busy = task && r && ['planning', 'plan_review', 'executing', 'summarizing'].includes(r.status);
-  const members = sp.members.map((m) => ({ ...m }));
-  const allowed = [...(sp.allowedPrograms || [])];
-  const allowedHtml = () => allowed.map((p) => `<span class="allowed-chip"><code>${esc(p)}</code><button type="button" class="icon-btn" data-act="unallow" data-p="${esc(p)}" title="${tr('移除')}" aria-label="${tr('移除 {0}', [esc(p)])}">${ICON.close}</button></span>`).join('');
+  const collectors = [];
+  const ctx = {
+    space: sp,
+    members: sp.members.map((m) => ({ ...m })),
+    onSave(fn) { collectors.push(fn); },
+  };
+  const tabs = list('spaceTabs', ctx);
+  if (!tabs.length) return;
+  const remembered = load('rt:spaceTab');
+  const active = tabs.find((tab) => tab.id === remembered) || tabs[0];
+  const title = sp.kind === 'task' ? tr('任务空间设置') : tr('空间设置');
   const dlg = showModal(`<div class="modal-inner">
-    <div class="modal-head"><h3>${task ? tr('任务空间设置') : tr('空间设置')}</h3><button class="icon-btn" type="button" data-act="close">${ICON.close}</button></div>
+    <div class="modal-head"><h3>${esc(title)}</h3><button class="icon-btn" type="button" data-act="close">${ICON.close}</button></div>
+    ${tabs.length > 1 ? `<div class="modal-tabs" role="tablist" aria-label="${esc(title)}">
+      ${tabs.map((tab, i) => `<button class="tab${tab === active ? ' active' : ''}" type="button" role="tab" data-stab="${esc(tab.id)}"
+        aria-controls="ssPanel-${i}" aria-selected="${tab === active}" tabindex="${tab === active ? 0 : -1}">${esc(tab.label)}</button>`).join('')}
+    </div>` : ''}
     <div class="modal-body">
-      <div class="field"><label for="ssTitle">${tr('名字')}</label><input id="ssTitle" maxlength="60" value="${esc(sp.title)}"></div>
-      ${ended ? `<p class="hint">${tr('这个任务已经结束，只能改名字。')}</p>` : `
-      <div class="field"><div class="label">${tr('成员')}</div>${busy ? `<div class="hint">${tr('任务进行中，不能修改成员；换型号可以点顶部的成员标签')}</div>` : '<div id="ssMembers"></div>'}</div>
-      ${task && r ? `<div class="field"><label for="ssCoord">${tr('协调者')}</label><select id="ssCoord" class="w-auto">${sp.members.map((m) => `<option value="${m.id}" ${m.id === r.coordinatorId ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select></div>` : ''}
-      <div class="field"><div class="label">${tr('AI 的权限')}</div><div class="choices">${accessChoices(sp.access)}</div></div>
-      ${task && r ? taskOptionsHtml(r) : ''}
-      ${allowed.length ? `<div class="field"><div class="label">${tr('运行前不再问的程序')}</div><div class="allowed-list" id="ssAllowed">${allowedHtml()}</div></div>` : ''}
-      ${task ? '' : `<div class="field"><label for="ssTurns">${tr('每次最多来回几次')}</label><input id="ssTurns" type="number" min="1" max="30" value="${sp.maxTurns}" class="w-num"></div>`}`}
-      <div class="field"><div class="label">${tr('共享文件夹')}</div><span class="cmd">${esc(sp.workspacePath)}</span></div>
+      ${tabs.map((tab, i) => `<div class="tab-panel" data-stab-panel="${esc(tab.id)}" role="tabpanel" id="ssPanel-${i}"
+        aria-label="${esc(tab.label)}" ${tab === active ? '' : 'hidden'}></div>`).join('')}
     </div>
     <div class="modal-foot"><button class="btn danger" type="button" data-act="delete">${tr('删除这个空间')}</button><span class="grow"></span>
       <button class="btn" type="button" data-act="close">${tr('取消')}</button><button class="btn primary" type="button" data-act="save">${tr('保存')}</button></div>
   </div>`);
-  if ($('#ssMembers', dlg)) memberEditor($('#ssMembers', dlg), members);
-  dlg.addEventListener('click', async (ev) => {
-    const b = ev.target.closest('[data-act]');
-    if (!b) return;
-    if (b.dataset.act === 'close') dlg.close();
-    if (b.dataset.act === 'unallow') {
-      allowed.splice(allowed.indexOf(b.dataset.p), 1);
-      $('#ssAllowed', dlg).innerHTML = allowedHtml() || `<span class="hint">${tr('（无）')}</span>`;
+  const panels = $$('[data-stab-panel]', dlg);
+  const buttons = $$('[data-stab]', dlg);
+  dlg.addEventListener('close', () => {
+    for (const tab of tabs) {
+      try { tab.dispose?.(); } catch (e) { console.error(e); }
     }
-    if (b.dataset.act === 'save') {
-      b.disabled = true;
-      const body = { title: $('#ssTitle', dlg).value };
-      if (!ended) {
-        Object.assign(body, { access: $('input[name=access]:checked', dlg).value, allowedPrograms: allowed });
-        if ($('#ssMembers', dlg)) body.members = members;
-        if (!task) body.maxTurns = $('#ssTurns', dlg).value;
-        if (task && r) body.task = { ...readTaskOptions(dlg), coordinatorId: $('#ssCoord', dlg).value };
-      }
-      try {
-        await api(`/api/spaces/${sp.id}`, { method: 'PATCH', body });
-        dlg.close();
-        refreshSpaces();
-      } catch (e) { toast(e.message, 'error'); b.disabled = false; }
-    }
-    if (b.dataset.act === 'delete') {
-      openDeleteSpaceModal(sp);
-    }
+  }, { once: true });
+  tabs.forEach((tab, i) => tab.render(panels[i], ctx));
+
+  const select = (index) => {
+    buttons.forEach((button, i) => {
+      const selected = i === index;
+      button.classList.toggle('active', selected);
+      button.setAttribute('aria-selected', String(selected));
+      button.tabIndex = selected ? 0 : -1;
+      panels[i].hidden = !selected;
+    });
+    store('rt:spaceTab', tabs[index].id);
+  };
+  buttons.forEach((button, i) => {
+    button.addEventListener('click', () => select(i));
+    button.addEventListener('keydown', (ev) => {
+      const last = buttons.length - 1;
+      const next = { ArrowLeft: i ? i - 1 : last, ArrowRight: i === last ? 0 : i + 1, Home: 0, End: last }[ev.key];
+      if (next === undefined) return;
+      ev.preventDefault();
+      select(next);
+      buttons[next].focus();
+    });
+  });
+
+  for (const button of $$('.modal-head [data-act=close], .modal-foot [data-act=close]', dlg)) {
+    button.addEventListener('click', () => dlg.close());
+  }
+  $('.modal-foot [data-act=delete]', dlg).addEventListener('click', () => openDeleteSpaceModal(sp));
+  const save = $('.modal-foot [data-act=save]', dlg);
+  save.addEventListener('click', async () => {
+    save.disabled = true;
+    try {
+      const body = {};
+      for (const collect of collectors) collect(body);
+      await api(`/api/spaces/${sp.id}`, { method: 'PATCH', body });
+      dlg.close();
+      refreshSpaces();
+    } catch (e) { toast(e.message, 'error'); save.disabled = false; }
   });
 }
 

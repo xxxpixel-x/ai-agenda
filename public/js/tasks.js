@@ -1,16 +1,17 @@
-// 任务空间：顶部的计划条 + 对话里的目标卡片、计划卡片、协调者的判断卡片、总结卡片，右侧的子任务详情
+// 任务空间：右侧栏的「计划」面板（子任务、依赖、状态、子任务详情）+ 对话里的目标卡片、计划卡片、协调者的判断卡片、总结卡片
 import { activitiesHtml, memberOf, messageHtml, renderComposer, renderHeader, renderMembersBar, updateMessage } from './chat.js';
-import { loadFiles, loadHistory, renderFilesBody, renderFilesPanel } from './files.js';
+import { enterPanel, loadFiles, loadHistory, renderFilesBody, showView } from './files.js';
 import { showModal } from './engines.js';
 import { checkNoteLength, removeNotes, renderNoteDiff, taskNoteList, taskNotes } from './notes.js';
 import { formatNotes } from './notes-format.js';
-import { $, $$, ICON, api, clock, errHtml, esc, getLanguage, load, md, state, store, toast, tr } from './util.js';
+import { currentPanel, setPanelBadge, showPanel } from './rightbar.js';
+import { register } from './slots.js';
+import { $, $$, ICON, api, clock, errHtml, esc, getLanguage, mascot, md, state, toast, tr } from './util.js';
 
 const RUN_STATUS = { planning: tr('规划中'), plan_review: tr('等你确认计划'), executing: tr('执行中'), summarizing: tr('协调者在写总结'), done: tr('做完了'), failed: tr('没有完成规划'), cancelled: tr('已取消') };
 const T_STATUS = { pending: tr('等前置任务'), ready: tr('排队中'), running: tr('进行中'), review: tr('待你审查'), approved: tr('已通过'), failed: tr('失败'), blocked: tr('等你回答'), skipped: tr('已跳过'), cancelled: tr('已取消') };
 const WHAT = { title: tr('标题'), spec: tr('说明'), assignee: tr('负责人'), deps: tr('依赖') };
 let planDraft = null;
-let stripOpen = load('rt:stripOpen') ?? true;
 
 const memberName = (id) => memberOf(id)?.name || tr('（已移除）');
 const memberColor = (id) => memberOf(id)?.color || 'var(--muted)';
@@ -27,24 +28,45 @@ export function coordinatorText(text, streaming) {
   return t.trim();
 }
 
-// ================= 顶部计划条 =================
+// ================= 右侧栏的「计划」面板 =================
 export function renderTaskSpace() {
   const sp = state.space;
-  const strip = $('#taskStrip');
-  if (!sp || sp.kind !== 'task') { strip.hidden = true; return; }
-  strip.hidden = false;
-  renderStrip();
+  if (!sp || sp.kind !== 'task') return;
+  refreshPlan();
   renderIntro(true);
 }
 
-function renderStrip() {
+const runState = (r) => (r.closed ? tr('已结束') : r.hold ? tr('改过的计划等你确认') : r.paused && r.status === 'executing' ? tr('已暂停') : RUN_STATUS[r.status] || r.status);
+const runNeedsYou = (r) => !!r && !r.closed && (r.status === 'plan_review' || !!r.hold || r.tasks.some((t) => !t.removed && ['review', 'blocked', 'failed'].includes(t.status)));
+/** 顶栏标题下面的一行：任务进行到哪了（点它打开计划面板）。 */
+export function taskStatusText() {
+  const r = state.space?.kind === 'task' ? state.space.run : null;
+  if (!r) return '';
+  const live = r.tasks.filter((t) => !t.removed);
+  const ok = live.filter((t) => t.status === 'approved').length;
+  return live.length && !['planning', 'plan_review'].includes(r.status) ? `${runState(r)} · ${tr('{0}/{1} 通过', [ok, live.length])}` : runState(r);
+}
+/** 计划有变化：标签上的提醒点跟着变；正在看计划列表就重画。 */
+function refreshPlan() {
+  setPanelBadge('plan', runNeedsYou(state.space?.run) ? 'dot' : null);
+  if (currentPanel() === 'plan' && !state.files.view) renderFilesBody();
+}
+
+function renderPlanPane(body) {
+  enterPanel('plan');
+  const v = state.files.view;
+  if (v?.type === 'task') return renderTaskDetail(body, v);
+  if (v?.type === 'taskdiff') return renderTaskDiff(body, v);
+  body.innerHTML = planListHtml();
+}
+register('panels', { id: 'plan', label: tr('计划'), icon: ICON.task, order: 30, when: (ctx) => ctx.space?.kind === 'task', render: renderPlanPane });
+
+function planListHtml() {
   const r = state.space.run;
-  const strip = $('#taskStrip');
-  if (!r) { strip.innerHTML = `<div class="ts-head"><span class="ts-state">${tr('准备中…')}</span></div>`; return; }
+  if (!r) return `<div class="plan-head"><span class="ts-state">${tr('准备中…')}</span></div>`;
   const live = r.tasks.filter((t) => !t.removed);
   const ok = live.filter((t) => t.status === 'approved').length;
   const settled = live.filter((t) => ['approved', 'skipped', 'cancelled'].includes(t.status)).length;
-  const state_ = r.closed ? tr('已结束') : r.hold ? tr('改过的计划等你确认') : r.paused && r.status === 'executing' ? tr('已暂停') : RUN_STATUS[r.status] || r.status;
   const btns = [];
   if (!r.closed) {
     if (r.hold) btns.push(`<button class="btn sm primary" type="button" data-tact="confirm-plan">${tr('确认新计划')}</button>`);
@@ -52,14 +74,12 @@ function renderStrip() {
     if (r.status === 'done' && r.mode === 'git' && !r.merged && ok) btns.push(`<button class="btn sm primary" type="button" data-tact="merge">${tr('合并到 {0}', [esc(r.git?.baseBranch || tr('你的分支'))])}</button>`);
     btns.push(`<button class="btn sm" type="button" data-tact="finish">${tr('结束任务')}</button>`);
   }
-  const rows = stripOpen && live.length && !['planning', 'plan_review'].includes(r.status) ? `<div class="ts-tasks">${live.map((t) => stripRowHtml(r, t)).join('')}${r.tasks.some((t) => t.removed) ? `<div class="ts-removed hint">${tr('已从计划中去掉：{0}', [r.tasks.filter((t) => t.removed).map((t) => esc(t.id)).join('、')])}</div>` : ''}</div>` : '';
-  strip.classList.toggle('needs', !r.closed && (r.status === 'plan_review' || !!r.hold || live.some((t) => ['review', 'blocked', 'failed'].includes(t.status))));
-  strip.innerHTML = `<div class="ts-head">
-      <button class="icon-btn" type="button" data-tact="toggle-strip" title="${stripOpen ? tr('收起计划') : tr('展开计划')}" aria-expanded="${stripOpen}" ${live.length ? '' : 'disabled'}>${stripOpen ? ICON.collapse : ICON.expand}</button>
-      <span class="ts-state">${state_}${r.thinking ? `<span class="hint">${tr(' · 协调者在看你的消息')}</span>` : ''}</span>
-      ${live.length ? `<span class="ts-count">${tr('{0}/{1} 通过', [ok, live.length])}</span><span class="ts-bar"><i style="width:${Math.round((settled / live.length) * 100)}%"></i></span>` : '<span class="grow"></span>'}
-      <span class="ts-mode" title="${r.mode === 'git' ? tr('每个子任务在独立副本里进行，通过审查后合并') : tr('子任务按顺序直接修改共享文件夹')}">${r.mode === 'git' ? tr('并行 · {0}', [esc(r.git?.baseBranch || 'git')]) : tr('依次修改')}</span>
-      ${btns.join('')}
+  const rows = live.length && !['planning', 'plan_review'].includes(r.status) ? `<div class="ts-tasks">${live.map((t) => stripRowHtml(r, t)).join('')}${r.tasks.some((t) => t.removed) ? `<div class="ts-removed hint">${tr('已从计划中去掉：{0}', [r.tasks.filter((t) => t.removed).map((t) => esc(t.id)).join('、')])}</div>` : ''}</div>` : '';
+  return `<div class="plan-head ${runNeedsYou(r) ? 'needs' : ''}">
+      <div class="ph-top"><span class="ts-state">${runState(r)}</span>${live.length ? `<span class="ts-count">${tr('{0}/{1} 通过', [ok, live.length])}</span>` : ''}</div>
+      ${live.length ? `<span class="ts-bar"><i style="width:${Math.round((settled / live.length) * 100)}%"></i></span>` : ''}
+      <div class="ph-meta"><span class="ts-mode" title="${r.mode === 'git' ? tr('每个子任务在独立副本里进行，通过审查后合并') : tr('子任务按顺序直接修改共享文件夹')}">${r.mode === 'git' ? tr('并行 · {0}', [esc(r.git?.baseBranch || 'git')]) : tr('依次修改')}</span>${r.thinking ? `<span>${tr(' · 协调者在看你的消息')}</span>` : ''}</div>
+      ${btns.length ? `<div class="ph-actions">${btns.join('')}</div>` : ''}
     </div>${rows}`;
 }
 
@@ -76,8 +96,8 @@ function stripRowHtml(r, t) {
   const sel = state.files.view?.type === 'task' && state.files.view.taskId === t.id;
   return `<div class="ts-row ${sel ? 'sel' : ''}" data-task="${t.id}" style="--c:${memberColor(t.assigneeId)}" role="button" tabindex="0">
     <span class="dot ${t.status}"></span><span class="tid">${esc(t.id)}</span><span class="tt">${esc(t.title)}</span>
-    <span class="ts-sub">${esc(sub)}</span><span class="tc-who">${esc(memberName(t.assigneeId))}</span>
-    <span class="st ${t.status}">${T_STATUS[t.status] || t.status}</span>${act ? `<span class="ts-act">${act}</span>` : '<span class="ts-act"></span>'}</div>`;
+    <span class="st ${t.status}">${T_STATUS[t.status] || t.status}</span>
+    <span class="ts-line2"><span class="tc-who">${esc(memberName(t.assigneeId))}</span>${sub ? `<span class="ts-sub">${esc(sub)}</span>` : ''}${act ? `<span class="ts-act">${act}</span>` : ''}</span></div>`;
 }
 
 // ================= 对话最上面：目标、规划过程、计划 =================
@@ -121,7 +141,7 @@ const planMsgHtml = (m) => messageHtml({ ...m, kind: 'ai', id: `p-${m.id}` });
 function planningHtml(r) {
   const msgs = r.planning.messages.map(planMsgHtml).join('');
   if (r.status === 'planning' && !r.tasks.length) {
-    return `<div class="plan-msgs">${msgs}</div>${msgs ? '' : `<div class="hint plan-wait">${tr('{0} 正在规划…', [esc(memberName(r.coordinatorId))])}</div>`}`;
+    return `<div class="plan-msgs">${msgs}</div>${msgs ? '' : `<div class="hint plan-wait busy-line">${mascot('thinking')}<span>${tr('{0} 正在规划…', [esc(memberName(r.coordinatorId))])}</span></div>`}`;
   }
   const process = msgs ? `<details class="plan-msgs"><summary>${tr('规划过程（{0} 条发言）', [r.planning.messages.length])}</summary>${msgs}</details>` : '';
   if (!r.tasks.length) {
@@ -214,7 +234,7 @@ function scheduleTaskRender() {
   taskRaf = requestAnimationFrame(() => {
     taskRaf = 0;
     if (state.space?.kind !== 'task') return;
-    renderStrip();
+    refreshPlan();
     renderIntro();
     renderMembersBar();
     renderHeader();
@@ -230,24 +250,22 @@ export function onRunEvent(run) {
   sp.run = run;
   if (run && prev?.status !== run.status && run.status === 'plan_review' && run.planConfirm !== 'auto') toast(tr('计划拟好了，请确认'));
   scheduleTaskRender();
-  const v = state.files.view;
-  if (v?.type === 'taskdiff' && reviewAssignee(prev, v.taskId) !== reviewAssignee(run, v.taskId)) renderFilesBody();
+  const v = state.files.views.plan;
+  if (v?.type === 'taskdiff' && currentPanel() === 'plan' && reviewAssignee(prev, v.taskId) !== reviewAssignee(run, v.taskId)) renderFilesBody();
   if (v?.type === 'task' && !detailTimer) detailTimer = setTimeout(() => { detailTimer = null; refreshTaskDetail(); }, 700);
 }
 
-// ================= 子任务详情（右侧面板） =================
+// ================= 子任务详情（计划面板里） =================
 async function openTask(taskId) {
-  state.files.view = { type: 'task', taskId, detail: null };
-  if (!state.files.open) { state.files.open = true; renderHeader(); }
-  renderFilesPanel();
+  showView({ type: 'task', taskId, detail: null });
   await refreshTaskDetail();
   scheduleTaskRender();
 }
 async function refreshTaskDetail() {
-  const v = state.files.view;
+  const v = state.files.views.plan;
   if (v?.type !== 'task' || !state.space?.run) return;
   try { v.detail = await api(`/api/spaces/${state.space.id}/task/${v.taskId}`); } catch (e) { v.detail = { error: e.message }; }
-  if (state.files.view === v) keepInputs($('#filesBody'), () => renderFilesBody());
+  if (state.files.views.plan === v && currentPanel() === 'plan') keepInputs($('#filesBody'), () => renderFilesBody());
 }
 export function renderTaskDetail(body, v) {
   const t = v.detail;
@@ -373,7 +391,7 @@ function openFinishModal() {
       const res = await runAction('finish', { postBack: !!$('#fnPost', dlg)?.checked });
       dlg.close();
       toast(res.posted ? tr('任务已结束，总结发回了「{0}」', [sp.source.title]) : tr('任务已结束'));
-      if (state.files.view?.type?.startsWith('task')) { state.files.view = null; renderFilesPanel(); }
+      if (state.files.views.plan) { state.files.views.plan = null; if (currentPanel() === 'plan') renderFilesBody(); }
     } catch (err) { toast(err.message, 'error'); b.disabled = false; }
   });
 }
@@ -385,11 +403,6 @@ async function onTaskAction(b, root) {
   const sp = state.space;
   try {
     switch (act) {
-      case 'toggle-strip':
-        stripOpen = !stripOpen;
-        store('rt:stripOpen', stripOpen);
-        renderStrip();
-        return;
       case 'pe-add': {
         let n = planDraft.tasks.length + 1;
         while (planDraft.tasks.some((t) => t.id === `T${n}`)) n++;
@@ -460,19 +473,22 @@ async function onTaskAction(b, root) {
   refreshTaskDetail();
 }
 
-for (const root of ['#taskStrip', '#messages']) {
-  $(root).addEventListener('click', (e) => {
-    const b = e.target.closest('[data-tact]');
-    if (b) { e.stopPropagation(); onTaskAction(b, $(root)); return; }
-    if (e.target.closest('input, select, textarea, a, summary, details, .plan-edit')) return;
-    const row = e.target.closest('.ts-row[data-task]');
-    if (row) openTask(row.dataset.task);
-  });
-}
-$('#taskStrip').addEventListener('keydown', (e) => {
+$('#messages').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-tact]');
+  if (b) { e.stopPropagation(); onTaskAction(b, $('#messages')); }
+});
+// 计划面板：点一行打开子任务详情
+$('#filesBody').addEventListener('click', (e) => {
+  if (e.target.closest('[data-tact], input, select, textarea, a, summary, details')) return;
+  const row = e.target.closest('.ts-row[data-task]');
+  if (row) openTask(row.dataset.task);
+});
+$('#filesBody').addEventListener('keydown', (e) => {
   const row = e.target.closest('.ts-row[data-task]');
   if (row && (e.key === 'Enter' || e.key === ' ') && e.target === row) { e.preventDefault(); openTask(row.dataset.task); }
 });
+// 顶栏标题下的任务进度：点它打开计划面板
+$('#queueInfo').addEventListener('click', () => { if (state.space?.kind === 'task') showPanel('plan'); });
 $('#messages').addEventListener('input', (e) => {
   const row = e.target.closest('[data-pi]');
   if (!row || !planDraft) return;
@@ -500,5 +516,5 @@ $('#filesBody').addEventListener('click', (e) => {
   const b = e.target.closest('[data-tact]');
   if (b) { e.stopPropagation(); onTaskAction(b, $('#filesBody')); return; }
   const d = e.target.closest('[data-tdiff]');
-  if (d && state.files.view?.type === 'task') { e.stopPropagation(); openTaskDiff(state.files.view.taskId, d.dataset.tdiff); }
+  if (d && currentPanel() === 'plan' && state.files.view?.type === 'task') { e.stopPropagation(); openTaskDiff(state.files.view.taskId, d.dataset.tdiff); }
 }, true);

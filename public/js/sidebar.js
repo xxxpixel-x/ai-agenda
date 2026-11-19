@@ -1,7 +1,8 @@
 // 侧栏与主题
-import { openEnginesModal } from './engines.js';
+import { currentPage, hasPage, openPage } from './pages.js';
+import { onSlotsChange } from './slots.js';
 import { openDeleteSpaceModal, openNewSpaceModal } from './space-form.js';
-import { $, ICON, api, esc, load, relTime, state, store, toast, tr } from './util.js';
+import { $, ICON, api, avatarHtml, emptyHtml, esc, load, relTime, state, store, toast, tr } from './util.js';
 
 // ---------------- 侧栏 ----------------
 export async function refreshSpaces() {
@@ -22,16 +23,19 @@ const plain = (s) => String(s)
   .trim();
 export function renderSpaceList() {
   const list = $('#spaceList');
-  if (!state.spaces.length) { list.innerHTML = `<div class="empty-list">${tr('还没有空间')}</div>`; return; }
+  if (!state.spaces.length) { list.innerHTML = emptyHtml(tr('还没有空间'), 'empty-list'); return; }
   // 右上角：需要你的事优先（等你确认 > 任务等你），否则显示最后一条消息的时间
   const side = (s) => (s.waiting ? `<b class="tag">${tr('等你确认')}</b>`
     : s.needsYou ? `<b class="tag">${tr('等你处理')}</b>`
       : `<span class="when">${relTime(s.lastAt || s.updatedAt)}</span>`);
   // 图标区分两类空间；正在干活的空间图标旁有一个小点，结束了的任务空间变淡
   const kindTitle = (s) => (s.kind === 'task' ? (s.finished ? tr('任务空间（已结束）') : tr('任务空间')) : s.readOnly ? tr('聊天空间（文件暂时只读）') : tr('聊天空间'));
+  // 单人聊天（只有一个成员的聊天空间）显示这个 AI 的头像
+  const solo = (s) => (s.kind !== 'task' && s.members?.length === 1 && s.members[0].engine ? s.members[0] : null);
+  const icon = (s) => { const m = solo(s); return m ? avatarHtml(m.engine, m.name) : ICON[s.kind === 'task' ? 'task' : 'chat']; };
   list.innerHTML = state.spaces.map((s) => `
     <a class="space-item ${s.id === state.space?.id ? 'active' : ''} ${s.finished ? 'finished' : ''}" href="#/space/${s.id}" data-space-id="${s.id}">
-      <span class="si-icon ${s.running ? 'live' : ''}" title="${kindTitle(s)}">${ICON[s.kind === 'task' ? 'task' : 'chat']}</span>
+      <span class="si-icon ${s.running ? 'live' : ''}" title="${solo(s) ? esc(solo(s).name) : kindTitle(s)}">${icon(s)}</span>
       <span class="si-body">
         <span class="t"><span class="title">${esc(s.title)}</span>${side(s)}</span>
         <span class="p">${s.finished ? tr('已结束 · ') : ''}${s.preview ? esc(plain(s.preview)) : tr('还没有消息')}</span>
@@ -81,9 +85,17 @@ $('#spaceMenu').addEventListener('click', async (e) => {
   } catch (err) { toast(err.message, 'error'); }
 });
 $('#newSpaceBtn').addEventListener('click', () => openNewSpaceModal());
-$('#enginesBtn').addEventListener('click', openEnginesModal);
 
-// ---------------- 主题：跟随系统 → 浅色 → 深色 ----------------
+// 左下角：设置、资源库（资源库一个分类都没有时不显示）
+export function renderSideFoot() {
+  $('#libraryBtn').hidden = !hasPage('library');
+  const page = currentPage();
+  $('#settingsBtn').classList.toggle('active', page === 'settings');
+  $('#libraryBtn').classList.toggle('active', page === 'library');
+}
+onSlotsChange(renderSideFoot);
+
+// ---------------- 主题：跟随系统 / 浅色 / 深色（在设置的「通用」里选） ----------------
 const THEMES = { system: tr('跟随系统'), light: tr('浅色'), dark: tr('深色') };
 export let theme = 'system';
 export function applyTheme(t) {
@@ -95,20 +107,12 @@ export function applyTheme(t) {
     else document.documentElement.dataset.theme = theme;
     store('rt:theme', theme);
   }
-  const b = $('#themeBtn');
-  b.innerHTML = ICON[theme];
-  b.title = tr('主题：{0}', [THEMES[theme]]);
-  b.setAttribute('aria-label', b.title);
 }
-$('#themeBtn').addEventListener('click', () => {
-  const order = Object.keys(THEMES);
-  applyTheme(order[(order.indexOf(theme) + 1) % order.length]);
-});
 for (const el of document.querySelectorAll('[data-icon]')) el.innerHTML = ICON[el.dataset.icon] || '';
 $('#welcomeView').addEventListener('click', (e) => {
   const b = e.target.closest('[data-act=new]');
   if (b) openNewSpaceModal({ kind: b.dataset.kind });
-  else if (e.target.closest('.engine-card')) openEnginesModal();
+  else if (e.target.closest('.engine-card')) openPage('settings', 'connections');
 });
 // 折叠侧栏：按钮或 Ctrl/⌘+B，记住上次的状态
 const sideKey = `${/Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl'}+B`;

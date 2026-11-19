@@ -1,8 +1,8 @@
 // 导入外部 AI 对话
 import { activitiesHtml, findMsg, input, memberOf, renderHeader, updateMessage } from './chat.js';
 import { refreshEngines, showModal } from './engines.js';
-import { openFile, renderFilesBody, renderFilesPanel } from './files.js';
-import { $, $$, ICON, api, authorName, clock, diffHtml, engineOf, esc, getLanguage, md, relTime, state, store, toast, tr } from './util.js';
+import { openFile, renderFilesBody, showView } from './files.js';
+import { $, $$, ICON, api, authorName, clock, diffHtml, engineOf, esc, getLanguage, mascot, md, relTime, state, store, toast, tr } from './util.js';
 
 // ---------------- 导入外部 AI 对话 ----------------
 const MODE_LABEL = { full: tr('全部原文'), from: tr('从某一条开始'), summary: tr('早期压成摘要'), handoff: tr('写交接文档'), topic: tr('按主题') };
@@ -199,7 +199,7 @@ export function importHtml(m, prefix = 'm') {
   const topic = m.mode === 'topic';
   const pend = m.briefPending;
   const foot = [
-    m.status === 'writing' ? `<span class="typing"><i></i><i></i><i></i>${tr('&nbsp;正在整理')}</span>` : '',
+    m.status === 'writing' ? `<span class="busy-line">${mascot('thinking', 18)}<span>${tr('正在整理')}</span></span>` : '',
     pend ? `<span class="imp-pend">${briefChange(pend)}</span>
       <button type="button" class="btn sm" data-imp="diff" data-id="${m.id}">${tr('看对比')}</button>
       <button type="button" class="btn sm primary" data-imp="accept" data-id="${m.id}">${tr('采用')}</button>
@@ -279,9 +279,7 @@ export async function briefAction(id, action) {
 }
 
 function openBriefDiff(id) {
-  state.files.view = { type: 'briefdiff', id };
-  if (!state.files.open) { state.files.open = true; store('rt:filesOpen', true); renderHeader(); }
-  renderFilesPanel();
+  showView({ type: 'briefdiff', id });
 }
 
 /** 简报上待确认的修改：确认过的版本 → 文件现在的内容。 */
@@ -297,11 +295,6 @@ export function renderBriefDiff(body, v) {
 }
 
 function openSharedFile(p) {
-  state.files.open = true;
-  store('rt:filesOpen', true);
-  state.files.tab = 'files';
-  renderFilesPanel();
-  renderHeader();
   openFile(p);
 }
 
