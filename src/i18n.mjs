@@ -437,7 +437,7 @@ If you have no questions, use the usual plan format and record any choices you a
   '{0}：按默认处理（{1}）': '{0}: Used the default ({1})',
   '{0}：按默认处理': '{0}: Used the default',
   '现在没有在等你回答问题': 'No questions are awaiting your answer',
-  '协调者有几个问题等你回答': 'The coordinator has a few questions for you',
+  '协调者有几个问题想先问你': 'The coordinator has a few questions before planning',
   '含糊': 'vague',
   '方案写给谁看？': 'Who will read the proposal?',
   '团队成员': 'Team members',

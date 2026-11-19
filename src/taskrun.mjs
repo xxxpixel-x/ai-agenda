@@ -277,7 +277,8 @@ export class TaskRun extends EventEmitter {
       d.tasks = tasks.map((t) => this.blankTask(t));
       const defaults = (d.clarify?.resolvedAt != null ? d.clarify.questions : [])
         .filter((q) => !Object.hasOwn(d.clarify.answers, q.id))
-        .map((q) => q.default ? tr('{0}：按默认处理（{1}）', [q.text, q.default]) : tr('{0}：按默认处理', [q.text]));
+        .map((q) => [q.text.replace(/[?？:：\s]+$/, ''), q.default])
+        .map(([q, def]) => (def ? tr('{0}：按默认处理（{1}）', [q, def]) : tr('{0}：按默认处理', [q])));
       // 默认条目始终排在前面；重新规划时只沿用后面的协调者假设。
       if (!assumptions.length && d.assumptions) assumptions = d.assumptions.slice(defaults.length);
       d.assumptions = [...defaults, ...assumptions];

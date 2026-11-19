@@ -661,10 +661,30 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .gc-body[open] summary { display: none; }
 .plan-wait { padding-left: 4px; }
 .plan-card { border: 1px solid var(--border); border-radius: 12px; background: var(--panel); padding: 12px 16px; }
-.plan-card.done { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 8px 16px; background: transparent; }
+.plan-card.done { display: flex; flex-direction: column; gap: var(--sp-2); font-size: 13px; padding: 8px 16px; background: transparent; }
+.pc-line { display: flex; align-items: center; gap: var(--sp-2); }
 .pc-check { color: var(--ok); display: inline-flex; }
 .pc-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px; }
 .pc-foot { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+/* 规划前澄清：协调者的问题（等你处理，用粉色细边）；问完后的问答记录 */
+.plan-card.clarify { display: flex; flex-direction: column; gap: var(--sp-3); padding: var(--sp-4); border-color: color-mix(in srgb, var(--signal-dot) 45%, var(--border)); }
+.plan-card.clarify .pc-foot { margin-top: var(--sp-1); }
+#taskIntro .msg:has(+ .clarify) { margin-bottom: 0; }
+.cq { display: flex; flex-direction: column; gap: var(--sp-2); }
+.cq-q { font-size: var(--fs-md); color: var(--text); }
+.cq-timer { font-variant-numeric: tabular-nums; }
+.cq-done { list-style: none; margin: 0 0 var(--sp-3) 40px; padding: 0; display: flex; flex-direction: column; gap: var(--sp-1); font-size: var(--fs-sm); }
+.cq-done li { display: flex; gap: var(--sp-3); flex-wrap: wrap; }
+.cq-done .cq-q { font-size: inherit; color: var(--muted); }
+.cq-done .def { color: var(--text-2); }
+/* 计划开头的假设：按默认处理的几条换成奶黄色的点 */
+.assume { list-style: none; margin: 0 0 var(--sp-3); padding: 0; display: flex; flex-direction: column; gap: var(--sp-1); font-size: var(--fs-sm); color: var(--text-2); }
+.plan-card.done .assume { margin: 0 0 0 22px; }
+.assume li { display: flex; gap: var(--sp-2); align-items: baseline; }
+.assume li::before { content: ""; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--border-strong); transform: translateY(-2px); }
+.assume li.def { color: var(--text); }
+.assume li.def::before { background: var(--butter); }
+.ph-assume { padding: var(--sp-3) var(--sp-4) 0; border-bottom: 1px solid var(--border); }
 .plan-msgs { margin: 0; }
 .plan-msgs .msg { max-width: none; }
 

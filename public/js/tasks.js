@@ -8,7 +8,7 @@ import { currentPanel, setPanelBadge, showPanel } from './rightbar.js';
 import { register } from './slots.js';
 import { $, $$, ICON, api, clock, errHtml, esc, getLanguage, mascot, md, state, toast, tr } from './util.js';
 
-const RUN_STATUS = { planning: tr('规划中'), plan_review: tr('等你确认计划'), executing: tr('执行中'), summarizing: tr('协调者在写总结'), done: tr('做完了'), failed: tr('没有完成规划'), cancelled: tr('已取消') };
+const RUN_STATUS = { planning: tr('规划中'), clarifying: tr('等你回答问题'), plan_review: tr('等你确认计划'), executing: tr('执行中'), summarizing: tr('协调者在写总结'), done: tr('做完了'), failed: tr('没有完成规划'), cancelled: tr('已取消') };
 const T_STATUS = { pending: tr('等前置任务'), ready: tr('排队中'), running: tr('进行中'), review: tr('待你审查'), approved: tr('已通过'), failed: tr('失败'), blocked: tr('等你回答'), skipped: tr('已跳过'), cancelled: tr('已取消') };
 const WHAT = { title: tr('标题'), spec: tr('说明'), assignee: tr('负责人'), deps: tr('依赖') };
 let planDraft = null;
@@ -37,7 +37,7 @@ export function renderTaskSpace() {
 }
 
 const runState = (r) => (r.closed ? tr('已结束') : r.hold ? tr('改过的计划等你确认') : r.paused && r.status === 'executing' ? tr('已暂停') : RUN_STATUS[r.status] || r.status);
-const runNeedsYou = (r) => !!r && !r.closed && (r.status === 'plan_review' || !!r.hold || r.tasks.some((t) => !t.removed && ['review', 'blocked', 'failed'].includes(t.status)));
+const runNeedsYou = (r) => !!r && !r.closed && (r.status === 'clarifying' || r.status === 'plan_review' || !!r.hold || r.tasks.some((t) => !t.removed && ['review', 'blocked', 'failed'].includes(t.status)));
 /** 顶栏标题下面的一行：任务进行到哪了（点它打开计划面板）。 */
 export function taskStatusText() {
   const r = state.space?.kind === 'task' ? state.space.run : null;
@@ -75,12 +75,13 @@ function planListHtml() {
     btns.push(`<button class="btn sm" type="button" data-tact="finish">${tr('结束任务')}</button>`);
   }
   const rows = live.length && !['planning', 'plan_review'].includes(r.status) ? `<div class="ts-tasks">${live.map((t) => stripRowHtml(r, t)).join('')}${r.tasks.some((t) => t.removed) ? `<div class="ts-removed hint">${tr('已从计划中去掉：{0}', [r.tasks.filter((t) => t.removed).map((t) => esc(t.id)).join('、')])}</div>` : ''}</div>` : '';
+  const assume = assumptionsHtml(r);
   return `<div class="plan-head ${runNeedsYou(r) ? 'needs' : ''}">
       <div class="ph-top"><span class="ts-state">${runState(r)}</span>${live.length ? `<span class="ts-count">${tr('{0}/{1} 通过', [ok, live.length])}</span>` : ''}</div>
       ${live.length ? `<span class="ts-bar"><i style="width:${Math.round((settled / live.length) * 100)}%"></i></span>` : ''}
       <div class="ph-meta"><span class="ts-mode" title="${r.mode === 'git' ? tr('每个子任务在独立副本里进行，通过审查后合并') : tr('子任务按顺序直接修改共享文件夹')}">${r.mode === 'git' ? tr('并行 · {0}', [esc(r.git?.baseBranch || 'git')]) : tr('依次修改')}</span>${r.thinking ? `<span>${tr(' · 协调者在看你的消息')}</span>` : ''}</div>
       ${btns.length ? `<div class="ph-actions">${btns.join('')}</div>` : ''}
-    </div>${rows}`;
+    </div>${assume ? `<div class="ph-assume">${assume}</div>` : ''}${rows}`;
 }
 
 function stripRowHtml(r, t) {
@@ -121,6 +122,7 @@ function renderIntro(force = false) {
   if (!force && r?.status === 'plan_review' && box.dataset.key === key && planDraft?.key === key) return;
   box.dataset.key = key;
   keepInputs(box, () => { box.innerHTML = goalHtml(sp) + (r ? planningHtml(r) : ''); });
+  tickCountdown();
 }
 
 function goalHtml(sp) {
@@ -137,9 +139,12 @@ function goalHtml(sp) {
 }
 
 const planMsgHtml = (m) => messageHtml({ ...m, kind: 'ai', id: `p-${m.id}` });
+// 协调者提问的那条：去掉给软件看的 JSON（问题本身画成卡片，问完是问答记录）
+const askMsgHtml = (m) => planMsgHtml({ ...m, text: coordinatorText(m.text, m.streaming) });
 
 function planningHtml(r) {
-  const msgs = r.planning.messages.map(planMsgHtml).join('');
+  if (r.status === 'clarifying' && !r.closed) return `${r.planning.messages[0] ? askMsgHtml(r.planning.messages[0]) : ''}${clarifyCardHtml(r)}`;
+  const msgs = r.planning.messages.map((m, i) => (i === 0 && r.clarify ? askMsgHtml(m) + answersHtml(r) : planMsgHtml(m))).join('');
   if (r.status === 'planning' && !r.tasks.length) {
     return `<div class="plan-msgs">${msgs}</div>${msgs ? '' : `<div class="hint plan-wait busy-line">${mascot('thinking')}<span>${tr('{0} 正在规划…', [esc(memberName(r.coordinatorId))])}</span></div>`}`;
   }
@@ -150,8 +155,52 @@ function planningHtml(r) {
   if (r.status === 'plan_review' && !r.closed) return process + planEditorHtml(r);
   const live = r.tasks.filter((t) => !t.removed);
   return `${process}<section class="plan-card done">
-    <span class="pc-check">${ICON.check}</span><span>${tr('计划已确认 · {0} 个子任务', [live.length])}${r.planConfirm === 'auto' ? `<span class="hint">${tr(' · 计划定好自动开始')}</span>` : ''}</span>
+    <div class="pc-line"><span class="pc-check">${ICON.check}</span><span>${tr('计划已确认 · {0} 个子任务', [live.length])}${r.planConfirm === 'auto' ? `<span class="hint">${tr(' · 计划定好自动开始')}</span>` : ''}</span></div>
+    ${assumptionsHtml(r)}
   </section>`;
+}
+
+// ================= 规划前澄清：协调者的问题、计划开头的假设 =================
+function clarifyCardHtml(r) {
+  const c = r.clarify;
+  return `<section class="plan-card clarify">
+    ${c.questions.map((q) => `<label class="cq"><span class="cq-q">${esc(q.text)}</span>
+      <input data-keep="cq-${r.id}-${esc(q.id)}" data-cq="${esc(q.id)}" placeholder="${esc(q.default)}" autocomplete="off"></label>`).join('')}
+    <div class="pc-foot">${c.deadline ? `<span class="hint cq-timer" data-deadline="${c.deadline}">${countdownText(c.deadline)}</span>` : ''}<span class="grow"></span>
+      <button class="btn" type="button" data-tact="clarify-defaults">${tr('按默认开始')}</button>
+      <button class="btn primary" type="button" data-tact="clarify-answer">${tr('开始')}</button></div>
+  </section>`;
+}
+
+/** 问过以后（规划过程里）：每个问题最后怎么定的。 */
+function answersHtml(r) {
+  const c = r.clarify;
+  if (!c?.resolvedAt) return '';
+  return `<ul class="cq-done">${c.questions.map((q) => {
+    const a = c.answers?.[q.id];
+    return `<li><span class="cq-q">${esc(q.text)}</span>${a ? `<span>${esc(a)}</span>` : `<span class="def">${esc(q.default || tr('默认'))}</span>`}</li>`;
+  }).join('')}</ul>`;
+}
+
+/** 计划开头的假设；按默认处理的几条（排在最前面）换个记号。 */
+function assumptionsHtml(r) {
+  const list = r.assumptions || [];
+  if (!list.length) return '';
+  const defaulted = r.clarify?.resolvedAt ? (r.clarify.defaulted?.length || 0) : 0;
+  return `<ul class="assume" aria-label="${tr('假设')}">${list.map((a, i) => `<li class="${i < defaulted ? 'def' : ''}">${esc(a)}</li>`).join('')}</ul>`;
+}
+
+function countdownText(deadline) {
+  const s = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+  return tr('{0} 后按默认开始', [`${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`]);
+}
+// 自动开始的倒计时：只改这一行字，不重画卡片
+let countdownTimer = 0;
+function tickCountdown() {
+  const el = $('#taskIntro .cq-timer');
+  if (!el) { clearInterval(countdownTimer); countdownTimer = 0; return; }
+  el.textContent = countdownText(+el.dataset.deadline);
+  if (!countdownTimer) countdownTimer = setInterval(tickCountdown, 1000);
 }
 
 function planEditorHtml(r) {
@@ -159,7 +208,7 @@ function planEditorHtml(r) {
   if (!planDraft || planDraft.key !== key) planDraft = { key, tasks: r.tasks.map((t) => ({ id: t.id, title: t.title, assigneeId: t.assigneeId, deps: [...t.deps], spec: t.spec })) };
   return `<section class="plan-card plan-edit">
     <div class="pc-head"><b>${tr('计划')}</b><span class="hint">${tr('可以直接改，也可以在下面和协调者说')}</span></div>
-    ${r.error ? errHtml(r.error) : ''}
+    ${r.error ? errHtml(r.error) : ''}${assumptionsHtml(r)}
     <div class="tasks" id="planTasks">${planEditorRows()}</div>
     <div class="pc-foot"><button class="btn sm ghost" type="button" data-tact="pe-add">${ICON.plus}${tr('添加子任务')}</button><span class="grow"></span>
       <button class="btn primary" type="button" data-tact="approve-plan">${tr('批准并执行')}</button></div>
@@ -249,6 +298,7 @@ export function onRunEvent(run) {
   const prev = sp.run;
   sp.run = run;
   if (run && prev?.status !== run.status && run.status === 'plan_review' && run.planConfirm !== 'auto') toast(tr('计划拟好了，请确认'));
+  if (run && prev && prev.status !== run.status && run.status === 'clarifying') toast(tr('协调者有几个问题想先问你'));
   scheduleTaskRender();
   const v = state.files.views.plan;
   if (v?.type === 'taskdiff' && currentPanel() === 'plan' && reviewAssignee(prev, v.taskId) !== reviewAssignee(run, v.taskId)) renderFilesBody();
@@ -423,6 +473,12 @@ async function onTaskAction(b, root) {
         await runAction('approve-plan', { tasks: planDraft.tasks });
         break;
       case 'finish': openFinishModal(); return;
+      case 'clarify-answer': {
+        const answers = Object.fromEntries($$('[data-cq]', root).map((el) => [el.dataset.cq, el.value.trim()]).filter(([, v]) => v));
+        b.disabled = true;
+        await runAction('clarify-answer', { answers });
+        break;
+      }
       case 'new-task': {
         const msg = sp.messages.find((m) => m.id === b.dataset.msg);
         const { openNewSpaceModal } = await import('./space-form.js');
@@ -476,6 +532,12 @@ async function onTaskAction(b, root) {
 $('#messages').addEventListener('click', (e) => {
   const b = e.target.closest('[data-tact]');
   if (b) { e.stopPropagation(); onTaskAction(b, $('#messages')); }
+});
+// 问题卡片里按回车就开始
+$('#messages').addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' || e.isComposing || !e.target.matches('[data-cq]')) return;
+  e.preventDefault();
+  $('[data-tact="clarify-answer"]', e.target.closest('.clarify'))?.click();
 });
 // 计划面板：点一行打开子任务详情
 $('#filesBody').addEventListener('click', (e) => {

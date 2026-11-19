@@ -66,3 +66,17 @@ test('approvals and task plans waiting for you send a notification', { timeout: 
   const plan = await until(() => notes.filter((n) => n.spaceId === task.id), (n) => n.length >= 1);
   assert.deepEqual(plan, [{ spaceId: task.id, title: '写方案', body: '任务计划等你确认' }]);
 });
+
+test('the coordinator asking before planning sends a notification; answering by default moves on to the plan', { timeout: 30000 }, async (t) => {
+  const { notes, api, read } = await boot(t);
+  const members = [{ id: 'member-a', engine: 'claude-code', name: 'Alice' }];
+  const task = (await api('/api/spaces', { kind: 'task', title: '含糊的方案', objective: '写一份含糊的方案', members, planConfirm: 'manual', discuss: false })).body;
+  await until(() => read(`/api/spaces/${task.id}`), (s) => s.run?.status === 'clarifying');
+  const asked = await until(() => notes.filter((n) => n.spaceId === task.id), (n) => n.length >= 1);
+  assert.deepEqual(asked, [{ spaceId: task.id, title: '含糊的方案', body: '协调者有几个问题想先问你' }]);
+  assert.equal((await api(`/api/spaces/${task.id}/run/clarify-defaults`, {})).status, 200);
+  const s = await until(() => read(`/api/spaces/${task.id}`), (x) => x.run?.status === 'plan_review');
+  assert.match(s.run.assumptions[0], /按默认处理/);
+  await until(() => notes.filter((n) => n.spaceId === task.id), (n) => n.length >= 2);
+  assert.equal(notes.filter((n) => n.spaceId === task.id)[1].body, '任务计划等你确认');
+});

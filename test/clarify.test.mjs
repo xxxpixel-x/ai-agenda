@@ -110,7 +110,7 @@ test('部分回答带进下一轮规划，默认项和用户回答也交给工�
   assert.deepEqual(d.clarify.answers, { Q1: '短信验证码' });
   assert.deepEqual(d.clarify.defaulted, ['Q2']);
   assert.equal(d.clarify.resolvedAt, time.now);
-  assert.deepEqual(d.assumptions, ['配色？：按默认处理（蓝色）', ...assumptions]);
+  assert.deepEqual(d.assumptions, ['配色：按默认处理（蓝色）', ...assumptions]);
   const second = calls.filter(isPlanner)[1];
   assert.ok(!second.system.includes(heading));
   assert.match(second.prompt, /# 规划前的澄清[\s\S]*Q1 登录方式？\n  用户的回答：<消息 [^>]+>\n短信验证码\n<\/消息>/);
@@ -128,7 +128,7 @@ test('选择全部默认，重新规划保留协调者假设且不重复默认�
   await space.runAction('clarify-defaults');
   await waitStatus(space, 'plan_review');
   assert.deepEqual(space.run.data.clarify.defaulted, ['Q1', 'Q2']);
-  const expected = ['登录方式？：按默认处理（账号密码）', '配色？：按默认处理（蓝色）', ...assumptions];
+  const expected = ['登录方式：按默认处理（账号密码）', '配色：按默认处理（蓝色）', ...assumptions];
   assert.deepEqual(space.run.data.assumptions, expected);
   items = [];
   await space.runAction('replan');
@@ -236,7 +236,7 @@ test('先商量时审阅和定稿都看到澄清，定稿可以替换草案假�
   await space.runAction('clarify-answer', { answers: [{ id: 'Q1', text: '甲'.repeat(2001) }] });
   await waitStatus(space, 'plan_review');
   assert.equal(space.run.data.clarify.answers.Q1.length, 2000);
-  assert.deepEqual(space.run.data.assumptions, ['配色？：按默认处理（蓝色）', '定稿假设']);
+  assert.deepEqual(space.run.data.assumptions, ['配色：按默认处理（蓝色）', '定稿假设']);
   assert.equal(calls.length, 4);
   assert.ok(calls.slice(1).every((o) => !o.system.includes(heading) && o.prompt.includes('# 规划前的澄清')));
 });
