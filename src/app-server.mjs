@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Store } from './store.mjs';
-import { Space } from './space.mjs';
+import { Space, KINDS, folderKey, removeSpaceFiles } from './space.mjs';
 import { createSettings } from './settings.mjs';
 import { createRegistry, CLI_ENGINE_IDS } from './engines/index.mjs';
 import { listSessions, configureImporters, stagePasted } from './importers/index.mjs';
@@ -14,6 +14,12 @@ import { sessionDetail, forkedSessionIds, importSession, checkImport, refreshImp
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PUBLIC = path.join(ROOT, 'public');
+
+function insideFolder(folder, target) {
+  // relative 按平台比较路径段；Windows 下忽略大小写，跨盘会得到绝对路径。
+  const rel = path.relative(folder, target);
+  return rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel);
+}
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -28,7 +34,7 @@ const TYPES = {
  * @param opts.port      0 表示随机端口
  * @param opts.dataDir   数据目录
  * @param opts.mock      演示模式
- * @param opts.hooks     { openPath(p), protect(s), unprotect(o), attention(), desktop: true }
+ * @param opts.hooks     { openPath(p), revealPath(p), protect(s), unprotect(o), attention(), desktop: true }
  *                       attention：有命令等你确认（桌面版让任务栏图标闪烁）
  */
 export async function startServer({ port = 3210, dataDir, mock = false, hooks = {} } = {}) {
@@ -40,28 +46,114 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
   hooks.onLanguage?.(language);
   const registry = createRegistry(settings, { mock });
   const store = new Store(path.join(dataDir, 'spaces'));
-  const deps = { registry, store, dataDir };
+  const spaces = new Map();
+  // 跨空间的事都经过这里：空间之间不直接互相引用
+  const hooks2 = {
+    /** 同一个文件夹有任务空间在“依次直接改”：聊天空间暂时只读。 */
+    folderLock(space) {
+      const k = folderKey(space.workspacePath);
+      for (const s of spaces.values()) {
+        if (s !== space && s.isTask && s.run?.locksFolder && folderKey(s.workspacePath) === k) return { spaceId: s.id, title: s.data.title };
+      }
+      return null;
+    },
+    acceptCopy(space, rel) {
+      const abs = space.ws.resolve(rel);
+      for (const other of spaces.values()) {
+        if (other === space || !insideFolder(other.workspacePath, abs)) continue;
+        const key = path.relative(other.workspacePath, abs).split(path.sep).join('/');
+        other.ws.acceptCopy(key);
+      }
+    },
+    folderInUse: (p, exceptId) => [...spaces.values()].some((s) => s.id !== exceptId && !s.deleting && folderKey(s.workspacePath) === folderKey(p)),
+    spaceTitle: (id) => { const s = spaces.get(id); return s && !s.isTask ? s.data.title : null; },
+    postToSpace: (id, msg) => !!spaces.get(id)?.receive(msg),
+  };
+  const deps = { registry, store, dataDir, hooks: hooks2 };
   configureImporters({ dataDir });
 
-  const spaces = new Map();
   // 侧栏要知道每个空间的状态（发言中、等你确认、任务等你），不只是当前打开的那个
   const hub = new EventEmitter();
   hub.setMaxListeners(100);
   let hubTimer = null;
   const LIST_EVENTS = new Set(['state', 'approval', 'run', 'message_done', 'snapshot']);
+  // 任务空间开始 / 停止“依次直接改”时，告诉用同一个文件夹的聊天空间（文件面板的锁、发言权限）
+  const locks = new Map();
+  const refreshLocks = () => {
+    for (const s of spaces.values()) {
+      if (s.isTask) continue;
+      const lock = s.readOnly;
+      const key = lock ? lock.spaceId : '';
+      if ((locks.get(s.id) || '') === key) continue;
+      locks.set(s.id, key);
+      s.emitEvent({ type: 'lock', readOnly: lock });
+    }
+  };
+  // 有 AI 在干活时不让电脑睡眠（桌面版，设置里可关）
+  let awake = false;
+  const refreshAwake = () => {
+    const on = settings.get().keepAwake && [...spaces.values()].some((s) => s.listItem().running);
+    if (on !== awake) { awake = on; hooks.keepAwake?.(on); }
+  };
+  // AI 做完或等你处理时提醒（桌面版弹系统通知，设置里可关）
+  const notify = (space, body) => {
+    if (settings.get().notify) hooks.notify?.({ spaceId: space.id, title: space.data.title || 'Agenda', body });
+  };
+  // 任务空间里需要提醒的状态：计划待确认、子任务等验收 / 在问你 / 出错、任务做完。只提醒新出现的
+  const taskAlerts = (space) => {
+    const r = space.run?.data;
+    const out = new Map();
+    if (!r || r.closed) return out;
+    if (r.status === 'plan_review' && r.planConfirm !== 'auto') out.set('plan', tr('任务计划等你确认'));
+    if (r.status === 'done') out.set('done', tr('任务做完了，总结已写好'));
+    if (r.status === 'failed') out.set('failed', tr('任务出错停下了'));
+    const say = { blocked: '子任务「{0}」在问你', failed: '子任务「{0}」出错了', ...(r.autoApprove ? {} : { review: '子任务「{0}」等你验收' }) };
+    for (const t of r.tasks) if (say[t.status] && !t.removed) out.set(`${t.id}:${t.status}`, tr(say[t.status], [t.title]));
+    return out;
+  };
+  const seenAlerts = new Map(); // spaceId -> 上次的提醒状态
   const addSpace = (space) => {
     spaces.set(space.id, space);
+    if (space.isTask) seenAlerts.set(space.id, new Set(taskAlerts(space).keys()));
     space.on('event', (ev) => {
-      if (ev.type === 'approval' && ev.approval.status === 'pending') hooks.attention?.();
+      if (ev.type === 'approval' && ev.approval.status === 'pending') {
+        hooks.attention?.();
+        const who = space.data.messages.find((m) => m.id === ev.id)?.name;
+        notify(space, tr('{0} 想运行命令，等你确认', [who || 'AI']));
+      }
+      if (ev.type === 'round_end' && !space.isTask && !ev.stopped) {
+        notify(space, ev.failed ? tr('{0} 出错了，讨论已停下', [ev.failed]) : tr('讨论告一段落，轮到你了'));
+      }
+      if (space.isTask && ev.type === 'run') {
+        const now = taskAlerts(space);
+        const seen = seenAlerts.get(space.id) || new Set();
+        const fresh = [...now].find(([k]) => !seen.has(k));
+        seenAlerts.set(space.id, new Set(now.keys()));
+        if (fresh) notify(space, fresh[1]);
+      }
+      if (space.isTask && (ev.type === 'run' || ev.type === 'snapshot')) refreshLocks();
       if (!LIST_EVENTS.has(ev.type)) return;
       clearTimeout(hubTimer);
-      hubTimer = setTimeout(() => hub.emit('spaces'), 300);
+      hubTimer = setTimeout(() => { hub.emit('spaces'); refreshAwake(); }, 300);
     });
     return space;
   };
+  // 升级：以前的空间里既有聊天也有任务协作，不再兼容，全部删掉（软件建的共享文件夹一起删，你自己选的文件夹不动）
+  let removedLegacy = 0;
+  const legacy = [];
   for (const data of store.loadAll()) {
+    if (!KINDS.includes(data.kind)) { legacy.push(data); continue; }
     try { addSpace(new Space(data, deps)); } catch (e) { console.warn(tr('跳过无法打开的空间：'), e.message); }
   }
+  for (const data of legacy) {
+    try {
+      await removeSpaceFiles(data, path.join(dataDir, 'spaces', data.id));
+      store.remove(data.id);
+      removedLegacy++;
+    } catch (e) { console.warn(tr('删除旧空间失败：{0}', [e.message])); }
+  }
+  // 建好但还没开始规划就关了软件的任务空间：接着开始
+  for (const s of spaces.values()) if (s.isTask && !s.run && s.data.pendingTask) s.startTask().catch((e) => console.warn(e.message));
 
   let actualPort = port;
 
@@ -74,8 +166,13 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
     let size = 0;
     const chunks = [];
     req.on('data', (c) => {
+      if (size > max) return;
       size += c.length;
-      if (size > max) { reject(Object.assign(new Error(tr('请求体太大')), { status: 413 })); req.destroy(); return; }
+      if (size > max) {
+        chunks.length = 0;
+        reject(Object.assign(new Error(tr('请求体太大')), { status: 413 }));
+        return;
+      }
       chunks.push(c);
     });
     req.on('end', () => {
@@ -150,7 +247,7 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
     if (p === '/api/app' && method === 'GET') {
       browserLocales = String(req.headers['x-agenda-languages'] || req.headers['accept-language'] || '')
         .split(',').map((s) => s.split(';')[0].trim()).filter(Boolean);
-      return sendJson(res, 200, { mock, desktop: !!hooks.desktop, dataDir, language: settings.get().language, locales: locales(), resolvedLanguage: language() });
+      return sendJson(res, 200, { mock, desktop: !!hooks.desktop, platform: process.platform, dataDir, language: settings.get().language, locales: locales(), resolvedLanguage: language(), removedLegacy });
     }
     if (p === '/api/engines' && method === 'GET') {
       return sendJson(res, 200, await registry.detectAll({ refresh: url.searchParams.get('refresh') === '1' }));
@@ -159,14 +256,22 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
     if (p === '/api/settings' && method === 'PUT') {
       const view = settings.update(await readJson(req));
       registry.invalidate();
+      refreshAwake();
       return sendJson(res, 200, view);
     }
-    if (p === '/api/open-path' && method === 'POST') {
+    if ((p === '/api/open-path' || p === '/api/reveal-path') && method === 'POST') {
       const { path: target } = await readJson(req);
-      if (!hooks.openPath) return sendJson(res, 400, { error: tr('当前环境不能打开文件夹') });
-      const known = [...spaces.values()].some((s) => path.resolve(target || '') === s.workspacePath);
-      if (!known) return sendJson(res, 403, { error: tr('只能打开空间的共享文件夹') });
-      await hooks.openPath(target);
+      const action = p === '/api/open-path' ? hooks.openPath : hooks.revealPath;
+      if (!action) return sendJson(res, 400, { error: tr('当前环境不能打开文件夹') });
+      const file = typeof target === 'string' && target && path.resolve(target);
+      const roots = [...spaces.values()].map((s) => s.workspacePath).filter((root) => file && insideFolder(root, file));
+      if (!roots.length) return sendJson(res, 403, { error: tr('只能打开空间的共享文件夹') });
+      if (!fs.existsSync(file)) return sendJson(res, 404, { error: tr('文件或文件夹不存在') });
+      // 再检查实际位置，避免通过符号链接或目录联接跳出共享文件夹。
+      const real = fs.realpathSync.native(file);
+      if (!roots.some((root) => insideFolder(fs.realpathSync.native(root), real))) return sendJson(res, 403, { error: tr('只能打开空间的共享文件夹') });
+      const error = await action(file);
+      if (typeof error === 'string' && error) throw new Error(error);
       return sendJson(res, 200, { ok: true });
     }
 
@@ -192,6 +297,14 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
       if (body.import?.mode === 'topic' && body.workspace?.type === 'folder') topicFolder(body.workspace.path, body.import);
       const space = Space.create(body, deps);
       addSpace(space);
+      if (space.isTask) {
+        // 任务空间建好直接进入规划；开不了（比如文件夹出问题）就不留下这个空间
+        try { await space.startTask(); } catch (e) {
+          await space.remove().catch(() => {});
+          spaces.delete(space.id);
+          throw e;
+        }
+      }
       let importError;
       if (body.import) {
         // 新建空间时从一段对话开始：对应的成员已在成员列表里，取第一个同类成员
@@ -210,10 +323,9 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
 
       if (sub === '' && method === 'GET') return sendJson(res, 200, space.toJSON());
       if (sub === '' && method === 'PATCH') { space.update(await readJson(req)); return sendJson(res, 200, space.toJSON()); }
-      if (sub === '' && method === 'DELETE') { await space.remove(); spaces.delete(space.id); return sendJson(res, 200, { ok: true }); }
-      // ---- 任务协作 ----
+      if (sub === '' && method === 'DELETE') { await space.remove(); spaces.delete(space.id); seenAlerts.delete(space.id); refreshAwake(); return sendJson(res, 200, { ok: true }); }
+      // ---- 任务 ----
       if (sub === '/taskcheck' && method === 'GET') return sendJson(res, 200, await space.taskPreflight());
-      if (sub === '/runs' && method === 'POST') return sendJson(res, 201, await space.startRun(await readJson(req)));
       if (sub === '/run' && method === 'POST' && arg) return sendJson(res, 200, await space.runAction(arg, await readJson(req)));
       if (sub === '/task' && method === 'GET' && arg) {
         if (!space.run) throw Object.assign(new Error(tr('没有进行中的任务')), { status: 404 });
@@ -234,7 +346,32 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
         return sendJson(res, 200, space.decideApproval(arg, decision, note));
       }
       if (sub === '/members' && method === 'PATCH' && arg) return sendJson(res, 200, space.updateMember(arg, await readJson(req)));
-      if (sub === '/messages' && method === 'POST') return sendJson(res, 201, space.userMessage((await readJson(req)).text));
+      if (sub === '/attachments' && !tail) {
+        if (method === 'POST' && !arg) {
+          const body = await readJson(req, 80 * 1024 * 1024);
+          return sendJson(res, 201, space.attachments.stage(body));
+        }
+        if (method === 'DELETE' && arg) {
+          space.attachments.remove(space.staged(arg));
+          return sendJson(res, 200, { ok: true });
+        }
+        if (method === 'GET' && arg) {
+          const a = space.attachments.get(arg);
+          if (a.kind !== 'image') return sendJson(res, 404, { error: tr('未找到') });
+          const bytes = fs.readFileSync(space.attachments.pathOf(a));
+          res.writeHead(200, { 'Content-Type': a.type, 'Cache-Control': 'private, max-age=31536000', 'X-Content-Type-Options': 'nosniff' });
+          return res.end(bytes);
+        }
+      }
+      if (sub === '/messages' && method === 'POST') {
+        const { text, attachments } = await readJson(req);
+        return sendJson(res, 201, await space.userMessage(text, attachments));
+      }
+      // 聊天空间 → 任务空间：让一个成员把选出的讨论提炼成任务目标
+      if (sub === '/distill' && method === 'POST') {
+        const b = await readJson(req);
+        return sendJson(res, 200, await space.distill(b.ids, b.memberId));
+      }
       if (sub === '/control' && method === 'POST') {
         const { action, memberId } = await readJson(req);
         const actions = {

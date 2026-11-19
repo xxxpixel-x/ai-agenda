@@ -7,6 +7,7 @@ import path from 'node:path';
 import { findOnPath, isFile, isWin, capture, runJsonl, brief } from './proc.mjs';
 
 export const meta = {
+  images: true,
   id: 'codex',
   label: 'Codex',
   kind: 'cli',
@@ -95,10 +96,10 @@ export function isolationArgs(home = process.env.CODEX_HOME || path.join(os.home
   return args;
 }
 
-export async function runTurn({ system, prompt, model, effort, cwd, access = 'edit', signal, onDelta, onActivity, onRaw, onApproval, binOverride }) {
+export async function runTurn({ system, prompt, images = [], model, effort, cwd, access = 'edit', signal, onDelta, onActivity, onRaw, onApproval, binOverride }) {
   const bin = await findBin(binOverride);
   if (!bin) throw new Error(tr('没有找到 Codex'));
-  if (access === 'run' && onApproval) return runAsking({ bin, input: `${system}\n\n${prompt}`, model, effort, cwd, signal, onDelta, onActivity, onRaw, onApproval });
+  if (access === 'run' && onApproval) return runAsking({ bin, images, input: `${system}\n\n${prompt}`, model, effort, cwd, signal, onDelta, onActivity, onRaw, onApproval });
 
   // Codex 的沙箱：只读档 = read-only；全部权限 = 不设沙箱；其余 = 只能写共享文件夹（它运行命令也被限制在这个沙箱里）
   const sandbox = access === 'read' ? 'read-only' : access === 'full' ? 'danger-full-access' : 'workspace-write';
@@ -106,7 +107,8 @@ export async function runTurn({ system, prompt, model, effort, cwd, access = 'ed
   if (access !== 'full') args.push(...isolationArgs());
   if (model) args.push('-m', model);
   if (effort) args.push('-c', `model_reasoning_effort="${effort}"`);
-  args.push('-');
+  // 图片由 Codex 自己读取，不需要给沙箱内的命令开放数据目录。等号避免吞掉 stdin 的「-」。
+  args.push(...images.map((i) => `--image=${i.path}`), '-');
 
   let text = '';
   let failure = null;
@@ -166,7 +168,7 @@ const rpc = (obj) => ({ jsonrpc: '2.0', ...obj });
 const refusal = (note) => tr('「我」没有同意运行刚才那条命令{0}。按这个调整做法，不要换一种写法绕过。', [note ? tr('，理由：{0}', [note]) : '']);
 const approvalNote = (note) => tr('「我」同意了刚才那条命令，并补充：{0}', [note]);
 
-async function runAsking({ bin, input, model, effort, cwd, signal, onDelta, onActivity, onRaw, onApproval }) {
+async function runAsking({ bin, images, input, model, effort, cwd, signal, onDelta, onActivity, onRaw, onApproval }) {
   let text = '';
   let failure = null;
   const warnings = [];
@@ -213,7 +215,9 @@ async function runAsking({ bin, input, model, effort, cwd, signal, onDelta, onAc
       if (m.id != null) {                                                // 我们请求的结果
         if (m.error && !String(m.id).startsWith('steer-')) { failure = m.error.message || tr('请求失败'); ctl.finish(); }
         else if (m.id === 'thread') {
-          const params = { threadId: m.result.thread.id, input: [{ type: 'text', text: input, text_elements: [] }] };
+          const params = { threadId: m.result.thread.id, input: [
+            { type: 'text', text: input, text_elements: [] }, ...images.map((i) => ({ type: 'localImage', path: i.path })),
+          ] };
           if (effort) params.effort = effort;
           ctl.send(rpc({ id: 'turn', method: 'turn/start', params }));
         }

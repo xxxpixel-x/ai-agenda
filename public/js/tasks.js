@@ -1,99 +1,86 @@
-// 任务协作
-import { activitiesHtml, input, memberOf, messageHtml, pending, renderHeader } from './chat.js';
+// 任务空间：顶部的计划条 + 对话里的目标卡片、计划卡片、协调者的判断卡片、总结卡片，右侧的子任务详情
+import { activitiesHtml, memberOf, messageHtml, renderComposer, renderHeader, renderMembersBar, updateMessage } from './chat.js';
 import { loadFiles, loadHistory, renderFilesBody, renderFilesPanel } from './files.js';
-import { $, $$, ICON, api, diffHtml, esc, getLanguage, md, state, toast, tr } from './util.js';
+import { showModal } from './engines.js';
+import { checkNoteLength, removeNotes, renderNoteDiff, taskNoteList, taskNotes } from './notes.js';
+import { formatNotes } from './notes-format.js';
+import { $, $$, ICON, api, clock, errHtml, esc, getLanguage, load, md, state, store, toast, tr } from './util.js';
 
-// ================= 任务协作 =================
-const RUN_STATUS = { planning: tr('规划中'), plan_review: tr('等你确认计划'), executing: tr('执行中'), summarizing: tr('协调者在写总结'), done: tr('已完成'), failed: tr('没有完成规划'), cancelled: tr('已取消') };
+const RUN_STATUS = { planning: tr('规划中'), plan_review: tr('等你确认计划'), executing: tr('执行中'), summarizing: tr('协调者在写总结'), done: tr('做完了'), failed: tr('没有完成规划'), cancelled: tr('已取消') };
 const T_STATUS = { pending: tr('等前置任务'), ready: tr('排队中'), running: tr('进行中'), review: tr('待你审查'), approved: tr('已通过'), failed: tr('失败'), blocked: tr('等你回答'), skipped: tr('已跳过'), cancelled: tr('已取消') };
-const CHAT_PLACEHOLDER = tr('说点什么，@名字 点名');
-state.view = 'chat';
+const WHAT = { title: tr('标题'), spec: tr('说明'), assignee: tr('负责人'), deps: tr('依赖') };
 let planDraft = null;
-const taskChecks = new Map();
+let stripOpen = load('rt:stripOpen') ?? true;
 
-const runBlocksChat = (r) => !!r && (r.status === 'planning' || r.status === 'summarizing' || (r.status === 'executing' && r.mode === 'direct'));
-const needsUser = (r) => r.status === 'plan_review' || r.paused || r.tasks.some((t) => ['review', 'blocked', 'failed'].includes(t.status)) || (r.status === 'done' && r.mode === 'git' && !r.merged && r.tasks.some((t) => t.status === 'approved'));
 const memberName = (id) => memberOf(id)?.name || tr('（已移除）');
-const memberColor = (id) => memberOf(id)?.color || '#888';
+const memberColor = (id) => memberOf(id)?.color || 'var(--muted)';
 const mins = (ms) => (ms < 60000 ? tr('{0} 秒', [Math.round(ms / 1000)]) : tr('{0} 分钟', [(ms / 60000).toFixed(1)]));
+const firstLine = (s, n = 100) => String(s || '').split('\n').find((l) => l.trim())?.replace(/^#+\s*/, '').slice(0, n) || '';
+const runAction = (action, body = {}) => api(`/api/spaces/${state.space.id}/run/${action}`, { method: 'POST', body });
 
-export function applyView() {
-  const task = state.view === 'task';
-  $('#messages').hidden = task;
-  $('#taskView').hidden = !task;
-  $('#composer').hidden = task;
-  $$('#viewSeg button').forEach((b) => b.classList.toggle('active', b.dataset.view === state.view));
-  if (task) renderTaskView(true);
-  updateTaskDot();
-  renderTaskBar();
-  updateComposerLock();
+/** 协调者的回复去掉最后给软件看的 JSON（写到一半时也先藏起来）。 */
+export function coordinatorText(text, streaming) {
+  let t = String(text || '');
+  const i = t.search(/```(?:json)?\s*\n?\s*\{/);
+  if (i >= 0) t = t.slice(0, i);
+  else if (streaming) t = t.replace(/`{1,3}[a-z]*\s*$/i, '');
+  return t.trim();
 }
-function updateTaskDot() {
-  const r = state.space?.run;
-  const dot = $('#taskDot');
-  dot.hidden = !r;
-  if (r) dot.className = `seg-dot ${needsUser(r) ? 'wait' : ''}`;
-}
-// 聊天输入框上方：任务协作在等你的事（只说第一件，其余算个数），点一下去处理
-function renderTaskBar() {
-  const r = state.space?.run;
-  const bar = $('#taskBar');
-  const items = [];
-  if (r && needsUser(r)) {
-    if (r.status === 'plan_review') items.push([tr('等你确认计划')]);
-    for (const t of r.tasks) {
-      if (t.status === 'blocked') items.push([tr('{0} 在问你「{1}」的事', [memberName(t.assigneeId), t.title]), t.id]);
-      else if (t.status === 'review') items.push([tr('等你审查「{0}」', [t.title]), t.id]);
-      else if (t.status === 'failed') items.push([tr('「{0}」失败了，等你处理', [t.title]), t.id]);
-    }
-    if (!items.length) items.push([r.paused ? tr('任务已暂停，等你继续') : tr('任务做完了，等你合并')]);
-  }
-  bar.hidden = !items.length;
-  if (!items.length) return;
-  const [text, taskId] = items[0];
-  bar.innerHTML = `<span class="tb-dot"></span><span class="tb-text">${tr('任务协作：{0}{1}', [esc(text), items.length > 1 ? `<span class="hint">${tr('（还有 {0} 件）', [items.length - 1])}</span>` : ''])}</span>
-    <button class="btn sm" type="button" data-task="${esc(taskId || '')}">${tr('去处理')}</button>`;
-}
-$('#taskBar').addEventListener('click', (e) => {
-  const b = e.target.closest('button');
-  if (!b) return;
-  state.view = 'task';
-  applyView();
-  const card = b.dataset.task && $(`#taskView .tcard[data-task="${CSS.escape(b.dataset.task)}"]`);
-  if (card) { card.scrollIntoView({ block: 'center' }); card.classList.add('flash'); setTimeout(() => card.classList.remove('flash'), 1600); }
-});
-function updateComposerLock() {
-  const lock = runBlocksChat(state.space?.run);
-  $('#composer').classList.toggle('locked', lock);
-  input.disabled = lock;
-  $('#sendBtn').disabled = lock;
-  input.placeholder = lock ? tr('任务进行中，聊天暂停') : CHAT_PLACEHOLDER;
-}
-$('#viewSeg').addEventListener('click', (e) => {
-  const b = e.target.closest('[data-view]');
-  if (b) { state.view = b.dataset.view; applyView(); }
-});
 
-let taskRaf = 0;
-function scheduleTaskRender() {
-  if (taskRaf) return;
-  taskRaf = requestAnimationFrame(() => { taskRaf = 0; if (state.view === 'task') renderTaskView(); updateTaskDot(); renderTaskBar(); updateComposerLock(); });
-}
-let detailTimer = null;
-export function onRunEvent(run) {
+// ================= 顶部计划条 =================
+export function renderTaskSpace() {
   const sp = state.space;
-  if (!sp) return;
-  const prev = sp.run;
-  if (run?.closed) run = null;
-  if (run && sp.run === null && prev === null && run.status !== 'planning') return; // 迟到的旧推送
-  sp.run = run;
-  if (run?.status === 'planning') planDraft = null;
-  if (run && prev?.status !== run.status && ['plan_review', 'done'].includes(run.status) && state.view !== 'task') toast(run.status === 'plan_review' ? tr('计划拟好了，请到“任务协作”里确认') : tr('任务完成了'));
-  scheduleTaskRender();
-  const v = state.files.view;
-  if (v?.type === 'task' && !detailTimer) detailTimer = setTimeout(() => { detailTimer = null; refreshTaskDetail(); }, 700);
+  const strip = $('#taskStrip');
+  if (!sp || sp.kind !== 'task') { strip.hidden = true; return; }
+  strip.hidden = false;
+  renderStrip();
+  renderIntro(true);
 }
 
+function renderStrip() {
+  const r = state.space.run;
+  const strip = $('#taskStrip');
+  if (!r) { strip.innerHTML = `<div class="ts-head"><span class="ts-state">${tr('准备中…')}</span></div>`; return; }
+  const live = r.tasks.filter((t) => !t.removed);
+  const ok = live.filter((t) => t.status === 'approved').length;
+  const settled = live.filter((t) => ['approved', 'skipped', 'cancelled'].includes(t.status)).length;
+  const state_ = r.closed ? tr('已结束') : r.hold ? tr('改过的计划等你确认') : r.paused && r.status === 'executing' ? tr('已暂停') : RUN_STATUS[r.status] || r.status;
+  const btns = [];
+  if (!r.closed) {
+    if (r.hold) btns.push(`<button class="btn sm primary" type="button" data-tact="confirm-plan">${tr('确认新计划')}</button>`);
+    if (r.paused && r.status === 'executing') btns.push(`<button class="btn sm primary" type="button" data-tact="resume">${tr('继续执行')}</button>`);
+    if (r.status === 'done' && r.mode === 'git' && !r.merged && ok) btns.push(`<button class="btn sm primary" type="button" data-tact="merge">${tr('合并到 {0}', [esc(r.git?.baseBranch || tr('你的分支'))])}</button>`);
+    btns.push(`<button class="btn sm" type="button" data-tact="finish">${tr('结束任务')}</button>`);
+  }
+  const rows = stripOpen && live.length && !['planning', 'plan_review'].includes(r.status) ? `<div class="ts-tasks">${live.map((t) => stripRowHtml(r, t)).join('')}${r.tasks.some((t) => t.removed) ? `<div class="ts-removed hint">${tr('已从计划中去掉：{0}', [r.tasks.filter((t) => t.removed).map((t) => esc(t.id)).join('、')])}</div>` : ''}</div>` : '';
+  strip.classList.toggle('needs', !r.closed && (r.status === 'plan_review' || !!r.hold || live.some((t) => ['review', 'blocked', 'failed'].includes(t.status))));
+  strip.innerHTML = `<div class="ts-head">
+      <button class="icon-btn" type="button" data-tact="toggle-strip" title="${stripOpen ? tr('收起计划') : tr('展开计划')}" aria-expanded="${stripOpen}" ${live.length ? '' : 'disabled'}>${stripOpen ? ICON.collapse : ICON.expand}</button>
+      <span class="ts-state">${state_}${r.thinking ? `<span class="hint">${tr(' · 协调者在看你的消息')}</span>` : ''}</span>
+      ${live.length ? `<span class="ts-count">${tr('{0}/{1} 通过', [ok, live.length])}</span><span class="ts-bar"><i style="width:${Math.round((settled / live.length) * 100)}%"></i></span>` : '<span class="grow"></span>'}
+      <span class="ts-mode" title="${r.mode === 'git' ? tr('每个子任务在独立副本里进行，通过审查后合并') : tr('子任务按顺序直接修改共享文件夹')}">${r.mode === 'git' ? tr('并行 · {0}', [esc(r.git?.baseBranch || 'git')]) : tr('依次修改')}</span>
+      ${btns.join('')}
+    </div>${rows}`;
+}
+
+function stripRowHtml(r, t) {
+  const a = t.attempts.at(-1);
+  let sub = '';
+  if (t.status === 'running') sub = a?.activities?.at(-1)?.label || tr('思考中…');
+  else if (t.status === 'blocked') sub = t.question || '';
+  else if (t.status === 'failed') sub = a?.error || '';
+  else if (t.deps.length && t.status === 'pending') sub = tr('依赖 {0}', [t.deps.join('、')]);
+  const act = r.closed ? '' : t.status === 'review' ? `<button class="btn sm" type="button" data-tact="open" data-task="${t.id}">${tr('审查')}</button>`
+    : t.status === 'blocked' ? `<button class="btn sm" type="button" data-tact="open" data-task="${t.id}">${tr('回答')}</button>`
+      : t.status === 'failed' && r.status === 'executing' ? `<button class="btn sm" type="button" data-tact="retry-task" data-task="${t.id}">${tr('重试')}</button>` : '';
+  const sel = state.files.view?.type === 'task' && state.files.view.taskId === t.id;
+  return `<div class="ts-row ${sel ? 'sel' : ''}" data-task="${t.id}" style="--c:${memberColor(t.assigneeId)}" role="button" tabindex="0">
+    <span class="dot ${t.status}"></span><span class="tid">${esc(t.id)}</span><span class="tt">${esc(t.title)}</span>
+    <span class="ts-sub">${esc(sub)}</span><span class="tc-who">${esc(memberName(t.assigneeId))}</span>
+    <span class="st ${t.status}">${T_STATUS[t.status] || t.status}</span>${act ? `<span class="ts-act">${act}</span>` : '<span class="ts-act"></span>'}</div>`;
+}
+
+// ================= 对话最上面：目标、规划过程、计划 =================
 // 重新渲染时保留输入框里没提交的内容与焦点
 function keepInputs(root, render) {
   const vals = new Map($$('[data-keep]', root).map((el) => [el.dataset.keep, el.value]));
@@ -104,107 +91,59 @@ function keepInputs(root, render) {
   if (focused) { const el = $(`[data-keep="${focused}"]`, root); if (el) { el.focus(); try { el.setSelectionRange(...sel); } catch { /* select */ } } }
 }
 
-function renderTaskView(force = false) {
+function renderIntro(force = false) {
+  const box = $('#taskIntro');
   const sp = state.space;
-  const box = $('#taskContent');
-  if (!sp) return;
+  if (!box || !sp) return;
   const r = sp.run;
-  const key = r ? `${r.id}:${r.status}` : 'none';
-  // 编辑计划时不要被推送打断
-  if (!force && r?.status === 'plan_review' && box.dataset.key === key && planDraft?.runId === r.id) return;
-  if (!force && !r && box.dataset.key === key) return;
+  const key = r ? `${r.id}:${r.status}:${r.planVersion || 0}` : 'none';
+  // 正在改计划时不要被推送打断
+  if (!force && r?.status === 'plan_review' && box.dataset.key === key && planDraft?.key === key) return;
   box.dataset.key = key;
-  keepInputs(box, () => {
-    if (!r) box.innerHTML = `${startFormHtml()}${pastRunsHtml()}`;
-    else if (r.status === 'planning' || r.status === 'plan_review' || (r.status === 'failed' && !r.tasks.length)) box.innerHTML = `${runBarHtml(r)}${planningHtml(r)}`;
-    else box.innerHTML = `${runBarHtml(r)}${boardHtml(r)}${r.summary ? summaryHtml(r) : ''}`;
-  });
-  if (!r) loadTaskCheck();
+  keepInputs(box, () => { box.innerHTML = goalHtml(sp) + (r ? planningHtml(r) : ''); });
 }
 
-function startFormHtml() {
-  const sp = state.space;
-  return `<div class="card">
-    <textarea id="tkObjective" data-keep="tk-objective" rows="4" placeholder="${tr('要完成什么？例如：给这个项目加上导出 PDF 的功能')}"></textarea>
-    <div class="opts">
-      <span class="mode-tag" id="tkMode"></span>
-      <label>${tr('协调者')} <select id="tkCoord">${sp.members.map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></label>
-      ${sp.members.length > 1 ? `<label><input type="checkbox" id="tkDiscuss" checked> ${tr('先让其他成员审阅计划')}</label>` : ''}
-      <label id="tkParWrap" hidden>${tr('最多同时')} <input type="number" id="tkPar" min="1" max="6" value="3"> ${tr('个')}</label>
-      <label><input type="checkbox" id="tkAuto"> ${tr('做完自动通过')}</label>
-    </div>
-    <div class="mode-note warn" id="tkDirty" hidden></div>
-    <div style="display:flex;justify-content:flex-end"><button class="btn primary" type="button" data-tact="start">${tr('开始规划')}</button></div>
-  </div>`;
-}
-
-async function loadTaskCheck() {
-  const sp = state.space;
-  let c = taskChecks.get(sp.id);
-  if (!c || Date.now() - c.at > 15000) {
-    try { c = { at: Date.now(), v: await api(`/api/spaces/${sp.id}/taskcheck`) }; } catch (e) { c = { at: Date.now(), v: { mode: 'direct', note: e.message } }; }
-    taskChecks.set(sp.id, c);
-  }
-  const el = $('#tkMode');
-  if (!el) return;
-  const v = c.v;
-  const git = v.mode === 'git';
-  el.textContent = git ? tr('并行 · {0}', [v.branch]) : tr('依次修改');
-  el.title = git ? tr('每个子任务在独立副本里进行，通过审查后合并') : (v.note || tr('子任务按顺序直接修改共享文件夹'));
-  $('#tkParWrap').hidden = !git;
-  const dirty = $('#tkDirty');
-  dirty.hidden = !(git && v.dirty);
-  if (git && v.dirty) dirty.textContent = tr('⚠ 有 {0} 个文件改了还没提交，AI 的副本里看不到，建议先提交', [v.dirtyFiles]);
-}
-
-function pastRunsHtml() {
-  const list = state.space.pastRuns || [];
-  if (!list.length) return '';
-  return `<div class="card past"><h3>${tr('以前的任务')}</h3>${list.map((p) => `<div class="past-row">
-    <span class="po">${esc(p.objective.split('\n')[0].slice(0, 80))}</span>
-    <span class="st ${p.status === 'done' ? 'approved' : 'cancelled'}">${RUN_STATUS[p.status] || p.status}</span>
-    <span class="hint">${tr('{0}/{1} 通过 · {2}', [p.approved, p.tasks, new Date(p.createdAt).toLocaleDateString(getLanguage())])}</span>
-    ${p.merged ? `<span class="hint">${tr('已合并到 {0}', [esc(p.merged.branch)])}</span>` : p.branch ? `<span class="hint">${tr('结果保存在分支')} <code>${esc(p.branch)}</code></span>` : ''}
-  </div>`).join('')}</div>`;
-}
-
-function runBarHtml(r) {
-  const total = r.tasks.length;
-  const ok = r.tasks.filter((t) => t.status === 'approved').length;
-  const settled = r.tasks.filter((t) => ['approved', 'skipped', 'cancelled'].includes(t.status)).length;
-  const btns = [];
-  if (r.paused && r.status === 'executing') btns.push(`<button class="btn sm primary" type="button" data-tact="resume">${tr('继续执行')}</button>`);
-  if (r.status === 'done' && r.mode === 'git' && !r.merged && ok) btns.push(`<button class="btn sm primary" type="button" data-tact="merge">${tr('合并到 {0}', [esc(r.git?.baseBranch || tr('你的分支'))])}</button>`);
-  if (['done', 'cancelled', 'failed'].includes(r.status)) btns.push(`<button class="btn sm" type="button" data-tact="close">${tr('结束并收起')}</button>`);
-  else btns.push(`<button class="btn sm danger" type="button" data-tact="cancel">${tr('取消任务')}</button>`);
-  return `<div class="card"><div class="run-bar">
-      <div class="obj"><b>${esc(r.objective.split('\n')[0].slice(0, 100))}</b>
-        <span>${RUN_STATUS[r.status] || r.status}${r.paused ? tr('（已暂停）') : ''}</span></div>
-      ${btns.join('')}</div>
-    ${total && r.status !== 'plan_review' && r.status !== 'planning' ? `<div class="progress"><i style="width:${Math.round((settled / total) * 100)}%"></i></div>` : ''}
-    ${r.error ? `<div class="err">⚠ ${esc(r.error)}</div>` : ''}
-    ${r.merged ? `<div class="note">${tr('已合并到 {0}', [esc(r.merged.branch)])}</div>` : ''}
-  </div>`;
+function goalHtml(sp) {
+  const r = sp.run;
+  const objective = r?.objective || '';
+  const src = sp.source;
+  const long = objective.split('\n').length > 6 || objective.length > 400;
+  return `<section class="goal-card">
+    <div class="gc-head"><span class="gc-label">${tr('目标')}</span>
+      ${src ? `<span class="hint">${tr('从聊天空间 {0} 转来{1}', [`<a href="#/space/${esc(src.spaceId)}">「${esc(src.title)}」</a>`, src.messages ? tr('（{0} 条消息）', [src.messages]) : ''])}</span>` : ''}
+      <span class="m">${r ? new Date(r.createdAt).toLocaleString(getLanguage(), { hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}</span></div>
+    ${long ? `<details class="gc-body"><summary><span class="md">${md(firstLine(objective, 200))}</span><span class="hint">${tr('展开全文')}</span></summary><div class="md">${md(objective)}</div></details>` : `<div class="md gc-body">${md(objective)}</div>`}
+  </section>`;
 }
 
 const planMsgHtml = (m) => messageHtml({ ...m, kind: 'ai', id: `p-${m.id}` });
 
 function planningHtml(r) {
   const msgs = r.planning.messages.map(planMsgHtml).join('');
-  if (r.status === 'planning') {
-    return `<div class="plan-msgs">${msgs}</div><div class="hint">${tr('{0} 正在规划…', [esc(memberName(r.coordinatorId))])}</div>`;
+  if (r.status === 'planning' && !r.tasks.length) {
+    return `<div class="plan-msgs">${msgs}</div>${msgs ? '' : `<div class="hint plan-wait">${tr('{0} 正在规划…', [esc(memberName(r.coordinatorId))])}</div>`}`;
   }
-  if (!r.tasks.length) return `<div class="plan-msgs">${msgs}</div>`;
-  if (!planDraft || planDraft.runId !== r.id) planDraft = { runId: r.id, tasks: r.tasks.map((t) => ({ id: t.id, title: t.title, assigneeId: t.assigneeId, deps: [...t.deps], spec: t.spec })) };
-  return `<details class="plan-msgs" ${msgs ? '' : 'hidden'}><summary>${tr('规划过程（{0} 条发言）', [r.planning.messages.length])}</summary>${msgs}</details>
-    <div class="card plan-edit"><h3>${tr('计划')}</h3>
-      <div class="tasks" id="planTasks">${planEditorRows()}</div>
-      <button class="btn sm ghost" type="button" data-tact="pe-add" style="margin-top:8px">${tr('＋ 添加子任务')}</button>
-    </div>
-    <div class="card">
-      <textarea data-keep="replan" id="replanText" rows="2" placeholder="${tr('不满意？写下意见')}"></textarea>
-      <div class="opts" style="justify-content:flex-end"><button class="btn sm" type="button" data-tact="replan">${tr('重新规划')}</button>
-        <button class="btn primary" type="button" data-tact="approve-plan">${tr('批准并执行')}</button></div></div>`;
+  const process = msgs ? `<details class="plan-msgs"><summary>${tr('规划过程（{0} 条发言）', [r.planning.messages.length])}</summary>${msgs}</details>` : '';
+  if (!r.tasks.length) {
+    return `${process}<section class="plan-card">${r.error ? errHtml(r.error) : ''}<div class="hint">${tr('在下面说说想怎么做，协调者会重新规划')}</div></section>`;
+  }
+  if (r.status === 'plan_review' && !r.closed) return process + planEditorHtml(r);
+  const live = r.tasks.filter((t) => !t.removed);
+  return `${process}<section class="plan-card done">
+    <span class="pc-check">${ICON.check}</span><span>${tr('计划已确认 · {0} 个子任务', [live.length])}${r.planConfirm === 'auto' ? `<span class="hint">${tr(' · 计划定好自动开始')}</span>` : ''}</span>
+  </section>`;
+}
+
+function planEditorHtml(r) {
+  const key = `${r.id}:${r.status}:${r.planVersion || 0}`;
+  if (!planDraft || planDraft.key !== key) planDraft = { key, tasks: r.tasks.map((t) => ({ id: t.id, title: t.title, assigneeId: t.assigneeId, deps: [...t.deps], spec: t.spec })) };
+  return `<section class="plan-card plan-edit">
+    <div class="pc-head"><b>${tr('计划')}</b><span class="hint">${tr('可以直接改，也可以在下面和协调者说')}</span></div>
+    ${r.error ? errHtml(r.error) : ''}
+    <div class="tasks" id="planTasks">${planEditorRows()}</div>
+    <div class="pc-foot"><button class="btn sm ghost" type="button" data-tact="pe-add">${ICON.plus}${tr('添加子任务')}</button><span class="grow"></span>
+      <button class="btn primary" type="button" data-tact="approve-plan">${tr('批准并执行')}</button></div>
+  </section>`;
 }
 
 function planEditorRows() {
@@ -219,42 +158,84 @@ function planEditorRows() {
   </div>`).join('');
 }
 
-const boardHtml = (r) => `<div class="tasks">${r.tasks.map((t) => taskCardHtml(r, t)).join('')}</div>`;
+// ================= 协调者的判断卡片 / 总结卡片 =================
+const taskRef = (x) => `<button type="button" class="tref" data-tact="open" data-task="${esc(x.task)}"><span class="tid">${esc(x.task)}</span>${esc(x.title)}</button>`;
 
-function taskCardHtml(r, t) {
-  const a = t.attempts.at(-1);
-  let sub = t.deps.length ? tr('依赖 {0}', [t.deps.join('、')]) : '';
-  const add = (s) => { if (s) sub += `${sub ? ' · ' : ''}${s}`; };
-  if (t.status === 'running') add(a?.activities?.at(-1)?.label || (a?.text ? a.text.trim().split('\n').at(-1).slice(0, 80) : tr('思考中…')));
-  else if (t.status === 'review' || t.status === 'approved') add(`${(a?.report || '').split('\n')[0].slice(0, 90)}${t.changes?.length ? tr('（改了 {0} 个文件）', [t.changes.length]) : ''}`);
-  else if (t.status === 'failed') add(a?.error || tr('失败'));
-  if (t.attempts.length > 1) add(tr('第 {0} 次', [t.attempts.length]));
-  if (a?.endedAt && a.startedAt) add(mins(a.endedAt - a.startedAt));
-  const k = `${r.id}-${t.id}`;
-  const acts = [];
-  const live = r.status === 'executing';
-  if (t.status === 'running') acts.push(`<button class="btn sm" type="button" data-tact="stop-task" data-task="${t.id}">${tr('停止')}</button>`);
-  if (t.status === 'review') acts.push(`<button class="btn sm" type="button" data-tact="open" data-task="${t.id}">${tr('查看改动并审查')}</button><button class="btn sm primary" type="button" data-tact="approve-task" data-task="${t.id}">${tr('通过')}</button>`);
-  if (t.status === 'failed' && live) acts.push(`<button class="btn sm primary" type="button" data-tact="retry-task" data-task="${t.id}">${tr('重试')}</button>`);
-  if (['failed', 'pending', 'ready', 'blocked'].includes(t.status) && live) {
-    acts.push(`<button class="btn sm" type="button" data-tact="skip-task" data-task="${t.id}">${tr('跳过')}</button>`);
-    acts.push(`<select data-reassign="${t.id}" title="${tr('改派给')}" style="width:auto">${state.space.members.map((m) => `<option value="${m.id}" ${m.id === t.assigneeId ? 'selected' : ''}>${tr('负责：{0}', [esc(m.name)])}</option>`).join('')}</select>`);
+export function decisionHtml(m) {
+  const d = m.decision;
+  const r = state.space?.run;
+  if (!d || d.type === 'answer') return '';
+  if (d.type === 'unrelated') {
+    return `<div class="decision"><div class="dc-head">${tr('和这次任务的目标无关')}</div>
+      ${d.why ? `<div class="dc-why">${esc(d.why)}</div>` : ''}
+      ${r?.closed ? '' : `<div class="dc-foot"><button class="btn sm" type="button" data-tact="new-task" data-msg="${esc(m.replyTo || '')}">${tr('新开一个任务空间')}</button></div>`}</div>`;
   }
-  return `<div class="tcard ${state.files.view?.type === 'task' && state.files.view.taskId === t.id ? 'sel' : ''}" data-task="${t.id}" style="--c:${memberColor(t.assigneeId)}">
-    <div class="tc-top"><span class="tid">${esc(t.id)}</span><span class="tt">${esc(t.title)}</span><span class="tc-who">@${esc(memberName(t.assigneeId))}</span><span class="st ${t.status}">${T_STATUS[t.status] || t.status}</span></div>
-    ${sub ? `<div class="tc-sub">${esc(sub)}</div>` : ''}
-    ${t.status === 'blocked' ? `<div class="question"><b>${tr('{0} 问你：', [esc(memberName(t.assigneeId))])}</b>${esc(t.question || '')}</div>
-      <div class="tc-actions"><input data-keep="ans-${k}" placeholder="${tr('写下回答，它会接着做')}"><button class="btn sm primary" type="button" data-tact="answer" data-task="${t.id}">${tr('回答')}</button></div>` : ''}
-    ${acts.length ? `<div class="tc-actions">${acts.join('')}</div>` : ''}
+  if (d.type === 'note') {
+    if (!d.notes?.length) return '';
+    return `<div class="decision"><div class="dc-head">${tr('没有冲突，记为补充说明')}</div>
+      ${d.why ? `<div class="dc-why">${esc(d.why)}</div>` : ''}
+      <ul class="dc-list">${d.notes.map((n) => `<li>${taskRef(n)}<span class="dc-text">${esc(n.text)}</span>${n.running ? `<span class="hint">${tr('正在做，下一次做时带上')}</span>` : ''}</li>`).join('')}</ul></div>`;
+  }
+  const sec = (title, items, row) => (items?.length ? `<div class="dc-sec"><div class="dc-label">${title}</div><ul class="dc-list">${items.map(row).join('')}</ul></div>` : '');
+  const latestHold = d.hold && r?.hold && [...state.space.messages].reverse().find((x) => x.decision?.type === 'change')?.id === m.id;
+  return `<div class="decision change"><div class="dc-head">${tr('有冲突，改了计划')}</div>
+    ${d.why ? `<div class="dc-why">${esc(d.why)}</div>` : ''}
+    ${sec(tr('停下'), d.stopped, (x) => `<li>${taskRef(x)}<span class="hint">${x.keep ? tr('做了一半的改动留着') : tr('做了一半的改动已丢掉')}</span></li>`)}
+    ${sec(tr('新增'), d.added, (x) => `<li>${taskRef(x)}<span class="hint">${esc(memberName(x.assigneeId))}</span></li>`)}
+    ${sec(tr('修改'), d.changed, (x) => `<li>${taskRef(x)}<span class="hint">${x.what.map((w) => WHAT[w] || w).join('、') || tr('恢复')}</span></li>`)}
+    ${sec(tr('去掉'), d.removed, (x) => `<li><span class="tref off"><span class="tid">${esc(x.task)}</span>${esc(x.title)}</span></li>`)}
+    ${latestHold ? `<div class="dc-foot"><span class="hint">${tr('新计划等你确认后才继续派新的子任务')}</span><button class="btn sm primary" type="button" data-tact="confirm-plan">${tr('确认新计划')}</button></div>`
+      : d.hold ? `<div class="dc-foot hint">${tr('已确认')}</div>` : ''}
   </div>`;
 }
 
-function summaryHtml(r) {
-  const s = r.summary;
-  return `<div class="card"><h3>${tr('协调者的总结')}</h3>${s.streaming && !s.text ? `<span class="typing"><i></i><i></i><i></i>${tr('&nbsp;正在写')}</span>` : `<div class="md">${md(s.text || '')}</div>`}${s.error ? `<div class="err">⚠ ${esc(s.error)}</div>` : ''}</div>`;
+export function summaryCardHtml(m) {
+  const r = state.space?.run;
+  const latest = [...(state.space?.messages || [])].reverse().find((x) => x.kind === 'summary')?.id === m.id;
+  const btns = [];
+  if (latest && r && !r.closed && r.status === 'done') {
+    if (r.mode === 'git' && !r.merged && m.approved) btns.push(`<button class="btn sm primary" type="button" data-tact="merge">${tr('合并到 {0}', [esc(r.git?.baseBranch || tr('你的分支'))])}</button>`);
+    btns.push(`<button class="btn sm" type="button" data-tact="finish">${tr('结束任务')}</button>`);
+  }
+  return `<div class="msg summary-card" id="m-${m.id}">
+    <div class="sc-head"><span class="sc-label">${tr('总结')}</span><span class="hint">${tr('{0} · {1}/{2} 个子任务通过', [esc(m.name), m.approved, m.total])}</span><span class="m">${clock(m.ts)}</span></div>
+    ${m.text ? `<div class="md">${md(m.text)}</div>` : ''}${m.error ? errHtml(m.error) : ''}
+    ${latest && r?.merged ? `<div class="note">${tr('已合并到 {0}', [esc(r.merged.branch)])}</div>` : ''}
+    ${latest && r && !r.closed && r.status === 'done' ? `<div class="hint sc-more">${tr('还可以接着提要求，协调者会追加子任务；都做完了就结束任务。')}</div>` : ''}
+    ${btns.length ? `<div class="sc-foot">${btns.join('')}</div>` : ''}
+  </div>`;
 }
 
-// ---- 子任务详情（右侧面板） ----
+// ================= 推送 =================
+let taskRaf = 0;
+let detailTimer = null;
+function scheduleTaskRender() {
+  if (taskRaf) return;
+  taskRaf = requestAnimationFrame(() => {
+    taskRaf = 0;
+    if (state.space?.kind !== 'task') return;
+    renderStrip();
+    renderIntro();
+    renderMembersBar();
+    renderHeader();
+    renderComposer();
+    // 判断卡片上的「确认新计划」、总结卡片上的按钮跟着状态变
+    for (const m of state.space.messages) if (m.decision?.hold || m.kind === 'summary') updateMessage(m);
+  });
+}
+export function onRunEvent(run) {
+  const sp = state.space;
+  if (!sp || sp.kind !== 'task') return;
+  const prev = sp.run;
+  sp.run = run;
+  if (run && prev?.status !== run.status && run.status === 'plan_review' && run.planConfirm !== 'auto') toast(tr('计划拟好了，请确认'));
+  scheduleTaskRender();
+  const v = state.files.view;
+  if (v?.type === 'taskdiff' && reviewAssignee(prev, v.taskId) !== reviewAssignee(run, v.taskId)) renderFilesBody();
+  if (v?.type === 'task' && !detailTimer) detailTimer = setTimeout(() => { detailTimer = null; refreshTaskDetail(); }, 700);
+}
+
+// ================= 子任务详情（右侧面板） =================
 async function openTask(taskId) {
   state.files.view = { type: 'task', taskId, detail: null };
   if (!state.files.open) { state.files.open = true; renderHeader(); }
@@ -274,64 +255,141 @@ export function renderTaskDetail(body, v) {
   if (!t) { body.innerHTML = `<div class="empty-files">${tr('加载中…')}</div>`; return; }
   if (t.error && !t.id) { body.innerHTML = `<div class="empty-files">${esc(t.error)}</div>`; return; }
   const k = `${r?.id}-${t.id}`;
+  const open = r && !r.closed;
   const changes = (t.changes || []).map((c) => `<div class="chg-row" data-tdiff="${esc(c.path)}">${c.status === 'A' || c.created ? '<span class="fst a">A</span>' : c.status === 'D' || c.deleted ? '<span class="fst d">D</span>' : '<span class="fst">M</span>'}<span class="fp">${esc(c.path)}</span><span class="plus">+${c.added}</span><span class="minus">−${c.removed}</span></div>`).join('');
-  const live = r?.status === 'executing';
+  const live = open && r.status === 'executing';
+  const outcome = { done: tr('报告完成'), question: tr('提了问题'), stopped: tr('被协调者停下'), cancelled: tr('被中止'), failed: tr('失败') };
   const attempts = t.attempts.map((a, i) => ({ a, i })).reverse().map(({ a, i }) => `<div class="attempt">
       <div class="attempt-head"><b>${tr('第 {0} 次', [i + 1])}</b><span>${new Date(a.startedAt).toLocaleTimeString(getLanguage(), { hour12: false })}</span>${a.endedAt ? `<span>${mins(a.endedAt - a.startedAt)}</span>` : '<span class="typing"><i></i><i></i><i></i></span>'}
-        ${a.outcome ? `<span class="st ${a.outcome === 'done' ? 'approved' : a.outcome === 'question' ? 'blocked' : 'failed'}">${a.outcome === 'done' ? tr('报告完成') : a.outcome === 'question' ? tr('提了问题') : tr('失败')}</span>` : ''}</div>
+        ${a.outcome ? `<span class="st ${a.outcome === 'done' ? 'approved' : a.outcome === 'question' ? 'blocked' : a.outcome === 'stopped' ? 'pending' : 'failed'}">${outcome[a.outcome] || a.outcome}</span>` : ''}</div>
       ${a.conflict ? `<div class="note">${tr('这次是在解决合并冲突：{0}', [esc(a.conflict.join('、'))])}</div>` : ''}
       ${activitiesHtml(a.activities, !a.endedAt)}
       ${a.report || a.text ? `<div class="md">${md(a.report || a.text)}</div>` : ''}
       ${a.note ? `<div class="note">${esc(a.note)}</div>` : ''}
-      ${a.error ? `<div class="err">⚠ ${esc(a.error)}</div>` : ''}
+      ${a.error ? errHtml(a.error) : ''}
       ${a.log?.length ? `<details><summary class="hint">${tr('原始输出')}</summary><div class="log">${esc(a.log.join('\n'))}</div></details>` : ''}
     </div>`).join('');
   body.innerHTML = `<div class="editor-head"><button class="icon-btn" type="button" data-act="back" title="${tr('返回')}">${ICON.back}</button>
       <span class="ep">${esc(t.id)} ${esc(t.title)}</span><span class="st ${t.status}">${T_STATUS[t.status]}</span></div>
     <div class="td">
-      <div><h4>${tr('负责')}</h4><span style="color:${memberColor(t.assigneeId)};font-weight:600">@${esc(memberName(t.assigneeId))}</span>${t.deps.length ? `　<span class="hint">${tr('依赖 {0}', [esc(t.deps.join('、'))])}</span>` : ''}</div>
+      <div><h4>${tr('负责')}</h4><span style="color:${memberColor(t.assigneeId)};font-weight:500">${esc(memberName(t.assigneeId))}</span>${t.deps.length ? `<span class="hint">${tr(' · 依赖 {0}', [esc(t.deps.join('、'))])}</span>` : ''}
+        ${live && ['failed', 'pending', 'ready', 'blocked'].includes(t.status) ? `<select data-reassign="${t.id}" class="td-reassign" title="${tr('改派给')}">${state.space.members.map((m) => `<option value="${m.id}" ${m.id === t.assigneeId ? 'selected' : ''}>${tr('负责：{0}', [esc(m.name)])}</option>`).join('')}</select>` : ''}</div>
       <div><h4>${tr('说明')}</h4><div class="spec">${esc(t.spec)}</div></div>
-      ${t.status === 'review' ? `<div class="review-box"><b>${tr('审查')}</b>
+      ${t.notes?.length ? `<div><h4>${tr('中途补充的要求')}</h4>${t.notes.map((n) => `<div class="note">${esc(n.text)}</div>`).join('')}</div>` : ''}
+      ${open && t.status === 'review' ? `<div class="review-box"><b>${tr('审查')}</b>
+        ${taskNoteList(taskNotes(state.space.id, t.id))}
         <textarea data-keep="fb-${k}" id="fbText" rows="3" placeholder="${tr('退回时写下要怎么改')}"></textarea>
         <div class="row"><button class="btn sm primary" type="button" data-tact="approve-task" data-task="${t.id}">${tr('通过')}</button>
           <button class="btn sm" type="button" data-tact="reject-task" data-task="${t.id}">${tr('带意见退回重做')}</button>
           ${r.mode === 'direct' && t.changes?.length ? `<button class="btn sm danger" type="button" data-tact="undo-task" data-task="${t.id}">${tr('撤销它的全部改动')}</button>` : ''}</div></div>` : ''}
-      ${t.status === 'blocked' ? `<div class="review-box"><b>${tr('{0} 问你：', [esc(memberName(t.assigneeId))])}</b><div>${esc(t.question || '')}</div>
-        <textarea data-keep="ans2-${k}" id="ansText" rows="2" placeholder="${tr('写下回答')}"></textarea><div class="row"><button class="btn sm primary" type="button" data-tact="answer-detail" data-task="${t.id}">${tr('回答')}</button></div></div>` : ''}
-      ${t.status === 'failed' && live ? `<div class="row"><button class="btn sm primary" type="button" data-tact="retry-task" data-task="${t.id}">${tr('重试')}</button> <button class="btn sm" type="button" data-tact="skip-task" data-task="${t.id}">${tr('跳过')}</button>${r.mode === 'direct' && t.changes?.length ? ` <button class="btn sm danger" type="button" data-tact="undo-task" data-task="${t.id}">${tr('撤销它的改动')}</button>` : ''}</div>` : ''}
-      ${t.feedbacks?.length ? `<div><h4>${tr('你的意见')}</h4>${t.feedbacks.map((f) => `<div class="note">• ${esc(f.text)}</div>`).join('')}</div>` : ''}
+      ${open && t.status === 'blocked' ? `<div class="review-box"><b>${tr('{0} 问你：', [esc(memberName(t.assigneeId))])}</b><div>${esc(t.question || '')}</div>
+        <textarea data-keep="ans2-${k}" id="ansText" rows="2" placeholder="${tr('写下回答，它会接着做')}"></textarea><div class="row"><button class="btn sm primary" type="button" data-tact="answer-detail" data-task="${t.id}">${tr('回答')}</button></div></div>` : ''}
+      ${live && t.status === 'failed' ? `<div class="row"><button class="btn sm primary" type="button" data-tact="retry-task" data-task="${t.id}">${tr('重试')}</button> <button class="btn sm" type="button" data-tact="skip-task" data-task="${t.id}">${tr('跳过')}</button>${r.mode === 'direct' && t.changes?.length ? ` <button class="btn sm danger" type="button" data-tact="undo-task" data-task="${t.id}">${tr('撤销它的改动')}</button>` : ''}</div>` : ''}
+      ${live && t.status === 'running' ? `<div class="row"><button class="btn sm" type="button" data-tact="stop-task" data-task="${t.id}">${ICON.stop}${tr('停止')}</button></div>` : ''}
+      ${live && ['pending', 'ready', 'blocked'].includes(t.status) ? `<div class="row"><button class="btn sm" type="button" data-tact="skip-task" data-task="${t.id}">${tr('跳过')}</button></div>` : ''}
+      ${t.feedbacks?.length ? `<div><h4>${tr('你的意见')}</h4>${t.feedbacks.map((f) => `<div class="note">${esc(f.text)}</div>`).join('')}</div>` : ''}
       <div><h4>${tr('改动（{0} 个文件）{1}', [t.changes?.length || 0, t.undone ? tr(' · 已撤销') : ''])}</h4>${changes || `<div class="hint">${tr('还没有改动')}</div>`}</div>
       <div><h4>${tr('过程')}</h4>${attempts || `<div class="hint">${tr('还没开始')}</div>`}</div>
     </div>`;
 }
 async function openTaskDiff(taskId, file) {
+  const detail = state.files.view;
   try {
     const d = await api(`/api/spaces/${state.space.id}/taskdiff/${taskId}?path=${encodeURIComponent(file)}`);
+    if (state.files.view !== detail) return;
     state.files.view = { type: 'taskdiff', taskId, ...d };
     renderFilesBody();
   } catch (e) { toast(e.message, 'error'); }
 }
+function reviewAssignee(run, taskId) {
+  if (!run || run.closed) return null;
+  return run.tasks.find((t) => t.id === taskId && t.status === 'review')?.assigneeId;
+}
 export function renderTaskDiff(body, v) {
   body.innerHTML = `<div class="diff-view"><div class="editor-head"><button class="icon-btn" type="button" data-tact="back-task" data-task="${esc(v.taskId)}" title="${tr('返回')}">${ICON.back}</button>
-    <span class="ep">${esc(v.taskId)} · ${esc(v.path)}</span></div><div class="diff">${diffHtml(v.before, v.after)}</div></div>`;
+    <span class="ep">${esc(v.taskId)} · ${esc(v.path)}</span></div><div class="diff"></div></div>`;
+  renderNoteDiff($('.diff', body), v, reviewAssignee(state.space.run, v.taskId), renderFilesBody);
 }
 
-// ---- 操作 ----
-const runAction = (action, body = {}) => api(`/api/spaces/${state.space.id}/run/${action}`, { method: 'POST', body });
+async function openMergeModal() {
+  const branch = state.space.run.git?.baseBranch || tr('你的分支');
+  const dlg = showModal(`<div class="modal-inner narrow">
+    <div class="modal-head"><h3>${tr('合并到 {0}', [esc(branch)])}</h3></div>
+    <div class="modal-body"><textarea rows="6" aria-label="${tr('提交说明')}" placeholder="${tr('起草中…')}" disabled></textarea></div>
+    <div class="modal-foot"><button class="btn" type="button" data-act="close">${tr('取消')}</button><button class="btn primary" type="button" data-act="merge" disabled>${tr('合并')}</button></div>
+  </div>`);
+  const input = $('textarea', dlg);
+  const merge = $('[data-act="merge"]', dlg);
+  $('[data-act="close"]', dlg).onclick = () => dlg.close();
+  try {
+    const draft = await runAction('draft-commit');
+    if (!dlg.open) return;
+    input.value = draft.message;
+    input.placeholder = '';
+    input.disabled = merge.disabled = false;
+    input.focus();
+  } catch (err) {
+    if (dlg.open) { dlg.close(); toast(err.message, 'error'); }
+    return;
+  }
+  merge.onclick = async () => {
+    input.disabled = merge.disabled = true;
+    try {
+      const m = await runAction('merge', { message: input.value });
+      dlg.close();
+      toast(tr('已合并到 {0}', [m.branch]));
+      loadFiles(); loadHistory();
+      refreshTaskDetail();
+    } catch (err) {
+      toast(err.message, 'error');
+      input.disabled = merge.disabled = false;
+    }
+  };
+}
 
+// ================= 结束任务 =================
+function openFinishModal() {
+  const sp = state.space;
+  const r = sp.run;
+  const active = ['planning', 'executing', 'summarizing'].includes(r.status) || r.thinking;
+  const summary = sp.messages.some((m) => m.kind === 'summary' && m.text);
+  const unmerged = r.mode === 'git' && !r.merged && r.tasks.some((t) => t.status === 'approved');
+  const dlg = showModal(`<div class="modal-inner narrow">
+    <div class="modal-head"><h3>${tr('结束这个任务？')}</h3></div>
+    <div class="modal-body">
+      <p>${tr('结束后任务空间只读，留作记录；之后要接着做，可以再开一个类似的任务。')}</p>
+      ${active ? `<p>${tr('正在做的子任务会先停下。')}</p>` : ''}
+      ${unmerged ? `<p>${tr('通过的改动还没合并进你的项目，会保留在分支 {0} 上。', [`<code>${esc(r.git.intBranch)}</code>`])}</p>` : ''}
+      ${sp.source ? `<label class="check-row"><input type="checkbox" id="fnPost" ${summary ? 'checked' : 'disabled'}> ${tr('把总结发回聊天空间「{0}」', [esc(sp.source.title)])}${summary ? '' : `<span class="hint">${tr('（还没有总结）')}</span>`}</label>` : ''}
+    </div>
+    <div class="modal-foot"><button class="btn" type="button" data-act="close">${tr('取消')}</button><button class="btn primary" type="button" data-act="finish">${tr('结束任务')}</button></div>
+  </div>`);
+  dlg.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-act]');
+    if (!b) return;
+    if (b.dataset.act === 'close') { dlg.close(); return; }
+    b.disabled = true;
+    try {
+      const res = await runAction('finish', { postBack: !!$('#fnPost', dlg)?.checked });
+      dlg.close();
+      toast(res.posted ? tr('任务已结束，总结发回了「{0}」', [sp.source.title]) : tr('任务已结束'));
+      if (state.files.view?.type?.startsWith('task')) { state.files.view = null; renderFilesPanel(); }
+    } catch (err) { toast(err.message, 'error'); b.disabled = false; }
+  });
+}
+
+// ================= 操作 =================
 async function onTaskAction(b, root) {
   const act = b.dataset.tact;
   const taskId = b.dataset.task;
   const sp = state.space;
   try {
     switch (act) {
-      case 'start': {
-        const objective = $('#tkObjective').value.trim();
-        if (!objective) { toast(tr('先写下目标'), 'error'); return; }
-        b.disabled = true;
-        await api(`/api/spaces/${sp.id}/runs`, { method: 'POST', body: { objective, coordinatorId: $('#tkCoord').value, discuss: $('#tkDiscuss')?.checked ?? false, maxParallel: $('#tkPar').value, autoApprove: $('#tkAuto').checked } });
-        break;
-      }
+      case 'toggle-strip':
+        stripOpen = !stripOpen;
+        store('rt:stripOpen', stripOpen);
+        renderStrip();
+        return;
       case 'pe-add': {
         let n = planDraft.tasks.length + 1;
         while (planDraft.tasks.some((t) => t.id === `T${n}`)) n++;
@@ -351,32 +409,15 @@ async function onTaskAction(b, root) {
         b.disabled = true;
         await runAction('approve-plan', { tasks: planDraft.tasks });
         break;
-      case 'replan':
-        await runAction('replan', { feedback: $('#replanText').value });
-        break;
-      case 'cancel':
-        if (!confirm(tr('取消这次任务吗？正在做的子任务会被中止。{0}', [sp.run.mode === 'git' ? tr('\n各 AI 的独立副本和临时分支会被删除，你的项目不受影响。') : tr('\n已经改了的文件不会自动还原（可以在改动记录里撤销）。')]))) return;
-        await runAction('cancel');
-        break;
-      case 'close':
-        await runAction('close');
-        if (state.files.view?.type?.startsWith('task')) { state.files.view = null; renderFilesPanel(); }
-        break;
-      case 'merge': {
-        b.disabled = true;
-        const m = await runAction('merge');
-        toast(tr('已合并到 {0}', [m.branch]));
-        loadFiles(); loadHistory();
-        break;
+      case 'finish': openFinishModal(); return;
+      case 'new-task': {
+        const msg = sp.messages.find((m) => m.id === b.dataset.msg);
+        const { openNewSpaceModal } = await import('./space-form.js');
+        openNewSpaceModal({ kind: 'task', objective: msg?.text || '', members: sp.members, folder: sp.workspace.type === 'folder' ? sp.workspacePath : '' });
+        return;
       }
+      case 'merge': await openMergeModal(); return;
       case 'open': case 'back-task': openTask(taskId); return;
-      case 'answer': {
-        const inp = $(`[data-keep="ans-${sp.run.id}-${taskId}"]`, root);
-        if (!inp?.value.trim()) { toast(tr('先写下回答'), 'error'); return; }
-        await runAction('answer', { taskId, answer: inp.value });
-        inp.value = '';
-        break;
-      }
       case 'answer-detail': {
         const inp = $('#ansText');
         if (!inp?.value.trim()) { toast(tr('先写下回答'), 'error'); return; }
@@ -386,14 +427,20 @@ async function onTaskAction(b, root) {
       }
       case 'reject-task': {
         const inp = $('#fbText');
-        if (!inp?.value.trim()) { toast(tr('退回时请写下要怎么改'), 'error'); inp?.focus(); return; }
-        await runAction('reject-task', { taskId, feedback: inp.value });
+        const notes = taskNotes(sp.id, taskId);
+        const feedback = [inp.value.trim(), formatNotes(notes, tr)].filter(Boolean).join('\n\n');
+        if (!feedback) { toast(tr('退回时请写下要怎么改'), 'error'); inp.focus(); return; }
+        checkNoteLength(feedback);
+        b.disabled = true;
+        await runAction('reject-task', { taskId, feedback });
+        removeNotes(sp.id, notes);
         inp.value = '';
         break;
       }
       case 'approve-task': {
         b.disabled = true;
         const res = await runAction('approve-task', { taskId });
+        removeNotes(sp.id, taskNotes(sp.id, taskId));
         if (res.conflict) toast(tr('{0} 和已通过的改动冲突了（{1}），已让负责人去解决冲突', [taskId, (res.files || []).join('、')]), 'error');
         break;
       }
@@ -403,23 +450,30 @@ async function onTaskAction(b, root) {
         loadFiles(); loadHistory();
         break;
       default:
+        b.disabled = true;
         await runAction(act, { taskId });
     }
   } catch (e) {
     toast(e.message, 'error');
-    b.disabled = false;
   }
+  b.disabled = false;
   refreshTaskDetail();
 }
 
-$('#taskView').addEventListener('click', (e) => {
-  const b = e.target.closest('[data-tact]');
-  if (b) { onTaskAction(b, $('#taskView')); return; }
-  if (e.target.closest('input, select, textarea, a, summary, details, .plan-edit')) return;
-  const card = e.target.closest('.tcard[data-task]');
-  if (card) openTask(card.dataset.task);
+for (const root of ['#taskStrip', '#messages']) {
+  $(root).addEventListener('click', (e) => {
+    const b = e.target.closest('[data-tact]');
+    if (b) { e.stopPropagation(); onTaskAction(b, $(root)); return; }
+    if (e.target.closest('input, select, textarea, a, summary, details, .plan-edit')) return;
+    const row = e.target.closest('.ts-row[data-task]');
+    if (row) openTask(row.dataset.task);
+  });
+}
+$('#taskStrip').addEventListener('keydown', (e) => {
+  const row = e.target.closest('.ts-row[data-task]');
+  if (row && (e.key === 'Enter' || e.key === ' ') && e.target === row) { e.preventDefault(); openTask(row.dataset.task); }
 });
-$('#taskView').addEventListener('input', (e) => {
+$('#messages').addEventListener('input', (e) => {
   const row = e.target.closest('[data-pi]');
   if (!row || !planDraft) return;
   const t = planDraft.tasks[+row.dataset.pi];
@@ -429,15 +483,22 @@ $('#taskView').addEventListener('input', (e) => {
   }
   if (e.target.dataset.dep) t.deps = $$('[data-dep]', row).filter((x) => x.checked).map((x) => x.dataset.dep);
 });
-$('#taskView').addEventListener('change', async (e) => {
+$('#filesBody').addEventListener('change', async (e) => {
   const s = e.target.closest('[data-reassign]');
   if (!s) return;
   try { await runAction('reassign', { taskId: s.dataset.reassign, memberId: s.value }); } catch (err) { toast(err.message, 'error'); }
 });
 $('#filesBody').addEventListener('click', (e) => {
+  const del = e.target.closest('.review-note [data-note-delete]');
+  if (del) {
+    try {
+      removeNotes(state.space.id, [{ id: del.dataset.noteDelete }]);
+      keepInputs($('#filesBody'), renderFilesBody);
+    } catch (err) { toast(err.message, 'error'); }
+    return;
+  }
   const b = e.target.closest('[data-tact]');
   if (b) { e.stopPropagation(); onTaskAction(b, $('#filesBody')); return; }
   const d = e.target.closest('[data-tdiff]');
   if (d && state.files.view?.type === 'task') { e.stopPropagation(); openTaskDiff(state.files.view.taskId, d.dataset.tdiff); }
 }, true);
-

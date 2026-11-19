@@ -6,6 +6,7 @@ import path from 'node:path';
 import { AbortedError } from './proc.mjs';
 
 export const meta = {
+  images: true,
   id: 'mock',
   get label() { return tr('演示 AI'); },
   get vendor() { return tr('演示'); },
@@ -26,6 +27,30 @@ export async function detect() {
   return { available: true, ready: true, note: tr('演示模式，不调用任何 AI') };
 }
 
+/** 演示的协调者判断：带“改”的消息改计划，带“无关”的建议另开任务，带问号的直接回答，其余记为补充说明。 */
+function mockTriage(prompt, names) {
+  const said = prompt.split(tr('# 用户刚发来的消息')).pop() || '';
+  const text = (said.match(/>\n([\s\S]*?)\n<\//) || [, said])[1].trim();
+  const tasks = [...prompt.matchAll(/^## ([A-Za-z0-9-]+) (.+?)(?:（负责：| \(assigned to )(.+?)(?:，|, )(.+?)(?:，|, |）|\))/gm)]
+    .map((m) => ({ id: m[1], title: m[2], assignee: m[3], status: m[4] }));
+  const open = tasks.filter((t) => !/已通过|已跳过|已取消|Approved|Skipped|Cancelled/.test(t.status));
+  const block = (j) => `
+
+\`\`\`json
+${JSON.stringify(j)}
+\`\`\``;
+  if (/无关|unrelated/i.test(text)) return tr('这和这次任务的目标关系不大，写不进同一份总结。建议新开一个任务空间来做。') + block({ type: 'unrelated', why: tr('和总目标无关') });
+  if (/改|change/i.test(text)) {
+    const n = tasks.length + 1;
+    const plan = tasks.filter((t) => !/已取消|Cancelled/.test(t.status)).map((t) => ({ id: t.id, title: t.title, assignee: t.assignee, deps: [], spec: tr('（演示）沿用原来的说明') }));
+    plan.push({ id: `T${n}`, title: tr('按新要求调整'), assignee: names[0], deps: [], spec: tr('按用户的新要求调整：{0}。写入文件 调整.md', [text.slice(0, 80)]) });
+    const running = open.filter((t) => /进行中|In progress/.test(t.status)).map((t) => ({ task: t.id, keep: true }));
+    return tr('这条和现在的计划有冲突，我改了计划：加了一个子任务来处理新要求{0}。', [running.length ? tr('，正在做的先停下，改动留着') : '']) + block({ type: 'change', why: tr('新要求改变了做法'), stop: running, tasks: plan });
+  }
+  if (/[?？]/.test(text) || !open.length) return tr('（演示）目前 {0} 个子任务里还有 {1} 个没做完，进展正常。', [tasks.length, open.length]) + block({ type: 'answer' });
+  return tr('不冲突，我把它记成补充说明，交给 {0}。', [open[0].id]) + block({ type: 'note', why: tr('补充要求，不影响现有分工'), notes: [{ task: open[0].id, text }] });
+}
+
 async function stream(text, onDelta, signal) {
   for (let i = 0; i < text.length; i += 6) {
     await sleep(15, signal);
@@ -34,13 +59,14 @@ async function stream(text, onDelta, signal) {
   return { text };
 }
 
-export async function runTurn({ system, prompt, cwd, access, signal, onDelta, onActivity, onRaw, onApproval }) {
+export async function runTurn({ system, prompt, images = [], cwd, access, signal, onDelta, onActivity, onRaw, onApproval }) {
   const me = (system.match(/(?:你是「|You are “)([^」”]+)[」”]/) || [])[1] || tr('演示');
   const members = [...system.matchAll(/^- @([^（(\s]+)/gm)].map((m) => m[1]);
   onRaw?.(`{"type":"mock.start","me":"${me}"}`);
   await sleep(400, signal);
 
   // ---- 任务协作：规划 / 审阅 / 子任务 / 总结 ----
+  if (system.includes(tr('为这次任务的合并起草提交说明'))) return stream(tr('演示：合并已通过的任务改动'), onDelta, signal);
   if (system.includes(tr('这次任务协作的协调者'))) {
     const all = [me, ...members.filter((n) => n !== me)];
     const tasks = [
@@ -51,6 +77,10 @@ export async function runTurn({ system, prompt, cwd, access, signal, onDelta, on
     return stream(tr('我把目标拆成三步，前两步可以同时做。\n\n```json\n{0}\n```', [JSON.stringify({ tasks }, null, 1)]), onDelta, signal);
   }
   if (system.includes(tr('请你审阅计划'))) return stream(tr('[同意]'), onDelta, signal);
+  // ---- 任务空间：你中途发来的消息，协调者判断怎么处理 ----
+  if (system.includes(tr('又发来一条消息'))) return stream(mockTriage(prompt, members.length ? [me, ...members.filter((n) => n !== me)] : [me]), onDelta, signal);
+  // ---- 聊天空间 → 任务空间：把选出的讨论提炼成目标 ----
+  if (system.includes(tr('提炼成任务目标'))) return stream(tr('（演示）把讨论里定下的方案做出来\n\n- 要做：按讨论里的方案改共享文件夹里的文档\n- 已定：先写要点，再汇总\n- 不做：发布和部署\n- 完成标准：方案.md 写好，大家看过没有异议\n\n待定：无'), onDelta, signal);
   // ---- 整理导入的对话 ----
   if (prompt.includes(tr('Markdown 交接文档'))) return stream(tr('## 讨论到哪\n（演示）讨论到了导入功能。\n\n## 已经定下的\n- 演示内容\n\n## 还没解决的\n- 无\n\n## 下一步\n- 继续讨论\n\n## 涉及的文件\n- 无'), onDelta, signal);
   if (prompt.includes(tr('原对话之后又有了下面这些新内容'))) return stream(tr('[无需修改]'), onDelta, signal);
@@ -88,7 +118,7 @@ export async function runTurn({ system, prompt, cwd, access, signal, onDelta, on
   const speakers = [...prompt.matchAll(/^<(?:消息 来自|message from)="([^"]+)"/gm)].map((m) => m[1]);
   const lastSpeaker = speakers.at(-1) || '';
   const myTurns = speakers.filter((name) => name === me).length;
-  if (myTurns >= 2) return { text: tr('[跳过]') };
+  if (myTurns >= 2 && !images.length) return { text: tr('[跳过]') };
   let text = lastSpeaker === tr('我') || !lastSpeaker
     ? tr('收到。我是**{0}**，先说说我的看法：这个问题可以拆成两步——先明确目标，再挑最小的可行方案验证。', [me])
     : tr('同意 **{0}** 的思路。我补充一点：把结论记到共享文档里，方便之后回看。', [lastSpeaker]);
@@ -110,6 +140,7 @@ export async function runTurn({ system, prompt, cwd, access, signal, onDelta, on
       text += tr('\n\n好，先不跑测试{0}。', [note]);
     }
   }
+  if (images.length) text += tr('（看到了 {0} 张图片）', [images.length]);
   if (myTurns === 1) text += tr(' [结束]');
   return stream(text, onDelta, signal);
 }

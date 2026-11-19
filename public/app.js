@@ -2,7 +2,7 @@
 import { openSpace, showWelcome } from './js/chat.js';
 import { refreshEngines } from './js/engines.js';
 import { applyTheme, refreshSpaces, refreshSpacesSoon, renderSpaceList, theme } from './js/sidebar.js';
-import { $, api, load, state } from './js/util.js';
+import { $, api, load, state, store, toast, tr } from './js/util.js';
 import './js/space-form.js';
 import './js/files.js';
 import './js/tasks.js';
@@ -23,11 +23,18 @@ window.addEventListener('beforeunload', (e) => {
 setInterval(renderSpaceList, 60_000);
 // 所有空间的状态变化（发言中、等你确认、任务等你）：侧栏跟着刷新
 new EventSource('/api/events').onmessage = refreshSpacesSoon;
+// 点系统通知：打开那个空间
+window.desktop?.onOpenSpace?.((id) => { location.hash = `#/space/${id}`; });
 
 (async () => {
   $('#mockTag').hidden = !state.app.mock;
   applyTheme(window.desktop?.getTheme ? await window.desktop.getTheme() : load('rt:theme'));
   await Promise.all([refreshEngines(), refreshSpaces()]);
   route();
+  // 升级后第一次打开：旧版的空间（聊天和任务混在一起）已经删掉了
+  if (state.app.removedLegacy && !load('rt:legacyNotified')) {
+    store('rt:legacyNotified', true);
+    toast(tr('这个版本把空间分成了聊天空间和任务空间，旧版的 {0} 个空间已删除', [state.app.removedLegacy]));
+  }
 })();
 

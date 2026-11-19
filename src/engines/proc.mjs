@@ -216,8 +216,10 @@ export function runJsonl({ cmd, args, env, cwd, input = '', inputDelay = 0, keep
       settle(null, { code, stderr, finished });
     });
     child.stdin.on('error', () => { /* 进程提前退出时的 EPIPE */ });
-    if (keepInput) for (const obj of input || []) ctl.send(obj);
-    else if (inputDelay > 0) inputTimer = setTimeout(() => child.stdin.end(input, 'utf8'), inputDelay);
+    if (Array.isArray(input)) {
+      for (const obj of input) ctl.send(obj);
+      if (!keepInput) child.stdin.end();
+    } else if (inputDelay > 0) inputTimer = setTimeout(() => child.stdin.end(input, 'utf8'), inputDelay);
     else child.stdin.end(input, 'utf8');
   });
 }

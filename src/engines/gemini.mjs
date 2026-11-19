@@ -1,9 +1,11 @@
 // Google Gemini API（需要 Gemini API key，在“设置”里填写）。支持 Google 搜索联网。
 import { t as tr } from '../i18n.mjs';
 import { request, errorText, readSse } from './http.mjs';
+import fs from 'node:fs';
 import { brief } from './proc.mjs';
 
 export const meta = {
+  images: true,
   id: 'gemini',
   label: 'Gemini API',
   vendor: 'Google',
@@ -59,7 +61,7 @@ export async function detect({ conn } = {}) {
   }
 }
 
-export async function runTurn({ system, prompt, model, effort, conn, signal, onDelta, onActivity }) {
+export async function runTurn({ system, prompt, images = [], model, effort, conn, signal, onDelta, onActivity }) {
   if (!conn?.apiKey) throw new Error(tr('还没有填写 Gemini API key（左下角“设置”）'));
   const name = model || pickDefault(await listModels(conn));
   if (!name) throw new Error(tr('Gemini：没有可用的模型'));
@@ -69,7 +71,10 @@ export async function runTurn({ system, prompt, model, effort, conn, signal, onD
     headers: { 'x-goog-api-key': conn.apiKey },
     body: {
       systemInstruction: { parts: [{ text: system }] },
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      contents: [{ role: 'user', parts: [
+        { text: prompt },
+        ...images.map((i) => ({ inline_data: { mime_type: i.type, data: fs.readFileSync(i.path, 'base64') } })),
+      ] }],
       tools: [{ google_search: {} }],
       ...(effort ? { generationConfig: { thinkingConfig: { thinkingLevel: effort.toUpperCase() } } } : {}),
     },

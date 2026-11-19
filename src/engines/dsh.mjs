@@ -7,6 +7,7 @@ import path from 'node:path';
 import { isFile, isWin, capture, runJsonl, brief, relPath } from './proc.mjs';
 
 export const meta = {
+  images: false,
   id: 'dsh',
   label: 'DeepSeek Harness',
   kind: 'cli',

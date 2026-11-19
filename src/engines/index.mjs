@@ -53,6 +53,7 @@ const ENGINES = [
     owns: (id) => typeof id === 'string' && id.startsWith(OPENAI_PREFIX),
     instances: (s) => s.providers.map((p) => ({
       ...openai.meta,
+      images: p.images !== false,
       id: `${OPENAI_PREFIX}${p.id}`,
       label: p.name || tr('OpenAI 兼容接口'),
       defaultName: p.name || 'AI',
@@ -116,16 +117,27 @@ export function createRegistry(settings, { mock: mockMode = false } = {}) {
   function runTurn(engineId, opts) {
     const mod = moduleOf(engineId);
     if (!mod) throw new Error(tr('未知的 AI 类型：{0}', [engineId]));
-    return mod.runTurn({ ...optionsFor(engineId), ...opts });
+    const options = optionsFor(engineId);
+    if (!opts.images?.length) return mod.runTurn({ ...options, ...opts });
+    const { images, onNoImages, ...rest } = opts;
+    if (!supportsImages(engineId)) {
+      onNoImages?.();
+      return mod.runTurn({ ...options, ...rest });
+    }
+    return mod.runTurn({ ...options, ...rest, images, onNoImages: () => {
+      onNoImages?.();
+      if (options.conn?.id) settings.disableProviderImages(options.conn);
+    } });
   }
 
   // 演示模式下 moduleOf 拿到的是演示引擎（meta 里没有 kind / resume），自然都是 false
   const isApi = (engineId) => moduleOf(engineId)?.meta?.kind === 'api';
+  const supportsImages = (engineId) => !!moduleOf(engineId)?.meta.images && optionsFor(engineId).conn?.images !== false;
   const supportsResume = (engineId) => !!moduleOf(engineId)?.meta?.resume;
   // 能不能在运行命令前停下来问你（runTurn 收到 onApproval 时）
   const supportsApproval = (engineId) => !!moduleOf(engineId)?.meta?.approvals;
   // 演示模式也按真实引擎判断，导入流程和正式版一致（演示引擎会忽略会话 ID）
   const continuesImports = (engineId) => !!entryOf(engineId)?.module.meta.continuesImports;
 
-  return { list, detect, detectAll, runTurn, isApi, supportsResume, supportsApproval, continuesImports, invalidate: () => cache.clear() };
+  return { list, detect, detectAll, runTurn, isApi, supportsImages, supportsResume, supportsApproval, continuesImports, invalidate: () => cache.clear() };
 }

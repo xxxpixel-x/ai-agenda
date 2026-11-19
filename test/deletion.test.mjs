@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { recompressImport } from '../src/imports.mjs';
-import { makeSpace, tempDir, until } from './helpers.mjs';
+import { makeSpace, tempDir, until, beginTask } from './helpers.mjs';
 
 for (const activity of ['chat', 'planning', 'worker', 'topic import']) {
   test(`deleting a space waits for ${activity} to stop and prevents resurrection`, async (t) => {
@@ -31,7 +31,7 @@ for (const activity of ['chat', 'planning', 'worker', 'topic import']) {
       space.data.messages.push({ id: 'topic-a', kind: 'import', mode: 'topic', status: 'error', topic: '接口', name: 'Bob', sourceLabel: 'Codex', writerId: 'member-b', entries: [{ role: 'user', text: '整理接口', acts: [] }] });
       recompressImport(space.importHost, 'topic-a');
     } else {
-      await space.startRun({ objective: '等待中止', discuss: false });
+      await beginTask(space, { objective: '等待中止', discuss: false });
       if (activity === 'worker') {
         await until(() => space.run.data.status, (s) => s === 'plan_review');
         await space.runAction('approve-plan');

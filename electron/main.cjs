@@ -1,5 +1,5 @@
 // 桌面版入口：在本机起一个只给自己用的服务，再用一个独立窗口显示界面。
-const { app, BrowserWindow, ipcMain, dialog, shell, net, safeStorage, Menu, nativeTheme } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, net, safeStorage, Menu, nativeTheme, Notification, powerSaveBlocker } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -89,6 +89,9 @@ app.on('second-instance', () => {
   if (win) { if (win.isMinimized()) win.restore(); win.focus(); }
 });
 
+const notices = new Set();
+let blocker = null;
+
 app.whenReady().then(async () => {
   i18n = await import(pathToFileURL(path.join(ROOT, 'src', 'i18n.mjs')).href);
   // macOS 没有菜单时复制、粘贴等快捷键也会失效，只保留最基本的应用和编辑菜单
@@ -109,8 +112,29 @@ app.whenReady().then(async () => {
       locales,
       onLanguage: (getLanguage) => { currentLanguage = getLanguage; },
       openPath: (p) => shell.openPath(p),
+      revealPath: (p) => shell.showItemInFolder(p),
       // 有命令等你确认：窗口不在前台时让任务栏图标闪烁，切回窗口就停
       attention: () => { if (win && !win.isFocused()) win.flashFrame(true); },
+      // AI 做完或等你处理：窗口不在前台时弹系统通知，点通知打开那个空间
+      notify: ({ spaceId, title, body }) => {
+        if (!win || win.isFocused() || !Notification.isSupported()) return;
+        win.flashFrame(true);
+        const n = new Notification({ title, body, icon: ICON });
+        notices.add(n); // 留着引用，不然被回收后点通知没反应
+        n.on('click', () => {
+          if (win.isMinimized()) win.restore();
+          win.show();
+          win.focus();
+          win.webContents.send('open-space', spaceId);
+        });
+        n.on('close', () => notices.delete(n));
+        n.show();
+      },
+      // 有 AI 在干活：不让系统睡眠（屏幕照常可以关）
+      keepAwake: (on) => {
+        if (on && blocker === null) blocker = powerSaveBlocker.start('prevent-app-suspension');
+        else if (!on && blocker !== null) { powerSaveBlocker.stop(blocker); blocker = null; }
+      },
       protect: (s) => (canEncrypt ? { enc: safeStorage.encryptString(s).toString('base64') } : { plain: s }),
       unprotect: (o) => (o?.enc ? safeStorage.decryptString(Buffer.from(o.enc, 'base64')) : o?.plain || ''),
     },

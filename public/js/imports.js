@@ -220,19 +220,6 @@ export function importHtml(m, prefix = 'm') {
 }
 
 // 两个视图共用同一条导入记录，任务推送只更新任务区，不打断正在阅读的对话。
-export function renderTaskImports() {
-  const imports = state.space.messages.filter((m) => m.kind === 'import');
-  $('#taskImportList').innerHTML = imports.map((m) => importHtml(m, 'task-m')).join('');
-  $('#taskImports').hidden = !imports.length;
-}
-
-export function updateTaskImport(m) {
-  const el = document.getElementById(`task-m-${m.id}`);
-  if (el) replaceImport(el, m, 'task-m');
-  else $('#taskImportList').insertAdjacentHTML('beforeend', importHtml(m, 'task-m'));
-  $('#taskImports').hidden = false;
-}
-
 export function replaceImport(el, m, prefix = 'm') {
   const open = $('details.imp', el)?.open;
   const rawOpen = $('details.imp-raw', el)?.open;

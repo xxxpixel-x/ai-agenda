@@ -6,6 +6,7 @@ import path from 'node:path';
 import { findOnPath, isFile, capture, runJsonl, brief, relPath } from './proc.mjs';
 
 export const meta = {
+  images: true,
   id: 'claude-code',
   label: 'Claude Code',
   kind: 'cli',
@@ -151,9 +152,11 @@ function friendly(text, bin) {
 /**
  * 平时每次发言都是一次性的（不保存会话）。
  * sessionId：接续导入的 Claude Code 对话。fork 为 true 时先复制一份再接（原会话不动），返回新的会话 ID。
+ * resumeAt：复制时只复制到这条消息为止（导入时的最后一条）。导入后你在 Claude Code 里接着聊的内容不带进来；
+ *   用的是帮助里没列出的 --resume-session-at（Claude Code 2.1.325 实测），找不到这条消息时按接续失败处理。
  * 接续时用 --system-prompt-snapshot off，否则会一直沿用原会话第一次记下的系统提示，Agenda 的规则传不进去。
  */
-export async function runTurn({ system, prompt, model, effort, cwd, access = 'edit', signal, onDelta, onActivity, onRaw, onApproval, binOverride, sessionId, fork = false }) {
+export async function runTurn({ system, prompt, images = [], model, effort, cwd, access = 'edit', signal, onDelta, onActivity, onRaw, onApproval, binOverride, sessionId, fork = false, resumeAt }) {
   const ask = access === 'run' && !!onApproval;
   const bin = findBin(binOverride);
   if (!bin) throw new Error(tr('没有找到 Claude Code'));
@@ -166,7 +169,7 @@ export async function runTurn({ system, prompt, model, effort, cwd, access = 'ed
     '--verbose',
     '--include-partial-messages',
     '--append-system-prompt-file', sysFile,
-    ...(ask ? ['--input-format', 'stream-json'] : []),
+    ...(ask || images.length ? ['--input-format', 'stream-json'] : []),
     ...accessArgs(access, ask),
     '--safe-mode',            // 不加载个人的 CLAUDE.md / 插件 / hooks / MCP
     '--strict-mcp-config',
@@ -174,6 +177,7 @@ export async function runTurn({ system, prompt, model, effort, cwd, access = 'ed
   if (sessionId) {
     args.push('--resume', sessionId, '--system-prompt-snapshot', 'off');
     if (fork) args.push('--fork-session');
+    if (fork && resumeAt) args.push('--resume-session-at', resumeAt);
   } else {
     args.push('--no-session-persistence');
   }
@@ -208,12 +212,13 @@ export async function runTurn({ system, prompt, model, effort, cwd, access = 'ed
       args,
       cwd,
       // 双向通信时先握手（不握手 Claude 不会把权限请求发过来），再发这次的输入
-      input: ask
-        ? [
-          { type: 'control_request', request_id: 'init', request: { subtype: 'initialize' } },
-          { type: 'user', message: { role: 'user', content: prompt }, parent_tool_use_id: null, session_id: '' },
-        ]
-        : prompt,
+      input: ask || images.length ? [
+        ...(ask ? [{ type: 'control_request', request_id: 'init', request: { subtype: 'initialize' } }] : []),
+        { type: 'user', message: { role: 'user', content: images.length ? [
+          { type: 'text', text: prompt },
+          ...images.map((i) => ({ type: 'image', source: { type: 'base64', media_type: i.type, data: fs.readFileSync(i.path, 'base64') } })),
+        ] : prompt }, parent_tool_use_id: null, session_id: '' },
+      ] : prompt,
       keepInput: ask,
       signal,
       onRaw,
@@ -240,7 +245,8 @@ export async function runTurn({ system, prompt, model, effort, cwd, access = 'ed
     });
     const fail = (why) => {
       const err = new Error(friendly(why, bin));
-      if (sessionId && /no conversation found|session.*not found/i.test(String(why))) err.resumeFailed = true;
+      // 接不上原会话：原因有时只写在 stderr 里（比如 --resume-session-at 找不到消息，结果里只有 error_during_execution）
+      if (sessionId && /no conversation found|session.*not found|no message found with message\.uuid|unknown option.*resume-session-at/i.test(`${why}\n${r.stderr || ''}`)) err.resumeFailed = true;
       return err;
     };
     if (result?.is_error) throw fail(result.result || result.subtype);

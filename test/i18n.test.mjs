@@ -13,7 +13,7 @@ import { importsBackground, resumeNote, importSession, refreshImport } from '../
 import { configureImporters, stagePasted } from '../src/importers/index.mjs';
 import { parseImport } from '../src/importers/parse.mjs';
 import { startServer } from '../src/app-server.mjs';
-import { tempDir, makeSpace, settleSpace, until } from './helpers.mjs';
+import { tempDir, makeSpace, settleSpace, until, beginTask } from './helpers.mjs';
 
 test('locale resolution agrees in the browser and backend', () => {
   for (const resolve of [resolveLanguage, browserLanguage]) {
@@ -158,7 +158,7 @@ test('stored action labels change language while file names and transcript conte
 test('English mock tasks plan, review, execute and summarize through normal entry points', { timeout: 30000 }, async (t) => withLanguage('en', async () => {
   const space = makeSpace(tempDir(t));
   t.after(() => settleSpace(space));
-  await space.startRun({ objective: 'Write a fictional proposal', discuss: true, autoApprove: true });
+  await beginTask(space, { objective: 'Write a fictional proposal', discuss: true, autoApprove: true });
   await until(() => space.run.data.status, (status) => status === 'plan_review');
   assert.equal(space.run.data.tasks.length, 3);
   await space.runAction('approve-plan');

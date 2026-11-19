@@ -2,7 +2,7 @@
 // 三句话报告、明确成功/失败、需要人决定时停下来问）。
 import { t as tr } from './i18n.mjs';
 import { fileBlockRules, filesForPrompt } from './engines/file-blocks.mjs';
-import { canRun, newKey, said, keyRule } from './prompts.mjs';
+import { canRun, newKey, said, keyRule, escapeTags, attachmentText } from './prompts.mjs';
 
 const RESULT_RE = /(?:结果|Result)\s*[:：]\s*(完成|失败|需要确认|Done|Failed|Needs input)\s*[:：,，]?\s*(.*)$/i;
 
@@ -92,6 +92,7 @@ export function workerPrompt(space, run, task, { files = null, conflict = null, 
   }
   const prev = task.attempts.filter((a) => a.report || a.error);
   if (prev.length) parts.push(tr('# 你上一次的结果\n{0}\n（你上次的改动还在工作目录里，在此基础上继续。）', [prev.at(-1).report || prev.at(-1).error]));
+  if (task.notes?.length) parts.push(tr('# 用户中途补充的要求（协调者转给你的，请一并照做）\n{0}', [task.notes.map((n) => said(key, '', n.text, true)).join('\n')]));
   if (task.feedbacks?.length) parts.push(tr('# 用户的意见（请按意见修改）\n{0}', [task.feedbacks.map((f) => said(key, '', f.text, true)).join('\n')]));
   if (task.question && task.answer) parts.push(tr('# 你之前的问题\n{0}\n# 用户的回答\n{1}', [task.question, said(key, '', task.answer, true)]));
   if (conflict) parts.push(tr('# 合并冲突\n你的改动和已经通过的其他子任务冲突了。下面这些文件里有 <<<<<<< ======= >>>>>>> 冲突标记，请解决冲突（保留双方都需要的内容），删除所有冲突标记：\n{0}', [conflict.map((f) => `- ${f}`).join('\n')]));
@@ -131,6 +132,17 @@ export function summaryPrompt(space, run, { key = newKey() } = {}) {
   return tr('{0}\n\n{1}\n\n# 子任务\n{2}\n\n请写总结。', [keyRule(key), objective(run, key), tasks]);
 }
 
+export function commitSystem(space, me) {
+  return tr('tasks.commit', [me.name]);
+}
+
+export function commitPrompt(run, { commits, files, summary, key = newKey() }) {
+  return tr('tasks.commitPrompt', [
+    keyRule(key), objective(run, key), escapeTags(summary),
+    escapeTags(files.map((f) => f.path).join('\n')), escapeTags(commits.join('\n\n---\n\n')),
+  ]);
+}
+
 /** 从协调者回复里取出计划 JSON。 */
 export function extractPlan(text) {
   const s = String(text || '');
@@ -150,10 +162,10 @@ export function extractPlan(text) {
 }
 
 /** 规范化计划：id 唯一、负责人映射到成员、依赖有效且无环。 */
-export function normalizePlan(rawTasks, members, fallbackId) {
+export function normalizePlan(rawTasks, members, fallbackId, { max = 12 } = {}) {
   const byName = new Map(members.map((m) => [m.name, m.id]));
   const ids = new Set();
-  const tasks = rawTasks.slice(0, 12).map((t, i) => {
+  const tasks = rawTasks.slice(0, max).map((t, i) => {
     let id = String(t.id || `T${i + 1}`).replace(/[^A-Za-z0-9-]/g, '').slice(0, 12) || `T${i + 1}`;
     while (ids.has(id)) id = `${id}x`;
     ids.add(id);
@@ -180,4 +192,68 @@ export function normalizePlan(rawTasks, members, fallbackId) {
   };
   for (const t of tasks) t.deps = t.deps.filter((d) => !reaches(d, t.id));
   return tasks;
+}
+
+// ---------- 任务空间：你中途发来的消息先交给协调者 ----------
+// 协调者看当前计划、各子任务状态和进展，判断是补充说明、要改计划、只是问问，还是和总目标无关。
+
+/** 各子任务现在做到哪了（给协调者判断用）。 */
+function progressText(space, run) {
+  return run.tasks.map((t) => {
+    const who = space.members.find((m) => m.id === t.assigneeId)?.name || '?';
+    const a = t.attempts.at(-1);
+    const lines = [tr('## {0} {1}（负责：{2}，{3}{4}）', [t.id, t.title, who, STATUS_TEXT[t.status] || t.status, t.deps?.length ? tr('，依赖 {0}', [t.deps.join('、')]) : ''])];
+    lines.push(t.spec);
+    if (t.notes?.length) lines.push(tr('已有的补充说明：\n{0}', [t.notes.map((n) => `- ${n.text}`).join('\n')]));
+    if (t.status === 'running' && a) {
+      const acts = (a.activities || []).slice(-8).map((x) => `- ${x.label}`).join('\n');
+      lines.push(tr('正在做，已经做了：\n{0}', [acts || tr('（还没有动作）')]));
+    } else if (a?.report || a?.error) {
+      lines.push(tr('最近一次的结果：{0}', [(a.report || a.error).slice(0, 1200)]));
+    }
+    if (t.changes?.length) lines.push(tr('改动的文件：{0}', [t.changes.map((c) => c.path).join('、')]));
+    return lines.join('\n');
+  }).join('\n\n');
+}
+
+export function triageSystem(space, run, me) {
+  return tr('tasks.triage', [me.name, roster(space), modeLine(run), accessLine(space)]);
+}
+
+/** history：这个任务空间里你和协调者最近的几轮对话（不含这一条）。 */
+export function triagePrompt(space, run, text, { history = [], key = newKey() } = {}) {
+  const parts = [keyRule(key), objective(run, key)];
+  parts.push(tr('# 现在的阶段\n{0}', [run.status === 'done' ? tr('所有子任务都结束了，你已经写过总结；用户还没有结束这个任务。') : run.status === 'plan_review' ? tr('计划还在等用户确认，还没开始执行。') : tr('正在执行。')]));
+  parts.push(tr('# 计划和进展\n{0}', [progressText(space, run) || tr('（还没有子任务）')]));
+  if (history.length) parts.push(tr('# 之前的对话\n{0}', [history.map((m) => said(key, m.name, attachmentText(m, space.workspacePath), m.kind === 'user')).join('\n\n')]));
+  parts.push(tr('# 用户刚发来的消息\n{0}', [said(key, '', text, true)]));
+  parts.push(tr('请判断并按格式回复。'));
+  return parts.join('\n\n');
+}
+
+/** 取出协调者的判断：```json 块里的 { type, notes, stop, tasks }，其余文字是给用户的回复。 */
+export function parseTriage(text) {
+  const s = String(text || '');
+  const blocks = [...s.matchAll(/```(?:json)?\s*\n([\s\S]*?)\n```/g)];
+  let j = null;
+  for (const m of [...blocks].reverse()) {
+    try { j = JSON.parse(m[1]); break; } catch { /* 下一个 */ }
+  }
+  const reply = s.replace(/```(?:json)?\s*\n[\s\S]*?\n```/g, '').trim();
+  if (!j || typeof j !== 'object') return { type: 'answer', reply: reply || s.trim(), notes: [], stop: [], tasks: null };
+  const type = ['note', 'change', 'unrelated', 'answer'].includes(j.type) ? j.type : 'answer';
+  const notes = (Array.isArray(j.notes) ? j.notes : []).map((n) => ({ task: String(n.task || n.id || ''), text: String(n.text || '').trim().slice(0, 2000) })).filter((n) => n.task && n.text);
+  const stop = (Array.isArray(j.stop) ? j.stop : []).map((x) => (typeof x === 'string' ? { task: x, keep: true } : { task: String(x.task || x.id || ''), keep: x.keep !== false })).filter((x) => x.task);
+  const tasks = type === 'change' && Array.isArray(j.tasks) && j.tasks.length ? j.tasks : null;
+  return { type: type === 'change' && !tasks ? 'answer' : type, reply: reply || String(j.reply || '').trim(), notes, stop, tasks, why: String(j.why || '').trim().slice(0, 600) };
+}
+
+// ---------- 聊天空间 → 任务空间：让一个成员把选中的讨论提炼成方案 ----------
+export function distillSystem(me) {
+  return tr('tasks.distill', [me.name]);
+}
+
+export function distillPrompt(messages, { key = newKey() } = {}) {
+  const lines = messages.map((m) => said(key, m.kind === 'user' ? '' : m.name, m.text, m.kind === 'user'));
+  return tr('{0}\n\n# 选出的讨论\n{1}\n\n请提炼成任务目标。', [keyRule(key), lines.join('\n\n')]);
 }

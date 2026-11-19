@@ -3,7 +3,7 @@ import { closeStream, input, showWelcome } from './chat.js';
 import { refreshEngines, showModal } from './engines.js';
 import { bindImportOptions, importOptionsHtml, openSessionPicker, readImportOptions, safeName, samePath, wan } from './imports.js';
 import { refreshSpaces, renderSpaceList } from './sidebar.js';
-import { $, $$, ACCESS, ICON, api, engineOf, esc, shownEngines, state, toast, tr } from './util.js';
+import { $, $$, ACCESS, ICON, api, engineOf, esc, load, shownEngines, state, store, toast, tr } from './util.js';
 
 // ---------------- 成员编辑器（新建空间 / 空间设置共用） ----------------
 // 型号候选：写死的常用型号 + 检测时查到的（字符串，或 [型号, 显示名]）
@@ -25,7 +25,7 @@ export function effortSelect(e, m) {
   if (list.length <= 1) return '<span data-k="effort"></span>';
   return `<select data-k="effort" title="${tr('思考深度')}">${list.map((v) => `<option value="${esc(v)}" ${v === (m.effort || '') ? 'selected' : ''}>${tr('思考：{0}', [esc(v || tr('默认'))])}</option>`).join('')}</select>`;
 }
-function memberEditor(container, members) {
+function memberEditor(container, members, onChange) {
   const render = () => {
     container.innerHTML = `<div class="member-rows">${members.map((m, i) => {
       const e = engineOf(m.engine) || {};
@@ -40,12 +40,13 @@ function memberEditor(container, members) {
           ${effortSelect(e, m)}
           <button class="icon-btn" type="button" data-act="del-member" title="${tr('移除')}" ${members.length <= 1 ? 'disabled' : ''}>${ICON.close}</button>
         </div>
-        ${!st.ready ? `<div class="member-status warn">⚠ ${esc(st.note || tr('还不能用'))}</div>` : ''}
+        ${!st.ready ? `<div class="member-status warn">${esc(st.note || tr('还不能用'))}</div>` : ''}
         <details ${m.persona ? 'open' : ''}><summary>${tr('设定')}</summary>
           <textarea data-k="persona" rows="2" placeholder="${tr('例如：你负责挑毛病；或者：你是这份论文的审稿人')}">${esc(m.persona || '')}</textarea></details>
       </div>`;
     }).join('')}</div>
-    <button class="btn sm ghost" type="button" data-act="add-member" ${members.length >= 8 ? 'disabled' : ''}>${tr('＋ 添加成员')}</button>`;
+    <button class="btn sm ghost" type="button" data-act="add-member" ${members.length >= 8 ? 'disabled' : ''}>${ICON.plus}${tr('添加成员')}</button>`;
+    onChange?.();
   };
   container.addEventListener('input', (ev) => {
     const row = ev.target.closest('.member-row');
@@ -53,6 +54,7 @@ function memberEditor(container, members) {
     if (!row || !k) return;
     const m = members[+row.dataset.i];
     m[k] = ev.target.value;
+    if (k === 'name') onChange?.();
     if (k === 'engine') {
       const e = engineOf(m.engine);
       m.model = '';
@@ -98,11 +100,47 @@ const accessChoices = (cur) => Object.entries(ACCESS).map(([k, v]) => `
   <label class="choice"><input type="radio" name="access" value="${k}" ${k === cur ? 'checked' : ''}>
     <span><b>${v.label}</b><div class="d">${v.desc}</div></span></label>`).join('');
 
-export async function openNewSpaceModal() {
+// 任务空间的执行选项：新建和任务空间设置共用
+const PLAN_CONFIRM = {
+  manual: { label: tr('等我确认'), desc: tr('协调者定好计划（包括中途改过的计划）后，等你点确认再开始') },
+  auto: { label: tr('自动开始执行'), desc: tr('计划定好直接开始，照样显示在计划条里，随时可以停') },
+};
+function taskOptionsHtml(o = {}) {
+  const pc = o.planConfirm || 'manual';
+  return `<div class="field"><div class="label">${tr('计划确认方式')}</div><div class="choices row">${Object.entries(PLAN_CONFIRM).map(([k, v]) => `
+      <label class="choice"><input type="radio" name="planConfirm" value="${k}" ${k === pc ? 'checked' : ''}><span><b>${v.label}</b><div class="d">${v.desc}</div></span></label>`).join('')}</div></div>
+    <div class="field opts-list">
+      <label class="check-row"><input type="checkbox" data-opt="discuss" ${o.discuss !== false ? 'checked' : ''}> ${tr('其他成员先审阅计划')}</label>
+      <label class="check-row"><input type="checkbox" data-opt="autoApprove" ${o.autoApprove ? 'checked' : ''}> ${tr('子任务做完自动通过')}</label>
+      <label class="check-row">${tr('Git 项目最多同时做')} <input type="number" data-opt="maxParallel" min="1" max="6" value="${o.maxParallel || 3}"> ${tr('个子任务')}</label>
+    </div>`;
+}
+function readTaskOptions(root) {
+  return {
+    planConfirm: $('input[name=planConfirm]:checked', root)?.value || 'manual',
+    discuss: $('[data-opt=discuss]', root).checked,
+    autoApprove: $('[data-opt=autoApprove]', root).checked,
+    maxParallel: $('[data-opt=maxParallel]', root).value,
+  };
+}
+const copyMembers = (list) => list.map((m) => ({ engine: m.engine, name: m.name, model: m.model || '', effort: m.effort || '', persona: m.persona || '' }));
+
+/**
+ * 新建空间。opts：
+ *  kind          'chat' | 'task'，lockKind 为 true 时不能切换
+ *  objective     任务目标（直接带过去的消息 / 再开一个类似的任务时为空）
+ *  distill       { ids, memberId }：打开后让这个成员把选中的讨论整理成目标
+ *  from          从哪个聊天空间转来 { id, title, workspacePath }：默认用同一个文件夹
+ *  source        { spaceId, messages }：记在任务空间上，结束时可以把总结发回去
+ *  members / coordinatorName / task / access / folder：照搬的成员和设置
+ */
+export async function openNewSpaceModal(opts = {}) {
   await refreshEngines();
-  const members = defaultMembers();
+  const members = opts.members?.length ? copyMembers(opts.members) : defaultMembers();
+  let kind = opts.kind === 'task' ? 'task' : 'chat';
   let imp = null; // 从一段对话开始时选中的对话
   let autoFolder = ''; // 软件自动填的共享文件夹；你自己选过别的就不再跟着变
+  let coordIndex = Math.max(0, members.findIndex((m) => m.name === opts.coordinatorName));
   const subOf = (dir, parent) => samePath(dir.replace(/[\\/]+[^\\/]+[\\/]*$/, ''), parent);
   const syncFolder = () => {
     const f = $('#nsFolder', dlg);
@@ -113,32 +151,75 @@ export async function openNewSpaceModal() {
     f.value = autoFolder;
     $('input[name=ws][value=folder]', dlg).checked = true;
   };
+  const sharedChoice = opts.from ? `<label class="choice"><input type="radio" name="ws" value="shared" checked><span><b>${tr('和「{0}」用同一个文件夹', [esc(opts.from.title)])}</b><div class="d">${tr('Git 项目在独立副本里做，审查通过才合并；不是 Git 项目时，执行期间那个聊天空间的文件暂时只读')}</div></span></label>` : '';
   const dlg = showModal(`<div class="modal-inner">
-    <div class="modal-head"><h3>${tr('新建空间')}</h3><button class="btn sm ghost" type="button" data-act="from-chat">${tr('从对话开始')}</button><button class="icon-btn" type="button" data-act="close">${ICON.close}</button></div>
+    <div class="modal-head"><h3 id="nsHead">${tr('新建空间')}</h3><button class="btn sm ghost" type="button" data-act="from-chat" id="nsFromChat">${tr('从对话开始')}</button><button class="icon-btn" type="button" data-act="close">${ICON.close}</button></div>
     <div class="modal-body">
+      <div class="kind-switch" role="radiogroup" aria-label="${tr('空间类型')}" ${opts.lockKind ? 'hidden' : ''}>
+        <label class="kind-opt"><input type="radio" name="kind" value="chat" ${kind === 'chat' ? 'checked' : ''}><span class="ko-icon">${ICON.chat}</span><span><b>${tr('聊天空间')}</b><span class="d">${tr('自由讨论，输入框发给所有成员')}</span></span></label>
+        <label class="kind-opt"><input type="radio" name="kind" value="task" ${kind === 'task' ? 'checked' : ''}><span class="ko-icon">${ICON.task}</span><span><b>${tr('任务空间')}</b><span class="d">${tr('完成一个目标，输入框只发给协调者')}</span></span></label>
+      </div>
       <div id="nsImport"></div>
-      <div class="field"><label>${tr('名字')}</label><input id="nsTitle" maxlength="60" placeholder="${tr('例如：毕业论文第三章')}"></div>
+      <div class="field" data-for="task"><label for="nsGoal">${tr('目标')}</label>
+        <textarea id="nsGoal" rows="6" placeholder="${tr('要完成什么？例如：给这个项目加上导出 PDF 的功能')}">${esc(opts.objective || '')}</textarea>
+        <div class="hint" id="nsGoalHint">${opts.source ? tr('从聊天空间「{0}」选了 {1} 条消息', [esc(opts.from?.title || ''), opts.source.messages]) : ''}</div></div>
+      <div class="field"><label for="nsTitle">${tr('名字')}</label><input id="nsTitle" maxlength="60"></div>
       <div class="field"><div class="label">${tr('成员')}</div><div id="nsMembers"></div></div>
+      <div class="field" data-for="task"><label for="nsCoord">${tr('协调者')}</label><select id="nsCoord" class="w-auto"></select>
+        <div class="hint">${tr('拆分计划、分配子任务、处理你中途发来的消息、写总结')}</div></div>
       <div class="field"><div class="label">${tr('共享文件夹')}</div>
-        <div class="choices">
-          <label class="choice"><input type="radio" name="ws" value="managed" checked><span><b>${tr('新建一个空文件夹')}</b><div class="d">${tr('适合写作和讨论')}</div></span></label>
-          <label class="choice"><input type="radio" name="ws" value="folder"><span><b>${tr('用电脑上已有的文件夹')}</b><div class="d">${tr('AI 会直接读写里面的文件')}</div>
-            <div class="folder-row"><input id="nsFolder" placeholder="${tr('点右边按钮选择')}" readonly><button class="btn sm" type="button" data-act="pick">${tr('选择…')}</button></div></span></label>
+        <div class="choices">${sharedChoice}
+          <label class="choice"><input type="radio" name="ws" value="managed" ${sharedChoice || opts.folder ? '' : 'checked'}><span><b>${tr('新建一个空文件夹')}</b><div class="d">${tr('适合写作和讨论')}</div></span></label>
+          <label class="choice"><input type="radio" name="ws" value="folder" ${!sharedChoice && opts.folder ? 'checked' : ''}><span><b>${tr('用电脑上已有的文件夹')}</b><div class="d">${tr('AI 会直接读写里面的文件')}</div>
+            <div class="folder-row"><input id="nsFolder" placeholder="${tr('点右边按钮选择')}" readonly value="${esc(opts.folder || '')}"><button class="btn sm" type="button" data-act="pick">${tr('选择…')}</button></div></span></label>
         </div></div>
-      <div class="field"><div class="label">${tr('AI 的权限')}</div><div class="choices">${accessChoices('edit')}</div></div>
-      <div class="field"><label>${tr('每次最多来回几次')}</label>
-        <input id="nsTurns" type="number" min="1" max="30" value="6" style="width:100px"></div>
+      <div class="field"><div class="label">${tr('AI 的权限')}</div><div class="choices">${accessChoices(opts.access || (ACCESS[load('lastAccess')] ? load('lastAccess') : 'edit'))}</div></div>
+      <div data-for="task">${taskOptionsHtml(opts.task)}</div>
+      <div class="field" data-for="chat"><label for="nsTurns">${tr('每次最多来回几次')}</label>
+        <input id="nsTurns" type="number" min="1" max="30" value="6" class="w-num"></div>
     </div>
-    <div class="modal-foot"><button class="btn" type="button" data-act="close">${tr('取消')}</button><button class="btn primary" type="button" data-act="create">${tr('创建')}</button></div>
+    <div class="modal-foot"><button class="btn" type="button" data-act="close">${tr('取消')}</button><button class="btn primary" type="button" data-act="create" id="nsCreate">${tr('创建')}</button></div>
   </div>`);
-  memberEditor($('#nsMembers', dlg), members);
-  $('#nsTitle', dlg).focus();
+  const renderCoord = () => {
+    coordIndex = Math.min(coordIndex, members.length - 1);
+    $('#nsCoord', dlg).innerHTML = members.map((m, i) => `<option value="${i}" ${i === coordIndex ? 'selected' : ''}>${esc(m.name || tr('成员 {0}', [i + 1]))}</option>`).join('');
+  };
+  const applyKind = () => {
+    for (const el of $$('[data-for]', dlg)) el.hidden = el.dataset.for !== kind;
+    $('#nsHead', dlg).textContent = opts.lockKind ? tr('转到新的任务空间') : tr('新建空间');
+    $('#nsFromChat', dlg).hidden = kind !== 'chat';
+    $('#nsCreate', dlg).textContent = kind === 'task' ? tr('创建并开始规划') : tr('创建');
+    $('#nsTitle', dlg).placeholder = kind === 'task' ? tr('留空就用目标的第一句') : tr('例如：毕业论文第三章');
+    if (kind === 'task' && imp) { imp = null; $('#nsImport', dlg).innerHTML = ''; }
+  };
+  memberEditor($('#nsMembers', dlg), members, renderCoord);
+  renderCoord();
+  applyKind();
+  ($(kind === 'task' ? '#nsGoal' : '#nsTitle', dlg)).focus();
+  if (opts.distill) {
+    // 让一个成员整理：先占住目标框，整理好了填进去，你再改
+    const goal = $('#nsGoal', dlg);
+    const who = opts.members?.find((m) => m.id === opts.distill.memberId)?.name || '';
+    goal.disabled = true;
+    goal.placeholder = tr('{0} 正在把选中的讨论整理成方案…', [who]);
+    api(`/api/spaces/${opts.from.id}/distill`, { method: 'POST', body: opts.distill }).then((r) => {
+      goal.value = r.text;
+      $('#nsGoalHint', dlg).textContent = tr('{0} 从「{1}」选中的 {2} 条消息整理的，看过、改过再创建', [r.by, opts.from.title, opts.source.messages]);
+    }).catch((e) => {
+      toast(tr('没整理成：{0}', [e.message]), 'error');
+      goal.placeholder = tr('没整理成，可以自己写目标');
+    }).finally(() => { goal.disabled = false; goal.focus(); });
+  }
+  dlg.addEventListener('change', (ev) => {
+    if (ev.target.name === 'kind') { kind = ev.target.value; applyKind(); }
+    if (ev.target.id === 'nsCoord') coordIndex = +ev.target.value;
+  });
   dlg.addEventListener('click', async (ev) => {
     const b = ev.target.closest('[data-act]');
     if (!b) return;
     if (b.dataset.act === 'close') dlg.close();
     if (b.dataset.act === 'pick') {
-      const p = await window.desktop.pickFolder();
+      const p = await window.desktop?.pickFolder?.();
       if (p) { $('#nsFolder', dlg).value = p; $('input[name=ws][value=folder]', dlg).checked = true; }
     }
     if (b.dataset.act === 'from-chat') {
@@ -153,7 +234,8 @@ export async function openNewSpaceModal() {
         const box = $('#nsMembers', dlg);
         const fresh = box.cloneNode(false); // 成员编辑器重新绑定
         box.replaceWith(fresh);
-        memberEditor(fresh, members);
+        memberEditor(fresh, members, renderCoord);
+        renderCoord();
       }
       $('#nsImport', dlg).innerHTML = `<div class="field"><div class="imp-pick"><b>${esc(imp.title)}</b><span class="hint">${tr('{0} · {1} 条 · {2}', [esc(imp.sourceLabel), imp.count, wan(imp.chars)])}</span>
         <button class="icon-btn" type="button" data-act="drop-import" title="${tr('不导入')}">${ICON.close}</button></div>${importOptionsHtml(imp)}</div>`;
@@ -162,28 +244,39 @@ export async function openNewSpaceModal() {
     if (b.dataset.act === 'drop-import') { imp = null; $('#nsImport', dlg).innerHTML = ''; }
     if (b.dataset.act === 'create') {
       const wsType = $('input[name=ws]:checked', dlg).value;
+      const workspace = wsType === 'shared' ? { type: 'folder', path: opts.from.workspacePath } : { type: wsType, path: $('#nsFolder', dlg).value };
       const body = {
+        kind,
         title: $('#nsTitle', dlg).value,
         members,
-        workspace: { type: wsType, path: $('#nsFolder', dlg).value },
+        workspace,
         access: $('input[name=access]:checked', dlg).value,
-        maxTurns: $('#nsTurns', dlg).value,
       };
-      if (wsType === 'folder' && !body.workspace.path) { toast(tr('请先选择文件夹'), 'error'); return; }
-      if (imp) {
-        const { memberId, writerId, ...opts } = readImportOptions($('#nsImport', dlg), imp);
-        const topic = opts.mode === 'topic';
-        if (topic && !opts.topic) { toast(tr('请填写主题'), 'error'); $('#impTopic', dlg).focus(); return; }
+      if (wsType === 'folder' && !workspace.path) { toast(tr('请先选择文件夹'), 'error'); return; }
+      if (kind === 'task') {
+        body.objective = $('#nsGoal', dlg).value;
+        if (!body.objective.trim()) { toast(tr('先写下目标'), 'error'); $('#nsGoal', dlg).focus(); return; }
+        body.coordinatorIndex = coordIndex;
+        Object.assign(body, readTaskOptions(dlg));
+        if (opts.source) body.source = opts.source;
+      } else {
+        body.maxTurns = $('#nsTurns', dlg).value;
+      }
+      if (imp && kind === 'chat') {
+        const { memberId, writerId, ...io } = readImportOptions($('#nsImport', dlg), imp);
+        const topic = io.mode === 'topic';
+        if (topic && !io.topic) { toast(tr('请填写主题'), 'error'); $('#impTopic', dlg).focus(); return; }
         const has = members.some((m) => m.engine === imp.engine);
         if (engineOf(imp.engine) && !has && !topic) { toast(tr('导入这段对话需要一个 {0} 成员', [imp.sourceLabel]), 'error'); return; }
-        const folder = wsType === 'folder' ? body.workspace.path : '';
+        const folder = wsType === 'folder' ? workspace.path : '';
         const moved = has && engineOf(imp.engine)?.continuesImports && imp.cwd && !samePath(folder, imp.cwd) && !(topic && folder && subOf(folder, imp.cwd));
         if (moved && !confirm(tr('共享文件夹和原对话的不同，原对话里的文件路径可能对不上。继续吗？'))) return;
-        body.import = opts;
+        body.import = io;
       }
       b.disabled = true;
       try {
         const sp = await api('/api/spaces', { method: 'POST', body });
+        store('lastAccess', body.access); // 下次新建默认用这一档
         if (sp.importError) toast(tr('空间建好了，但对话没导入：{0}', [sp.importError]), 'error');
         dlg.close();
         await refreshSpaces();
@@ -194,27 +287,50 @@ export async function openNewSpaceModal() {
   dlg.addEventListener('input', (ev) => { if (ev.target.id === 'nsFolder') $('input[name=ws][value=folder]', dlg).checked = true; });
 }
 
+/** 结束了的任务空间：再开一个类似的任务。成员和设置照搬，目标重新写。 */
+export function openSimilarTask(sp) {
+  const r = sp.run || {};
+  openNewSpaceModal({
+    kind: 'task',
+    lockKind: true,
+    members: sp.members,
+    coordinatorName: sp.members.find((m) => m.id === r.coordinatorId)?.name,
+    task: { planConfirm: r.planConfirm, discuss: r.discuss, autoApprove: r.autoApprove, maxParallel: r.maxParallel },
+    access: sp.access,
+    folder: sp.workspace.type === 'folder' ? sp.workspacePath : '',
+    from: sp.source ? { id: sp.source.spaceId, title: sp.source.title, workspacePath: sp.workspacePath } : null,
+    source: sp.source ? { spaceId: sp.source.spaceId, messages: 0 } : null,
+  });
+}
+
 export async function openSpaceSettings() {
   const sp = state.space;
   if (!sp) return;
   await refreshEngines();
+  const task = sp.kind === 'task';
+  const r = sp.run;
+  const ended = task && !!r?.closed;
+  const busy = task && r && ['planning', 'plan_review', 'executing', 'summarizing'].includes(r.status);
   const members = sp.members.map((m) => ({ ...m }));
   const allowed = [...(sp.allowedPrograms || [])];
   const allowedHtml = () => allowed.map((p) => `<span class="allowed-chip"><code>${esc(p)}</code><button type="button" class="icon-btn" data-act="unallow" data-p="${esc(p)}" title="${tr('移除')}" aria-label="${tr('移除 {0}', [esc(p)])}">${ICON.close}</button></span>`).join('');
   const dlg = showModal(`<div class="modal-inner">
-    <div class="modal-head"><h3>${tr('空间设置')}</h3><button class="icon-btn" type="button" data-act="close">${ICON.close}</button></div>
+    <div class="modal-head"><h3>${task ? tr('任务空间设置') : tr('空间设置')}</h3><button class="icon-btn" type="button" data-act="close">${ICON.close}</button></div>
     <div class="modal-body">
-      <div class="field"><label>${tr('名字')}</label><input id="ssTitle" maxlength="60" value="${esc(sp.title)}"></div>
-      <div class="field"><div class="label">${tr('成员')}</div><div id="ssMembers"></div></div>
+      <div class="field"><label for="ssTitle">${tr('名字')}</label><input id="ssTitle" maxlength="60" value="${esc(sp.title)}"></div>
+      ${ended ? `<p class="hint">${tr('这个任务已经结束，只能改名字。')}</p>` : `
+      <div class="field"><div class="label">${tr('成员')}</div>${busy ? `<div class="hint">${tr('任务进行中，不能修改成员；换型号可以点顶部的成员标签')}</div>` : '<div id="ssMembers"></div>'}</div>
+      ${task && r ? `<div class="field"><label for="ssCoord">${tr('协调者')}</label><select id="ssCoord" class="w-auto">${sp.members.map((m) => `<option value="${m.id}" ${m.id === r.coordinatorId ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select></div>` : ''}
       <div class="field"><div class="label">${tr('AI 的权限')}</div><div class="choices">${accessChoices(sp.access)}</div></div>
+      ${task && r ? taskOptionsHtml(r) : ''}
       ${allowed.length ? `<div class="field"><div class="label">${tr('运行前不再问的程序')}</div><div class="allowed-list" id="ssAllowed">${allowedHtml()}</div></div>` : ''}
-      <div class="field"><label>${tr('每次最多来回几次')}</label><input id="ssTurns" type="number" min="1" max="30" value="${sp.maxTurns}" style="width:100px"></div>
+      ${task ? '' : `<div class="field"><label for="ssTurns">${tr('每次最多来回几次')}</label><input id="ssTurns" type="number" min="1" max="30" value="${sp.maxTurns}" class="w-num"></div>`}`}
       <div class="field"><div class="label">${tr('共享文件夹')}</div><span class="cmd">${esc(sp.workspacePath)}</span></div>
     </div>
     <div class="modal-foot"><button class="btn danger" type="button" data-act="delete">${tr('删除这个空间')}</button><span class="grow"></span>
       <button class="btn" type="button" data-act="close">${tr('取消')}</button><button class="btn primary" type="button" data-act="save">${tr('保存')}</button></div>
   </div>`);
-  memberEditor($('#ssMembers', dlg), members);
+  if ($('#ssMembers', dlg)) memberEditor($('#ssMembers', dlg), members);
   dlg.addEventListener('click', async (ev) => {
     const b = ev.target.closest('[data-act]');
     if (!b) return;
@@ -225,8 +341,15 @@ export async function openSpaceSettings() {
     }
     if (b.dataset.act === 'save') {
       b.disabled = true;
+      const body = { title: $('#ssTitle', dlg).value };
+      if (!ended) {
+        Object.assign(body, { access: $('input[name=access]:checked', dlg).value, allowedPrograms: allowed });
+        if ($('#ssMembers', dlg)) body.members = members;
+        if (!task) body.maxTurns = $('#ssTurns', dlg).value;
+        if (task && r) body.task = { ...readTaskOptions(dlg), coordinatorId: $('#ssCoord', dlg).value };
+      }
       try {
-        await api(`/api/spaces/${sp.id}`, { method: 'PATCH', body: { title: $('#ssTitle', dlg).value, members, access: $('input[name=access]:checked', dlg).value, maxTurns: $('#ssTurns', dlg).value, allowedPrograms: allowed } });
+        await api(`/api/spaces/${sp.id}`, { method: 'PATCH', body });
         dlg.close();
         refreshSpaces();
       } catch (e) { toast(e.message, 'error'); b.disabled = false; }

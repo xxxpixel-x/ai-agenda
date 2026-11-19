@@ -1,16 +1,20 @@
-// 空间视图：聊天消息、成员标签、命令审批、输入框
+// 空间视图：消息、成员标签、命令审批、输入框。聊天空间和任务空间共用，任务空间另有顶部的计划条（tasks.js）
+import { attachmentDraft, renderAttachments, messageAttachments } from './attachments.js';
 import { loadFiles, loadHistory, onFilesChanged, openChange, renderFilesBody, renderFilesPanel } from './files.js';
-import { checkImports, importHtml, openImportModal, renderTaskImports, replaceImport, updateTaskImport } from './imports.js';
+import { checkImports, importHtml, openImportModal, replaceImport } from './imports.js';
+import { trackNoteView } from './notes.js';
 import { refreshSpacesSoon, renderSpaceList } from './sidebar.js';
 import { effortChoices, effortSelect, modelChoices, openSpaceSettings } from './space-form.js';
-import { applyView, onRunEvent } from './tasks.js';
-import { $, $$, ACT_ICON, ICON, api, avatarHtml, clock, engineOf, esc, localizeActivity, md, state, store, toast, tr } from './util.js';
+import { coordinatorText, decisionHtml, onRunEvent, renderTaskSpace, summaryCardHtml } from './tasks.js';
+import { pickBoxHtml, renderSelectBar, startPicking } from './transfer.js';
+import { $, $$, ACT_ICON, ICON, api, avatarHtml, clock, engineOf, errHtml, esc, localizeActivity, md, state, store, toast, tr } from './util.js';
 
 // ---------------- 空间视图 ----------------
 export function closeStream() { if (state.es) { state.es.close(); state.es = null; } }
 
 export function showWelcome() {
   closeStream();
+  trackNoteView(null);
   state.space = null;
   $('#spaceView').hidden = true;
   $('#filesPanel').hidden = true;
@@ -29,6 +33,7 @@ export function openSpace(id) {
     $('#messages').innerHTML = '';
     $('#spaceTitle').textContent = tr('加载中…');
     state.files.view = null;
+    renderFilesPanel();
     state.files.expanded = new Set();
   }
   const es = new EventSource(`/api/spaces/${id}/events`);
@@ -48,7 +53,7 @@ function handleEvent(ev) {
     case 'snapshot': {
       const first = !sp || sp.id !== ev.space.id;
       state.space = ev.space;
-      if (first) state.view = ev.space.run ? 'task' : 'chat';
+      if (first) state.picking = null;
       renderSpace();
       if (first) { loadFiles(); loadHistory(); }
       break;
@@ -64,6 +69,11 @@ function handleEvent(ev) {
       if (!m) return;
       m.text += ev.text;
       scheduleUpdate(m.id);
+      break;
+    }
+    case 'no_images': {
+      const m = findMsg(ev.id);
+      if (m) { m.noImages = true; scheduleUpdate(m.id); }
       break;
     }
     case 'activity': {
@@ -95,6 +105,13 @@ function handleEvent(ev) {
     case 'files_changed':
       onFilesChanged(ev.changes);
       break;
+    case 'lock':
+      // 同一个文件夹的任务空间开始 / 停止“依次直接改”：文件面板标题旁的锁
+      if (!sp) return;
+      sp.readOnly = ev.readOnly;
+      renderFilesPanel();
+      refreshSpacesSoon();
+      break;
     case 'run':
       onRunEvent(ev.run);
       break;
@@ -112,6 +129,7 @@ function handleEvent(ev) {
     case 'members':
       if (!sp) return;
       sp.members = ev.members;
+      if (state.files.view?.type === 'change') renderFilesBody();
       renderMembersBar();
       if (!$('#memberPop').hidden) renderMemberPop();
       break;
@@ -127,30 +145,55 @@ function renderSpace() {
   document.title = `${sp.title} · Agenda`;
   $('#mobileTitle').textContent = sp.title;
   $('#spaceTitle').textContent = sp.title;
+  $('#spaceKind').innerHTML = ICON[sp.kind === 'task' ? 'task' : 'chat'];
+  $('#spaceKind').title = sp.kind === 'task' ? tr('任务空间') : tr('聊天空间');
   renderHeader();
   renderMembersBar();
   const box = $('#messages');
-  box.innerHTML = '';
-  const shown = sp.messages.filter((m) => !(m.kind === 'ai' && !m.streaming && !m.text && !m.error && !m.passed && !m.changes?.length));
+  box.innerHTML = sp.kind === 'task' ? '<div id="taskIntro"></div>' : '';
+  box.classList.toggle('selecting', !!state.picking);
+  const shown = sp.messages.filter((m) => !(m.kind === 'ai' && !m.streaming && !m.text && !m.error && !m.passed && !m.changes?.length && !m.decision));
   for (const m of shown) box.insertAdjacentHTML('beforeend', messageHtml(m));
+  renderTaskSpace();
+  renderComposer();
   box.scrollTop = box.scrollHeight;
-  renderTaskImports();
   renderSpaceList();
   renderFilesPanel();
-  applyView();
   checkImports();
+}
+
+const CHAT_PLACEHOLDER = tr('说点什么，@名字 点名');
+const TASK_PLACEHOLDER = tr('和协调者说：补充要求、改做法、问进展');
+/** 输入框：聊天空间发给大家；任务空间发给协调者；结束了的任务空间换成一条说明。 */
+export function renderComposer() {
+  const sp = state.space;
+  if (!sp) return;
+  const ended = sp.kind === 'task' && !!sp.run?.closed;
+  const picking = !!state.picking;
+  $('.composer-box').hidden = ended || picking;
+  $('#endedBar').hidden = !ended;
+  $('#selectBar').hidden = !picking;
+  if (picking) renderSelectBar();
+  if (ended) {
+    $('#endedBar').innerHTML = `<span>${tr('这个任务已经结束，只能查看')}</span>
+      <button class="btn sm" type="button" data-act="again">${ICON.plus}${tr('再开一个类似的任务')}</button>`;
+  }
+  renderAttachments();
+  input.placeholder = sp.kind === 'task' ? TASK_PLACEHOLDER : CHAT_PLACEHOLDER;
 }
 
 export function renderHeader() {
   const sp = state.space;
+  const task = sp.kind === 'task';
   const next = (sp.queue || []).map((id) => memberOf(id)?.name).filter(Boolean);
   const q = $('#queueInfo');
   q.textContent = next.length ? tr('接下来：{0}', [next.slice(0, 5).join(' → ')]) : '';
   q.hidden = !next.length;
-  const btns = sp.running
+  const btns = task ? [] : sp.running
     ? [['stop', tr('停止')], ...(sp.speaking ? [['skip', tr('跳过当前')]] : [])]
     : [['continue', tr('继续讨论')]];
-  const icons = [['files', state.files.open ? tr('收起文件') : tr('共享文件'), state.files.open], ['import', tr('导入对话')], ['settings', tr('空间设置')], ['export', tr('导出')]];
+  const ended = task && !!sp.run?.closed;
+  const icons = [['files', state.files.open ? tr('收起文件') : tr('共享文件'), state.files.open], ...(ended ? [] : [['import', tr('导入对话')]]), ['settings', task ? tr('任务空间设置') : tr('空间设置')], ['export', tr('导出')]];
   $('#spaceActions').innerHTML = btns.map(([a, l]) => `<button type="button" class="btn sm ${a === 'stop' ? 'danger' : ''}" data-act="${a}">${l}</button>`).join('')
     + icons.map(([a, l, on]) => `<button type="button" class="icon-btn ${on ? 'on' : ''}" data-act="${a}" title="${l}" aria-label="${l}">${ICON[a]}</button>`).join('');
 }
@@ -158,15 +201,18 @@ export function renderHeader() {
 // 「可运行命令」档下，没法在运行前先问你的命令行 AI 只能改文件
 const cannotRun = (m) => { const e = engineOf(m.engine); return state.space?.access === 'run' && e?.kind === 'cli' && !e.approvals; };
 
-function renderMembersBar() {
+export function renderMembersBar() {
   const sp = state.space;
   const speaking = sp.speaking && findMsg(sp.speaking);
+  const coord = sp.kind === 'task' ? sp.run?.coordinatorId : null;
+  // 任务空间里正在干活的成员（协调者在判断、子任务进行中）
+  const busy = new Set(sp.kind === 'task' && sp.run ? [...sp.run.tasks.filter((t) => t.status === 'running').map((t) => t.assigneeId), ...(sp.run.thinking || ['planning', 'summarizing'].includes(sp.run.status) ? [coord] : [])] : []);
   $('#membersBar').innerHTML = sp.members.map((m) => {
     const e = engineOf(m.engine);
     const ok = !e || e.status?.ready !== false;
-    return `<button type="button" class="person ${speaking?.memberId === m.id ? 'speaking' : ''} ${ok ? '' : 'off'}" style="--c:${m.color}" data-id="${m.id}"
-      title="${esc(e.label || m.engineLabel)}${m.model ? ` · ${esc(m.model)}` : ''}${ok ? '' : `\n⚠ ${esc(e.status?.note || '')}`}">
-      ${avatarHtml(m.engine, m.name)}${esc(m.name)}${cannotRun(m) ? `<small>${tr('不能运行命令')}</small>` : ''}</button>`;
+    return `<button type="button" class="person ${speaking?.memberId === m.id || busy.has(m.id) ? 'speaking' : ''} ${ok ? '' : 'off'}" style="--c:${m.color}" data-id="${m.id}"
+      title="${esc(e?.label || m.engineLabel)}${m.model ? ` · ${esc(m.model)}` : ''}${ok ? '' : `\n${esc(e.status?.note || '')}`}">
+      ${avatarHtml(m.engine, m.name, m.model)}${esc(m.name)}${m.id === coord ? `<small>${tr('协调者')}</small>` : ''}${cannotRun(m) ? `<small>${tr('不能运行命令')}</small>` : ''}</button>`;
   }).join('');
 }
 
@@ -191,13 +237,13 @@ function renderMemberPop() {
   const models = modelChoices(e);
   if (m.model && !models.some(([v]) => v === m.model)) models.unshift([m.model, '']);
   $('#memberPop').innerHTML = `
-    <div class="mp-head">${avatarHtml(m.engine, m.name)}<b>${esc(m.name)}</b><span>${esc(e.label || m.engineLabel)}</span></div>
-    ${st.ready === false ? `<div class="member-status warn">⚠ ${esc(st.note || tr('还不能用'))}</div>` : ''}
+    <div class="mp-head">${avatarHtml(m.engine, m.name, m.model)}<b>${esc(m.name)}</b><span>${esc(e.label || m.engineLabel)}</span></div>
+    ${st.ready === false ? `<div class="member-status warn">${esc(st.note || tr('还不能用'))}</div>` : ''}
     ${cannotRun(m) ? `<div class="hint">${tr('它没法在运行命令前先问你，所以这一档只能读写文件。')}</div>` : ''}
     <select data-k="model" title="${tr('型号')}"><option value="">${esc(st.defaultModel ? tr('默认（{0}）', [st.defaultModel]) : tr('默认型号'))}</option>
       ${models.map(([v, l]) => `<option value="${esc(v)}" ${v === m.model ? 'selected' : ''}>${esc(l || v)}</option>`).join('')}</select>
     ${effortSelect(e, m)}
-    <button class="btn sm block" type="button" data-act="ask">${tr('让 {0} 现在发言', [esc(m.name)])}</button>`;
+    ${state.space.kind === 'task' ? '' : `<button class="btn sm block" type="button" data-act="ask">${tr('让 {0} 现在发言', [esc(m.name)])}</button>`}`;
 }
 $('#memberPop').addEventListener('change', async (e) => {
   const k = e.target.dataset.k;
@@ -255,34 +301,57 @@ export function activitiesHtml(acts, streaming) {
   return `<details class="acts"><summary>${tr('{0} 个操作', [acts.length])}</summary>${acts.map(row).join('')}</details>`;
 }
 
+// 聊天空间里能转到任务空间的消息：鼠标停上去出现「转到任务空间」
+const transferable = (m) => state.space?.kind !== 'task' && ['user', 'ai', 'task'].includes(m.kind) && !m.passed && !m.streaming && !!m.text?.trim();
+const transferBtn = (m) => (transferable(m) ? `<button type="button" class="msg-act" data-transfer="${m.id}" title="${tr('转到任务空间')}" aria-label="${tr('转到任务空间')}">${ICON.transfer}</button>` : '');
+
 export function messageHtml(m) {
   if (m.kind === 'import') return importHtml(m);
+  if (m.kind === 'summary') return summaryCardHtml(m);
+  const pick = transferable(m) ? pickBoxHtml(m) : '';
+  if (m.kind === 'task') return taskBackHtml(m, pick);
   if (m.kind === 'user') {
-    return `<div class="msg user" id="m-${m.id}"><span class="avatar me">${tr('我')}</span>
-      <div class="msg-main"><div class="msg-head"><span class="n">${tr('我')}</span><span class="m">${clock(m.ts)}</span></div>
-      <div class="bubble"><div class="md">${md(m.text)}</div></div></div></div>`;
+    const wait = m.queued ? `<div class="msg-note">${tr('等协调者看')}</div>` : m.unanswered ? `<div class="msg-note">${tr('软件关闭时协调者还没回这条，可以再发一次')}</div>` : '';
+    return `<div class="msg user ${pick ? 'pickable' : ''}" id="m-${m.id}">${pick}<span class="avatar me">${tr('我')}</span>
+      <div class="msg-main"><div class="msg-head"><span class="n">${tr('我')}</span><span class="m">${clock(m.ts)}</span>${transferBtn(m)}</div>
+      <div class="bubble">${m.text ? `<div class="md">${md(m.text)}</div>` : ''}${messageAttachments(m.attachments)}</div>${wait}</div></div>`;
   }
   const mem = memberOf(m.memberId);
   const color = mem?.color || engineOf(m.engine)?.color || '#888';
+  const imageNote = m.noImages ? `<div class="image-note">${tr('{0} 看不到图片', [esc(m.name)])}</div>` : '';
   if (m.passed && !m.streaming) {
-    return `<div class="pass-line" id="m-${m.id}" style="--c:${color}"><b>${esc(m.name)}</b> ${tr('没有补充{0}', [m.changes?.length ? tr('，但修改了 {0} 个文件', [m.changes.length]) : ''])}</div>`;
+    return `<div class="pass-line" id="m-${m.id}" style="--c:${color}">${imageNote}<b>${esc(m.name)}</b> ${tr('没有补充{0}', [m.changes?.length ? tr('，但修改了 {0} 个文件', [m.changes.length]) : ''])}</div>`;
   }
   const meta = [];
   if (m.durationMs) meta.push(tr('{0} 秒', [(m.durationMs / 1000).toFixed(0)]));
   if (m.model) meta.push(m.model);
   const last = m.activities?.[m.activities.length - 1];
+  // 协调者的判断：回复后面那段 JSON 只给软件看，不显示
+  const text = m.replyTo ? coordinatorText(m.text, m.streaming) : m.text;
   let body;
-  if (m.streaming && !m.text) body = `<span class="typing"><i></i><i></i><i></i>&nbsp;${esc(last ? last.label : tr('思考中'))}</span>`;
-  else body = m.text ? `<div class="md ${m.streaming ? 'cursor' : ''}">${md(m.text)}</div>` : '';
+  if (m.streaming && !text) body = `<span class="typing"><i></i><i></i><i></i>&nbsp;${esc(last ? last.label : tr('思考中'))}</span>`;
+  else body = text ? `<div class="md ${m.streaming ? 'cursor' : ''}">${md(text)}</div>` : '';
   const changes = m.changes?.length ? `<div class="changes">${m.changes.map((c) => `<button type="button" class="change-chip" data-change="${c.id}">${ICON.file}${esc(c.path)} ${c.created ? `<span class="plus">${tr('新建')}</span>` : c.deleted ? `<span class="minus">${tr('删除')}</span>` : `<span class="plus">+${c.added}</span><span class="minus">−${c.removed}</span>`}</button>`).join('')}</div>` : '';
-  return `<div class="msg ai ${m.error ? 'error' : ''}" id="m-${m.id}" style="--c:${color}">
-    ${avatarHtml(mem?.engine || m.engine, m.name)}
-    <div class="msg-main">
-      <div class="msg-head"><span class="n">${esc(m.name)}</span><span class="m" title="${esc(meta.join(' · '))}">${clock(m.ts)}</span></div>
+  return `<div class="msg ai ${m.error ? 'error' : ''} ${pick ? 'pickable' : ''}" id="m-${m.id}" style="--c:${color}">${pick}
+    ${avatarHtml(mem?.engine || m.engine, m.name, m.model || mem?.model)}
+    <div class="msg-main">${imageNote}
+      <div class="msg-head"><span class="n">${esc(m.name)}</span>${m.replyTo ? `<span class="role">${tr('协调者')}</span>` : ''}<span class="m" title="${esc(meta.join(' · '))}">${clock(m.ts)}</span>${transferBtn(m)}</div>
       <div class="bubble">${activitiesHtml(m.activities, m.streaming)}${approvalsHtml(m)}${body}
         ${m.interrupted ? `<div class="note">${tr('（发言被中断）')}</div>` : ''}
         ${m.note ? `<div class="note">${esc(m.note)}</div>` : ''}
-        ${m.error ? `<div class="err">⚠ ${esc(m.error)}</div>` : ''}${changes}</div>
+        ${m.error ? errHtml(m.error) : ''}${changes}</div>
+      ${m.decision ? decisionHtml(m) : ''}
+    </div></div>`;
+}
+
+/** 聊天空间里：任务空间结束时发回来的总结。 */
+function taskBackHtml(m, pick) {
+  return `<div class="msg task-back ${pick ? 'pickable' : ''}" id="m-${m.id}">${pick}
+    <div class="tb-card">
+      <div class="tb-head"><span class="tb-icon">${ICON.task}</span><span class="tb-title">${tr('任务「{0}」结束了', [esc(m.title)])}</span>
+        <span class="m">${tr('{0}/{1} 个子任务通过', [m.approved, m.total])}${m.merged ? tr(' · 已合并到 {0}', [esc(m.merged)]) : ''} · ${clock(m.ts)}</span>${transferBtn(m)}</div>
+      <div class="md">${md(m.text)}</div>
+      <a class="tb-link" href="#/space/${esc(m.taskSpaceId)}">${tr('打开任务空间')}</a>
     </div></div>`;
 }
 
@@ -292,14 +361,12 @@ const scrollToBottom = () => { const b = $('#messages'); b.scrollTop = b.scrollH
 function appendMessage(m) {
   const stick = nearBottom() || m.kind === 'user';
   $('#messages').insertAdjacentHTML('beforeend', messageHtml(m));
-  if (m.kind === 'import') updateTaskImport(m);
   if (stick) scrollToBottom();
 }
 export function updateMessage(m) {
-  if (m.kind === 'import') updateTaskImport(m);
   const el = document.getElementById(`m-${m.id}`);
   const stick = nearBottom();
-  const hidden = m.kind === 'ai' && !m.streaming && !m.text && !m.error && !m.passed && !m.changes?.length && !m.interrupted;
+  const hidden = m.kind === 'ai' && !m.streaming && !m.text && !m.error && !m.passed && !m.changes?.length && !m.interrupted && !m.decision;
   if (!el) { if (!hidden) appendMessage(m); return; }
   if (hidden) { el.remove(); return; }
   // 正在卡片上写附言时消息重绘了：把光标放回原处
@@ -343,6 +410,8 @@ $('#membersBar').addEventListener('click', (e) => {
 });
 $('#membersBar').addEventListener('scroll', hideMemberPop);
 $('#messages').addEventListener('click', (e) => {
+  const t = e.target.closest('[data-transfer]');
+  if (t) { startPicking(t.dataset.transfer); return; }
   const c = e.target.closest('[data-change]');
   if (c) openChange(c.dataset.change);
   const d = e.target.closest('[data-apd]');
@@ -357,14 +426,26 @@ input.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); send(); }
 });
 $('#sendBtn').addEventListener('click', send);
+$('#endedBar').addEventListener('click', (e) => {
+  if (e.target.closest('[data-act=again]')) import('./space-form.js').then((f) => f.openSimilarTask(state.space));
+});
 async function send() {
   const text = input.value.trim();
-  if (!text || !state.space) return;
-  $('#sendBtn').disabled = true;
+  const id = state.space?.id;
+  if (!id) return;
+  const draft = attachmentDraft(id);
+  if (draft.sending || draft.items.some((a) => a.busy) || (!text && !draft.items.length)) return;
+  draft.sending = true;
+  const attachments = draft.items.map((a) => a.id);
+  renderAttachments();
   try {
-    await api(`/api/spaces/${state.space.id}/messages`, { method: 'POST', body: { text } });
-    input.value = '';
-    autosize();
-  } catch (e) { toast(e.message, 'error'); } finally { $('#sendBtn').disabled = false; input.focus(); }
+    await api(`/api/spaces/${id}/messages`, { method: 'POST', body: { text, attachments } });
+    draft.items = draft.items.filter((a) => !attachments.includes(a.id));
+    if (state.space?.id === id && input.value.trim() === text) { input.value = ''; autosize(); }
+  } catch (e) { toast(e.message, 'error'); } finally {
+    draft.sending = false;
+    renderAttachments();
+    if (state.space?.id === id) input.focus();
+  }
 }
 

@@ -10,7 +10,7 @@ import { t as tr } from './i18n.mjs';
 import { randomUUID } from 'node:crypto';
 import { systemPrompt, turnPrompt, parseMarkers, mentionsIn } from './prompts.mjs';
 import { runAgentTurn } from './turn-runner.mjs';
-import { importsBackground, briefVersions, resumeNote } from './imports.mjs';
+import { importsBackground, briefVersions, resumeNote, resumeOpts } from './imports.mjs';
 import { isPreapproved, parseCommand, normalizeAllowed } from './approvals.mjs';
 
 const str = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
@@ -30,12 +30,13 @@ export class Chat {
   }
 
   // ---------- 对外操作 ----------
-  userMessage(text) {
+  userMessage(text, attachments = []) {
     const h = this.host;
     text = str(text, 20000);
-    if (!text) throw new Error(tr('消息不能为空'));
+    if (!text && !attachments.length) throw new Error(tr('消息不能为空'));
     h.assertAllowed();
     const msg = { id: randomUUID(), kind: 'user', name: tr('我'), text, ts: Date.now() };
+    if (attachments.length) msg.attachments = attachments;
     h.messages.push(msg);
     h.emit({ type: 'message', message: msg });
     h.save();
@@ -113,6 +114,7 @@ export class Chat {
     this.stopRequested = false;
     this.emitState();
     const n = this.host.members.length;
+    let failed = null; // 出错停下的成员名
     try {
       while (!this.stopRequested) {
         if (!this.queue.length) {
@@ -127,7 +129,7 @@ export class Chat {
         if (!member) continue;
         const r = await this.runTurn(member, item.reason);
         this.turns++;
-        if (r.error) break;                       // 出错就停下，等你处理
+        if (r.error) { failed = member.name; break; } // 出错就停下，等你处理
         if (r.passed || r.done) this.passesInRow++;
         else this.passesInRow = 0;
         if (this.passesInRow >= n) break;
@@ -144,6 +146,8 @@ export class Chat {
       this.onlyQueued = false;
       this.host.save();
       this.emitState();
+      // 这一轮停下了（宿主据此提醒你；你自己点的停止不算）
+      this.host.emit({ type: 'round_end', failed, stopped: !!this.stopRequested });
     }
   }
 
@@ -171,6 +175,9 @@ export class Chat {
     });
 
     const msg = { id: randomUUID(), kind: 'ai', memberId: member.id, name: member.name, engine: member.engine, text: '', ts: Date.now(), streaming: true, activities: [] };
+    const last = h.messages.findLastIndex((m) => m.kind === 'ai' && m.memberId === member.id);
+    const images = h.images(h.messages.slice(last + 1).filter((m) => m.kind === 'user').flatMap((m) => m.attachments || []));
+    const seen = h.messages.length + 1;
     if (member.model) msg.model = member.model;
     const controller = new AbortController();
     this.current = { msg, controller, member };
@@ -187,10 +194,11 @@ export class Chat {
         prompt,
         cwd: h.workspacePath,
         access,
-        sessionId: resume ? state.sessionId : undefined,
-        fork: resume && !!imported?.fork,
+        ...resumeOpts(resume, state),
         signal: controller.signal,
         sink: msg,
+        images,
+        onNoImages: () => h.emit({ type: 'no_images', id: msg.id }),
         ws: h.ws,
         onDelta: (t) => h.emit({ type: 'delta', id: msg.id, text: t }),
         onActivity: (a) => h.emit({ type: 'activity', id: msg.id, activity: a }),
@@ -222,9 +230,9 @@ export class Chat {
         delete h.memberState[member.id];
         h.emit({ type: 'notice', level: 'error', text: tr('{0} 接不上导入的原会话了，之后按普通成员发言。', [member.name]) });
       } else if (imported) {
-        h.memberState[member.id] = { ...imported, sessionId: r.sessionId || imported.sessionId, fork: false, seen: h.messages.length, briefs: briefVersions(h.messages) };
+        h.memberState[member.id] = { ...imported, sessionId: r.sessionId || imported.sessionId, fork: false, seen, briefs: briefVersions(h.messages) };
       } else if (canResume) {
-        h.memberState[member.id] = { sessionId: r.sessionId, seen: h.messages.length, briefs: briefVersions(h.messages) };
+        h.memberState[member.id] = { sessionId: r.sessionId, seen, briefs: briefVersions(h.messages) };
       }
     } catch (e) {
       if (e.aborted) {

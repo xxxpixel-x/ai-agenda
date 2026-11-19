@@ -6,6 +6,8 @@
 //
 // 来源 AI 能接续时（引擎 meta.continuesImports，目前是 Claude Code），对应成员接着原会话继续
 // （复制一份再接，原会话不动），它自己记得全部内容，不需要这块背景。
+// 复制要等它第一次发言才做，但只复制到导入时的最后一条（resumeAt）：之后你在原软件里接着聊的不会带进来，
+// 想要的话用补导，补导的内容和其他成员一样从背景里看到。
 // 补导：之后原对话又有新内容，追加一条 parentId 指向原块的导入消息。
 //
 // 按主题导入（mode:'topic'）：只整理和某个主题有关的内容，写成「主题简报」存进共享文件夹，
@@ -69,6 +71,12 @@ export function sessionDetail(source, id) {
     count: s.entries.length, chars, auto: autoMode(chars),
     starts: s.entries.map((e, i) => (e.role === 'user' ? { i, text: preview(e.text) } : null)).filter(Boolean),
   };
+}
+
+/** 接续原会话时传给引擎的参数：还没复制过就复制，并且只复制到导入时的最后一条。 */
+export function resumeOpts(resume, state) {
+  if (!resume) return { sessionId: undefined, fork: false };
+  return { sessionId: state.sessionId, fork: !!state.fork, resumeAt: state.fork ? state.resumeAt : undefined };
 }
 
 /** 接续中的 Claude 成员复制出来的会话：导入列表里不显示。 */
@@ -203,7 +211,7 @@ export function importSession(host, opts = {}) {
   const messages = host.messages;
   if (resume) {
     host.memberState[member.id] = {
-      importId: msg.id, sessionId: s.id, fork: true,
+      importId: msg.id, sessionId: s.id, fork: true, resumeAt: last.key,
       seen: Math.max(0, messages.length - PRIOR_CHAT),
       note: resumeNote(s, host.workspacePath),
     };
@@ -236,11 +244,11 @@ async function digest(host, msg, entries, writer) {
     ? `${systemPrompt(host.snapshot(), writer, { api: host.registry.isApi(writer.engine) })}\n${resumeNote(msg, host.workspacePath)}`
     : tr('你在帮用户整理导入的对话，照要求输出整理好的文字，不要加别的话。');
   const sink = { text: '', activities: [] };
+  let retry = false;
   try {
     const r = await runAgentTurn(host.registry, writer, {
       system, prompt, cwd: host.workspacePath, access: 'read', sink, signal: controller.signal,
-      sessionId: resume ? state.sessionId : undefined,
-      fork: resume && state.fork,
+      ...resumeOpts(resume, state),
     });
     if (host.deleting) return;
     const text = String(r.text || '').trim();
@@ -256,15 +264,27 @@ async function digest(host, msg, entries, writer) {
     msg.status = 'ready';
     delete msg.error;
   } catch (e) {
-    msg.status = 'error';
-    msg.error = tr('{0} 没有写成{1}：{2}', [writer.name, msg.mode === 'handoff' ? tr('交接文档') : tr('摘要'), e.message]);
-    host.emit({ type: 'notice', level: 'error', text: msg.error });
+    if (resume && e.resumeFailed && !host.deleting) {
+      retry = giveUpResume(host, writer);
+    } else {
+      msg.status = 'error';
+      msg.error = tr('{0} 没有写成{1}：{2}', [writer.name, msg.mode === 'handoff' ? tr('交接文档') : tr('摘要'), e.message]);
+      host.emit({ type: 'notice', level: 'error', text: msg.error });
+    }
   } finally {
     host.importing = false;
     host.importController = null;
     host.save();
     host.emit({ type: 'message_done', message: msg });
   }
+  if (retry) await digest(host, msg, entries, writer); // 改成把原文交给它整理
+}
+
+/** 接不上原会话：这个成员改按普通成员发言（只看导入的内容），返回 true 表示要重来一次。 */
+function giveUpResume(host, member) {
+  delete host.memberState[member.id];
+  host.emit({ type: 'notice', level: 'error', text: tr('{0} 接不上导入的原会话了，之后按普通成员发言。', [member.name]) });
+  return true;
 }
 
 // ---------- 主题简报 ----------
@@ -329,11 +349,11 @@ async function writeTopic(host, msg, writer) {
     ? `${systemPrompt(host.snapshot(), writer, { api: host.registry.isApi(writer.engine) })}\n${resumeNote(msg, host.workspacePath)}`
     : tr('你在帮用户整理导入的对话，照要求输出整理好的文字，不要加别的话。');
   const sink = { text: '', activities: [] };
+  let retry = false;
   try {
     const r = await runAgentTurn(host.registry, writer, {
       system, prompt, cwd: host.workspacePath, access: 'read', sink, signal: controller.signal,
-      sessionId: resume ? state.sessionId : undefined,
-      fork: resume && state.fork,
+      ...resumeOpts(resume, state),
     });
     if (host.deleting) return;
     const text = String(r.text || '').trim();
@@ -355,15 +375,20 @@ async function writeTopic(host, msg, writer) {
     msg.status = 'ready';
     delete msg.error;
   } catch (e) {
-    msg.status = 'error';
-    msg.error = tr('{0} 没有写成主题简报：{1}', [writer.name, e.message]);
-    host.emit({ type: 'notice', level: 'error', text: msg.error });
+    if (resume && e.resumeFailed && !host.deleting) {
+      retry = giveUpResume(host, writer);
+    } else {
+      msg.status = 'error';
+      msg.error = tr('{0} 没有写成主题简报：{1}', [writer.name, e.message]);
+      host.emit({ type: 'notice', level: 'error', text: msg.error });
+    }
   } finally {
     host.importing = false;
     host.importController = null;
     host.save();
     host.emit({ type: 'message_done', message: msg });
   }
+  if (retry) await writeTopic(host, msg, writer); // 改成把原文交给它整理
 }
 
 /** 新建空间并按主题导入时：共享文件夹默认是原项目里的主题子文件夹，还没有就建出来。 */
@@ -507,6 +532,8 @@ export function recompressImport(host, id, mode) {
   const { keep, skipped, early } = plan(entries, m, 0);
   host.messages = host.messages.filter((x) => x.parentId !== root.id);
   Object.assign(root, { mode: m, skipped, entries: keep, total: entries.length, lastKey: entries.at(-1).key, lastTs: entries.at(-1).ts });
+  // 补导的块并进了原块：还没复制原会话的成员，复制范围也跟着到这里（它不再从背景里看到这些补导的内容）
+  for (const st of Object.values(host.memberState)) if (st?.importId === root.id && st.fork) st.resumeAt = root.lastKey;
   delete root.summary; delete root.handoff; delete root.error;
   root.status = early.length || m === 'handoff' ? 'writing' : 'ready';
   host.save();

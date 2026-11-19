@@ -44,6 +44,16 @@ export function makeSpace(root, input = {}) {
   return space;
 }
 
+/**
+ * 把 makeSpace 建的空间变成任务空间并开始规划（等同于新建任务空间时填的目标和选项）。
+ * 需要先往空间里放东西（比如导入的对话）再开始的测试用它。
+ */
+export function beginTask(space, { objective, coordinatorId, planConfirm = 'manual', discuss = true, autoApprove = false, maxParallel } = {}) {
+  space.data.kind = 'task';
+  space.data.pendingTask = { objective, coordinatorId: coordinatorId || space.data.members[0].id, planConfirm, discuss, autoApprove, maxParallel };
+  return space.startTask();
+}
+
 export async function until(read, predicate, { timeout = 20000, message = 'Timed out waiting for state' } = {}) {
   const deadline = Date.now() + timeout;
   let value;

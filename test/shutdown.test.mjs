@@ -4,7 +4,7 @@ import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { runJsonl, AbortedError } from '../src/engines/proc.mjs';
 import { Space } from '../src/space.mjs';
-import { tempDir, makeSpace, until, settleSpace } from './helpers.mjs';
+import { tempDir, makeSpace, until, settleSpace, beginTask } from './helpers.mjs';
 
 // 一个先输出一行、之后隔 gapMs 再输出一行就退出的“CLI”
 const cli = (gapMs) => ({
@@ -41,7 +41,7 @@ test('quitting stops task workers without recording them as cancelled by the use
       opts.signal.addEventListener('abort', () => { aborted++; reject(new AbortedError()); }, { once: true });
     });
   };
-  await space.startRun({ objective: '做一件很慢的事', discuss: false });
+  await beginTask(space, { objective: '做一件很慢的事', discuss: false });
   await until(() => space.run.data.status, (s) => s === 'plan_review');
   await space.runAction('approve-plan');
   await until(() => space.run.taskDetail('T1').status, (s) => s === 'running');

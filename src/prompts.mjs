@@ -1,6 +1,7 @@
 // 系统提示词与每次发言的输入。
 import { t as tr } from './i18n.mjs';
 import { randomBytes } from 'node:crypto';
+import path from 'node:path';
 import { fileBlockRules, filesForPrompt } from './engines/file-blocks.mjs';
 
 // 聊天记录按字数取：超出预算时按档往后裁，同一档里开头几轮不变，模型那边的前缀缓存才用得上
@@ -71,11 +72,20 @@ function clip(text) {
   return `${text.slice(0, CLIP_HEAD)}\n${tr('……（中间省略 {0} 字）……', [text.length - CLIP_HEAD - CLIP_TAIL])}\n${text.slice(-CLIP_TAIL)}`;
 }
 
+export function attachmentText(m, root) {
+  const lines = [m.text || ''];
+  for (const a of m.attachments || []) {
+    lines.push(a.kind === 'image' ? tr('[图片：{0}]', [a.name]) : tr('[附件：{0}]', [root ? path.resolve(root, a.path) : a.path]));
+  }
+  return lines.filter(Boolean).join('\n');
+}
+
 function line(m, full) {
   const who = m.kind === 'user' ? tr('我') : m.name;
   const parts = [];
+  if (m.kind === 'task') parts.push(tr('（任务空间「{0}」结束了，这是协调者的总结）', [m.title]));
   if (m.interrupted) parts.push(tr('（发言被打断）'));
-  const text = m.text?.trim();
+  const text = attachmentText(m).trim();
   if (text) parts.push(m.kind === 'ai' && !full ? clip(text) : text);
   if (m.changes?.length) parts.push(tr('（修改了：{0}）', [m.changes.map((c) => c.path).join('、')]));
   return said(null, who, parts.join('\n'), m.kind === 'user');
@@ -89,7 +99,7 @@ function windowStart(lens) {
   return i === 0 ? 0 : Math.min(Math.ceil(i / HISTORY_STEP) * HISTORY_STEP, lens.length - 1);
 }
 
-const visible = (m) => (m.kind === 'user' || m.kind === 'ai') && !m.passed && (m.text?.trim() || m.changes?.length);
+const visible = (m) => (m.kind === 'user' || m.kind === 'ai' || m.kind === 'task') && !m.passed && (m.text?.trim() || m.attachments?.length || m.changes?.length);
 
 /**
  * 本次发言的输入。固定的内容在前、每轮会变的在后，好让模型复用前缀缓存。
@@ -110,6 +120,7 @@ export function turnPrompt(space, member, { reason, api = false, files = null, s
     parts.push(tr('# 你上次发言之后没有新消息'));
   }
   if (api && files) parts.push(escapeTags(filesForPrompt(files)));
+  if (space.readOnly) parts.push(tr('# 文件暂时只读\n任务空间「{0}」正在依次修改共享文件夹，在它做完之前，这个空间只能阅读文件，不能修改。聊天照常进行。', [escapeTags(space.readOnly.title)]));
   if (reason === 'mention') parts.push(tr('有人 @ 了你。现在请你（「{0}」）回应。', [member.name]));
   else parts.push(tr('现在轮到你（「{0}」）发言。没有要补充的就只回复 {1}。', [member.name, tr(PASS)]));
   return parts.join('\n\n');

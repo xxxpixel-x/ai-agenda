@@ -66,6 +66,9 @@ export async function openEnginesModal() {
     <div class="modal-body">
       <div class="field"><label for="appLanguage">${tr('语言')}</label>
         <select id="appLanguage">${[['system', '跟随系统 / Follow system'], ['zh', '中文'], ['en', 'English']].map(([value, label]) => `<option value="${value}" ${value === settings.language ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
+      ${state.app.desktop ? `<div class="field app-toggles">
+        <label class="check-row"><input type="checkbox" data-toggle="notify" ${settings.notify ? 'checked' : ''}> ${tr('AI 做完或等你处理时提醒我')}</label>
+        <label class="check-row"><input type="checkbox" data-toggle="keepAwake" ${settings.keepAwake ? 'checked' : ''}> ${tr('AI 工作时不让电脑睡眠')}</label></div>` : ''}
       <div class="section-title">${tr('本机 AI 应用')}</div>
       ${cli.map(cliHtml).join('')}
       <div class="section-title">Gemini</div>
@@ -80,8 +83,8 @@ export async function openEnginesModal() {
         ${settings.gemini.hasKey ? `<button class="btn sm danger" type="button" data-act="clear-gem" style="margin-top:8px">${tr('清除 key')}</button>` : ''}
       </div>
       <div class="section-title">${tr('OpenAI 兼容接口')}</div>
-      <div class="preset-row">${PRESETS.map(([n], i) => `<button class="btn sm" type="button" data-act="add-provider" data-preset="${i}">＋ ${esc(n)}</button>`).join('')}
-        <button class="btn sm ghost" type="button" data-act="add-provider">${tr('＋ 自定义')}</button></div>
+      <div class="preset-row">${PRESETS.map(([n], i) => `<button class="btn sm" type="button" data-act="add-provider" data-preset="${i}">${ICON.plus}${esc(n)}</button>`).join('')}
+        <button class="btn sm ghost" type="button" data-act="add-provider">${ICON.plus}${tr('自定义')}</button></div>
       <div id="providerList">${providers.map(providerHtml).join('')}</div>
     </div>
     <div class="modal-foot"><span class="grow"></span>
@@ -101,6 +104,12 @@ export async function openEnginesModal() {
       select.disabled = false;
       toast(e.message, 'error');
     }
+  });
+  // 提醒、防睡眠：改了立即保存
+  dlg.addEventListener('change', async (ev) => {
+    const box = ev.target.closest('[data-toggle]');
+    if (!box) return;
+    try { await api('/api/settings', { method: 'PUT', body: { [box.dataset.toggle]: box.checked } }); } catch (e) { box.checked = !box.checked; toast(e.message, 'error'); }
   });
   let clearGem = false;
   const collect = () => {
@@ -125,6 +134,10 @@ export async function openEnginesModal() {
       for (let k = 2; providers.some((p) => p.name === name); k++) name = `${pr ? pr[0] : tr('自定义接口')}${k}`;
       providers.push({ name, baseUrl: pr ? pr[1] : '', model: pr ? pr[2] : '' });
       rerenderProviders();
+      // 新卡片加在列表最底下，常在可视区外，滚过去并聚焦第一个空格子，免得看起来没反应
+      const card = $('#providerList', dlg).lastElementChild;
+      card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      $$('input', card).find((inp) => !inp.value)?.focus({ preventScroll: true });
     } else if (act === 'del-provider') {
       collect();
       providers.splice(+b.closest('.conn').dataset.i, 1);

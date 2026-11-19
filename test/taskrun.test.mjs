@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import * as G from '../src/git.mjs';
-import { tempDir, makeSpace, until, settleSpace } from './helpers.mjs';
+import { tempDir, makeSpace, until, settleSpace, beginTask } from './helpers.mjs';
 
 test('all task stages receive shared imports and subsequent approved updates', async (t) => {
   const space = makeSpace(tempDir(t));
@@ -21,10 +21,7 @@ test('all task stages receive shared imports and subsequent approved updates', a
     if (opts.system.includes('请你审阅计划')) return { text: '补充验证步骤' };
     return { text: '已整理。\n结果：完成' };
   };
-  space.importing = true;
-  await assert.rejects(space.startRun({ objective: '根据导入的讨论整理方案' }), /正在整理导入的对话/);
-  space.importing = false;
-  await space.startRun({ objective: '根据导入的讨论整理方案', discuss: true });
+  await beginTask(space, { objective: '根据导入的讨论整理方案', discuss: true });
   await until(() => space.run.data.status, (s) => s === 'plan_review');
   assert.equal(calls.length, 3, 'Planner, reviewer and revised planner must all run');
   for (const { prompt } of calls) {
@@ -50,8 +47,8 @@ test('all task stages receive shared imports and subsequent approved updates', a
   }
 });
 
-for (const mode of ['direct', 'git']) {
-  test(`mock task workflow: plan, review, dependency scheduling and completion (${mode})`, { timeout: 60000 }, async (t) => {
+for (const [mode, editMessage] of [['direct'], ['git'], ['git', true]]) {
+  test(`mock task workflow: plan, review, dependency scheduling and completion (${mode}${editMessage ? ', edited commit' : ''})`, { timeout: 60000 }, async (t) => {
     let space;
     t.after(async () => { if (space) await settleSpace(space); });
     const root = tempDir(t);
@@ -67,7 +64,7 @@ for (const mode of ['direct', 'git']) {
     }
     space = makeSpace(root, mode === 'git' ? { workspace: { type: 'folder', path: repo } } : {});
     assert.equal((await space.taskPreflight()).mode, mode);
-    await space.startRun({ objective: '写一份小项目方案', discuss: false, autoApprove: false });
+    await beginTask(space, { objective: '写一份小项目方案', discuss: false, autoApprove: false });
     const run = space.run;
     await until(() => run.publicView(), (r) => r.status === 'plan_review', { message: 'Plan was not ready' });
     assert.equal(run.data.tasks.length, 3);
@@ -89,9 +86,19 @@ for (const mode of ['direct', 'git']) {
     await until(() => run.publicView(), (r) => r.status === 'done', { message: 'Summary did not finish' });
     assert.ok(run.data.tasks.every((task) => task.status === 'approved'));
     assert.ok(run.data.summary.text && !run.data.summary.error);
-    assert.ok(space.data.messages.some((m) => m.runId === run.id));
+    assert.ok(space.data.messages.some((m) => m.kind === 'summary' && m.text), 'The summary is posted in the task space');
     if (mode === 'git') {
-      await space.runAction('merge');
+      const draft = await space.runAction('draft-commit');
+      assert.deepEqual(draft, { message: '演示：合并已通过的任务改动', drafted: true });
+      const message = editMessage ? 'docs: add project proposal\n\nInclude the reviewed requirements.' : draft.message;
+      if (editMessage) {
+        const call = t.mock.method(run, 'call', async () => { throw new Error('Fixture coordinator failure'); });
+        assert.deepEqual(await space.runAction('draft-commit'), { message: 'Agenda 任务：写一份小项目方案', drafted: false });
+        call.mock.restore();
+      }
+      await space.runAction('merge', { message });
+      assert.equal((await G.git(['log', '-1', '--format=%s'], { cwd: repo })).stdout.trim(), message.split('\n')[0]);
+      assert.equal((await G.git(['log', '-1', '--format=%B'], { cwd: repo })).stdout.trim(), message);
       assert.equal(run.data.merged.branch, 'main');
       assert.notEqual(await G.headOf(repo), initialHead);
       assert.equal((await G.repoInfo(repo)).dirty, false);
@@ -101,9 +108,20 @@ for (const mode of ['direct', 'git']) {
     for (const file of ['需求.md', '实现.md', '方案.md']) {
       assert.ok(fs.existsSync(path.join(space.workspacePath, file)), file);
     }
-    await space.runAction('close');
+    await space.runAction('finish');
     clearTimeout(run.timer);
-    assert.equal(space.run, null);
-    assert.equal(space.toJSON().pastRuns.length, 1);
+    assert.equal(space.run.data.closed, true);
+    assert.equal(space.toJSON().run.closed, true);
+    assert.throws(() => space.userMessage('还要再改'), /已经结束/);
+    await assert.rejects(space.runAction('resume'), /已经结束/);
   });
 }
+
+test('recentCommits returns full commit messages newest first', async (t) => {
+  const cwd = tempDir(t);
+  await G.git(['init', '-b', 'main'], { cwd });
+  const messages = ['docs: first\n\nFirst body.', 'feat: second\n\nSecond body.'];
+  for (const message of messages) await G.git(['commit', '--allow-empty', '--no-gpg-sign', '-m', message], { cwd });
+  assert.deepEqual(await G.recentCommits(cwd), [messages[1], messages[0]]);
+  assert.deepEqual(await G.recentCommits(cwd, 1), [messages[1]]);
+});

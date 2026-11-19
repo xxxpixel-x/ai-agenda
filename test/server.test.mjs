@@ -11,7 +11,8 @@ test('local HTTP service', { timeout: 30000 }, async (t) => {
   t.after(() => server?.close());
   const root = tempDir(t);
   const dataDir = path.join(root, 'data');
-  server = await startServer({ port: 0, dataDir, mock: true, hooks: { locales: () => ['zh-CN'] } });
+  const hooks = { locales: () => ['zh-CN'] };
+  server = await startServer({ port: 0, dataDir, mock: true, hooks });
   const base = `http://127.0.0.1:${server.port}`;
   function request(url, { method = 'GET', body, raw, headers = {} } = {}) {
     return new Promise((resolve, reject) => {
@@ -44,7 +45,9 @@ test('local HTTP service', { timeout: 30000 }, async (t) => {
   const spaceUrl = `/api/spaces/${created.body.id}`;
 
   await t.test('serves the application and mock engine catalog', async () => {
-    assert.equal((await read('/api/app')).mock, true);
+    const app = await read('/api/app');
+    assert.equal(app.mock, true);
+    assert.equal(app.platform, process.platform);
     assert.match(await read('/'), /<title>Agenda<\/title>/);
     const engines = await read('/api/engines');
     assert.ok(engines.length >= 3);
@@ -65,6 +68,35 @@ test('local HTTP service', { timeout: 30000 }, async (t) => {
     assert.equal((await request('/api/spaces', { method: 'POST', body: { members: [members[0], members[0]] } })).status, 400);
     assert.equal((await request(`${spaceUrl}/messages`, { method: 'POST', body: { text: '  ' } })).status, 400);
     assert.equal((await read('/api/spaces')).length, 1);
+  });
+
+  await t.test('open and reveal operate only on existing workspace items', async () => {
+    const { root: folder } = await read(`${spaceUrl}/files`);
+    const file = path.join(folder, 'fixture.txt');
+    const sibling = folder + 'x';
+    fs.mkdirSync(sibling);
+    fs.writeFileSync(file, 'fixture');
+    fs.writeFileSync(path.join(sibling, 'outside.txt'), 'outside');
+    const link = path.join(folder, 'linked-folder');
+    fs.symlinkSync(sibling, link, process.platform === 'win32' ? 'junction' : 'dir');
+    const post = (action, target) => request(`/api/${action}-path`, { method: 'POST', body: { path: target } });
+    assert.equal((await post('reveal', file)).status, 400);
+    for (const action of ['open', 'reveal']) {
+      const calls = [];
+      hooks[action + 'Path'] = (target) => { calls.push(target); return ''; };
+      assert.equal((await post(action, file)).status, 200);
+      assert.equal((await post(action, folder)).status, 200);
+      assert.equal((await post(action, root)).status, 403);
+      assert.equal((await post(action, path.join(sibling, 'outside.txt'))).status, 403);
+      assert.equal((await post(action, folder + '/../' + path.basename(sibling) + '/outside.txt')).status, 403);
+      assert.equal((await post(action, path.join(link, 'outside.txt'))).status, 403);
+      assert.equal((await post(action, path.join(folder, 'missing.txt'))).status, 404);
+      assert.deepEqual(calls, [file, folder]);
+    }
+    hooks.openPath = () => 'Fixture open error';
+    const failed = await post('open', file);
+    assert.equal(failed.status, 400);
+    assert.equal(failed.body.error, 'Fixture open error');
   });
 
   await t.test('writes, reads and undoes files through the API', async () => {

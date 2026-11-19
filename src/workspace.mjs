@@ -147,6 +147,15 @@ export class Workspace {
     return this.record(this.refresh(), by, { msgId });
   }
 
+  /** 用户刚复制的文件单独纳入基线，不能顺便吸收正在进行的 AI 修改。 */
+  acceptCopy(rel) {
+    const abs = this.resolve(rel);
+    if (!fs.existsSync(abs)) { this.cache.delete(rel); return; }
+    if (rel.split('/').slice(0, -1).some((dir) => SKIP_DIRS.has(dir) || dir.startsWith('.'))) return;
+    const { size, mtimeMs } = fs.statSync(abs);
+    if (size <= MAX_FILE_BYTES) this.cache.set(rel, { size, mtimeMs, content: readText(abs) });
+  }
+
   list() {
     return [...this.scan()].map(([p, st]) => ({ path: p, size: st.size, mtimeMs: st.mtimeMs }))
       .sort((a, b) => a.path.localeCompare(b.path, 'zh-CN'));

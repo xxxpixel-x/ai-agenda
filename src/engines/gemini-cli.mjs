@@ -7,6 +7,7 @@ import path from 'node:path';
 import { findOnPath, isFile, capture, runJsonl, brief, relPath, resolveNodeShim, nodeRunner } from './proc.mjs';
 
 export const meta = {
+  images: false,
   id: 'gemini-cli',
   label: 'Gemini CLI',
   kind: 'cli',

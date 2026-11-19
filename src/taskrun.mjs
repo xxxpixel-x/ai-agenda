@@ -2,12 +2,13 @@
 //   规划：协调者拆子任务 →（可选）其他成员审阅 → 协调者定稿 → 你确认/修改计划
 //   执行：依赖都通过的子任务派给负责人；git 项目里每个子任务在独立副本里并行，否则依次直接改
 //   审查：子任务做完 → 你看改动对比 → 通过（合并进集成分支）/ 带意见退回重做；需要你决定的问题会停下来问你
-//   收尾：协调者写总结 → git 项目可一键合并到你的分支
+//   收尾：协调者写总结 → git 项目可一键合并到你的分支 → 你点「结束任务」后只读
+//   中途：你在任务空间发的消息都先交给协调者，它判断是补充说明、改计划、只是问问，还是和目标无关
 //
 // 依赖的是一个很窄的“宿主”接口（见 space.mjs 的 runHost），不直接碰 Space：
 //   host.members / access / workspacePath / workspaceType / dir
-//   host.registry / ws / chatRunning / importBackground / deleting / track(promise) / emit(ev) / save()
-// 任务结束时发出 'done' 事件，由宿主决定要不要发到聊天里。
+//   host.registry / ws / importBackground / deleting / messages / track(promise) / emit(ev) / save()
+//   host.addMessage(msg) / messageDone(msg)：往任务空间的对话里加一条、一条写完了
 import { t as tr } from './i18n.mjs';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
@@ -18,13 +19,15 @@ import * as G from './git.mjs';
 import { Workspace } from './workspace.mjs';
 import { runAgentTurn } from './turn-runner.mjs';
 import { AbortedError } from './engines/proc.mjs';
-import { parseMarkers } from './prompts.mjs';
+import { parseMarkers, attachmentText } from './prompts.mjs';
 import {
   plannerSystem, plannerPrompt, reviewerSystem, reviewerPrompt, workerSystem, workerPrompt,
-  summarySystem, summaryPrompt, extractPlan, normalizePlan, parseReport,
+  summarySystem, summaryPrompt, commitSystem, commitPrompt, extractPlan, normalizePlan, parseReport,
+  triageSystem, triagePrompt, parseTriage,
 } from './task-prompts.mjs';
 
 const ACTIVE = new Set(['planning', 'plan_review', 'executing', 'summarizing']);
+export const PLAN_CONFIRM = ['manual', 'auto'];
 const SATISFIED = new Set(['approved', 'skipped']);
 const SETTLED = new Set(['approved', 'skipped', 'cancelled']);
 const MAX_LOG = 600;
@@ -83,6 +86,15 @@ export class TaskRun extends EventEmitter {
     }
     if (data.status === 'summarizing') data.status = 'executing';
     if (data.status === 'executing') data.paused = true;
+    data.planConfirm = PLAN_CONFIRM.includes(data.planConfirm) ? data.planConfirm : 'manual';
+    this.inbox = [];          // 你发来、协调者还没处理的消息
+    this.thinking = false;    // 协调者正在判断
+    this.dispatching = new Map(); // taskId -> 正在进行的这一次（停掉后要等它收尾）
+    // 软件关闭时协调者还没回的消息：不自动重发，标记一下
+    for (const m of host.messages || []) {
+      if (m.queued) { m.queued = false; m.unanswered = true; }
+      if (m.streaming) { m.streaming = false; m.interrupted = true; }
+    }
   }
 
   static create(host, opts, pre) {
@@ -95,6 +107,7 @@ export class TaskRun extends EventEmitter {
       discuss: opts.discuss !== false && host.members.length > 1,
       maxParallel: Math.min(6, Math.max(1, parseInt(opts.maxParallel, 10) || 3)),
       autoApprove: !!opts.autoApprove,
+      planConfirm: PLAN_CONFIRM.includes(opts.planConfirm) ? opts.planConfirm : 'manual',
       mode: pre.mode,
       git: pre.mode === 'git' ? {
         repo: pre.repo,
@@ -121,10 +134,9 @@ export class TaskRun extends EventEmitter {
   get dir() { return runDir(this.host, this.id); }
   member(id) { return this.host.members.find((m) => m.id === id); }
   get coordinator() { return this.member(this.data.coordinatorId) || this.host.members[0]; }
-  /** 聊天是否要暂停：规划/总结时协调者在忙；“依次直接改”执行时文件夹正在被改。 */
-  get blocksChat() {
-    const s = this.data.status;
-    return s === 'planning' || s === 'summarizing' || (s === 'executing' && this.data.mode === 'direct');
+  /** “依次直接改”正在改共享文件夹：同一个文件夹的聊天空间这时只能读。 */
+  get locksFolder() {
+    return !this.data.closed && this.data.mode === 'direct' && this.data.status === 'executing';
   }
 
   // ---------- 对外视图 ----------
@@ -132,6 +144,8 @@ export class TaskRun extends EventEmitter {
     const d = this.data;
     return {
       ...d,
+      thinking: this.thinking,
+      inbox: this.inbox.length,
       tasks: d.tasks.map((t) => ({
         ...t,
         attempts: t.attempts.map(({ log, ...a }) => ({ ...a, logLines: log?.length || 0 })),
@@ -156,13 +170,12 @@ export class TaskRun extends EventEmitter {
     clearTimeout(this.timer);
     this.timer = setTimeout(() => {
       this.host.save();
-      // 已收起的任务不再推送（否则会把界面上的“新任务”页面又顶回去）
-      if (!this.data.closed) this.host.emit({ type: 'run', run: this.publicView() });
+      this.host.emit({ type: 'run', run: this.publicView() });
     }, 200);
   }
 
   // ---------- 调用 AI（统一处理流式、日志、文件块） ----------
-  async call(member, { system, prompt, cwd, access, key, sink, wsForApi }) {
+  async call(member, { system, prompt, cwd, access, key, sink, wsForApi, onDelta, images, onNoImages }) {
     if (this.host.deleting) throw new AbortedError();
     const controller = new AbortController();
     this.controllers.set(key, controller);
@@ -176,10 +189,10 @@ export class TaskRun extends EventEmitter {
         access,
         signal: controller.signal,
         sink,
-        ws: wsForApi,
+        ws: wsForApi, images, onNoImages,
         maxActivities: 80,
         maxLog: MAX_LOG,
-        onDelta: () => this.changed(),
+        onDelta: (t) => { onDelta?.(t); this.changed(); },
         onActivity: () => this.changed(),
       });
       return r.text;
@@ -189,19 +202,19 @@ export class TaskRun extends EventEmitter {
   }
 
   // ---------- 规划 ----------
-  async plan({ feedback = [] } = {}) {
+  async plan({ feedback = [], images = [] } = {}) {
     const d = this.data;
     d.status = 'planning';
     d.error = null;
     this.changed();
     const coord = this.coordinator;
     const cwd = this.host.workspacePath;
-    const say = async (member, system, prompt) => {
+    const say = async (member, system, prompt, images) => {
       const msg = { id: randomUUID().slice(0, 10), memberId: member.id, name: member.name, text: '', streaming: true, ts: Date.now(), activities: [] };
       d.planning.messages.push(msg);
       this.changed();
       try {
-        msg.text = (await this.call(member, { system, prompt, cwd, access: 'read', key: 'plan', sink: msg })).trim();
+        msg.text = (await this.call(member, { system, prompt, images, cwd, access: 'read', key: 'plan', sink: msg })).trim();
         return msg.text;
       } catch (e) {
         if (e.aborted) msg.interrupted = true; else msg.error = e.message;
@@ -214,7 +227,7 @@ export class TaskRun extends EventEmitter {
 
     try {
       const previous = d.tasks.length ? d.tasks.map((t) => ({ id: t.id, title: t.title, assignee: this.member(t.assigneeId)?.name, deps: t.deps, spec: t.spec })) : null;
-      let raw = extractPlan(await say(coord, plannerSystem(this.host, d, coord), plannerPrompt(d, { feedback, previous })));
+      let raw = extractPlan(await say(coord, plannerSystem(this.host, d, coord), plannerPrompt(d, { feedback, previous }), images));
       if (!raw) throw new Error(tr('{0} 没有给出可识别的计划（需要 JSON 格式）。可以换一个协调者，或点“重新规划”。', [coord.name]));
       let tasks = normalizePlan(raw, this.host.members, coord.id);
 
@@ -240,10 +253,15 @@ export class TaskRun extends EventEmitter {
       d.error = e.aborted ? tr('规划被取消了') : e.message;
     }
     this.changed();
+    // 选了「自动开始执行」：计划定好直接开始，计划照样显示，随时可以停
+    if (d.status === 'plan_review' && d.planConfirm === 'auto' && !this.host.deleting) {
+      try { await this.approvePlan(); } catch (e) { d.error = e.message; this.changed(); }
+    }
+    this.drainInbox();
   }
 
   blankTask(t) {
-    return { ...t, status: 'pending', attempts: [], feedbacks: [], question: null, answer: null, changes: [], git: null };
+    return { ...t, status: 'pending', attempts: [], feedbacks: [], notes: [], question: null, answer: null, changes: [], git: null };
   }
 
   replan(feedbackText) {
@@ -256,28 +274,35 @@ export class TaskRun extends EventEmitter {
   async approvePlan(edited) {
     const d = this.data;
     if (d.status !== 'plan_review') throw new Error(tr('现在不是确认计划的时候'));
-    if (d.mode === 'direct' && this.host.chatRunning) throw new Error(tr('聊天里的讨论还在进行，先停止它（否则会和子任务同时改文件）'));
     if (Array.isArray(edited)) {
       if (!edited.length) throw new Error(tr('计划里至少要有一个子任务'));
       d.tasks = normalizePlan(edited, this.host.members, this.coordinator.id).map((t) => this.blankTask(t));
     }
-    if (d.mode === 'git') {
-      fs.mkdirSync(this.dir, { recursive: true });
-      const g = d.git;
-      g.baseCommit = await G.headOf(g.repo);
-      g.intPath = path.join(this.dir, 'integration');
-      if (!fs.existsSync(g.intPath)) await G.addWorktree(g.repo, g.intPath, g.intBranch, g.baseCommit);
-    }
+    await this.ensureIntegration();
     d.status = 'executing';
     d.paused = false;
     this.changed();
     this.tick();
   }
 
+  /** git 项目：建好集成分支的副本（合并进你的项目之后又追加子任务时，重新从你的分支开一个）。 */
+  async ensureIntegration() {
+    const d = this.data;
+    if (d.mode !== 'git') return;
+    fs.mkdirSync(this.dir, { recursive: true });
+    const g = d.git;
+    g.intPath = path.join(this.dir, 'integration');
+    if (fs.existsSync(g.intPath) && !g.removed) return;
+    g.baseCommit = await G.headOf(g.repo);
+    await G.addWorktree(g.repo, g.intPath, g.intBranch, g.baseCommit);
+    g.removed = false;
+    d.merged = null;
+  }
+
   // ---------- 调度 ----------
   tick() {
     const d = this.data;
-    if (this.host.deleting || d.status !== 'executing' || d.paused) return;
+    if (this.host.deleting || d.status !== 'executing' || d.paused || d.hold) return;
     for (const t of d.tasks) {
       if (t.status === 'pending' && t.deps.every((id) => SATISFIED.has(d.tasks.find((x) => x.id === id)?.status))) t.status = 'ready';
     }
@@ -291,7 +316,7 @@ export class TaskRun extends EventEmitter {
       running.push(t);
       this.host.track(this.dispatch(t));
     }
-    if (d.tasks.every((t) => SETTLED.has(t.status))) this.host.track(this.summarize());
+    if (d.tasks.every((t) => SETTLED.has(t.status)) && !this.thinking && !this.inbox.length) this.host.track(this.summarize());
     this.changed();
   }
 
@@ -301,11 +326,19 @@ export class TaskRun extends EventEmitter {
     this.tick();
   }
 
-  async dispatch(task, { conflict = null } = {}) {
+  dispatch(task, opts) {
+    const p = this.runTask(task, opts);
+    this.dispatching.set(task.id, p);
+    const done = () => { if (this.dispatching.get(task.id) === p) this.dispatching.delete(task.id); };
+    p.then(done, done);
+    return p;
+  }
+
+  async runTask(task, { conflict = null } = {}) {
     const d = this.data;
     const member = this.member(task.assigneeId);
     task.status = 'running';
-    const attempt = { id: randomUUID().slice(0, 10), startedAt: Date.now(), text: '', activities: [], log: [], conflict: conflict || undefined };
+    const attempt = { id: randomUUID().slice(0, 10), startedAt: Date.now(), text: '', activities: [], log: [], conflict: conflict || undefined, notes: task.notes?.length || 0 };
     task.attempts.push(attempt);
     this.changed();
     if (!member) {
@@ -327,6 +360,7 @@ export class TaskRun extends EventEmitter {
           await G.addWorktree(g.repo, wt, branch, base);
           task.git = { path: wt, branch, base, head: base };
         }
+        attempt.startHead = task.git.head;
         cwd = path.join(task.git.path, g.sub);
         if (this.host.registry.isApi(member.engine)) ws = new Workspace(cwd, path.join(this.dir, `${task.id}-scratch-history.json`));
       } else {
@@ -368,6 +402,7 @@ export class TaskRun extends EventEmitter {
         task.changes = await G.changedFiles(task.git.path, task.git.reviewBase, task.git.head);
       } else if (d.mode === 'direct') {
         const ch = this.host.ws.commit(member.name, attempt.id);
+        attempt.changeIds = ch.map((c) => c.id);
         if (ch.length) {
           this.host.emit({ type: 'files_changed', changes: ch });
           const known = new Map((task.changes || []).map((c) => [c.path, c]));
@@ -380,6 +415,8 @@ export class TaskRun extends EventEmitter {
     }
 
     attempt.endedAt = Date.now();
+    // 协调者按你的新要求停下了它：状态由协调者那边接着处理
+    if (task.stopping) { attempt.error = null; attempt.outcome = 'stopped'; return this.changed(); }
     if (task.status !== 'running') return this.changed(); // 期间被取消/跳过
     if (attempt.outcome === 'question') task.status = 'blocked';
     else if (attempt.error) task.status = 'failed';
@@ -449,7 +486,7 @@ export class TaskRun extends EventEmitter {
   rejectTask(taskId, feedback) {
     const t = this.task(taskId);
     if (!['review', 'failed'].includes(t.status)) throw new Error(tr('这个子任务现在不能退回'));
-    const text = str(feedback, 4000);
+    const text = str(feedback, 20000);
     if (!text) throw new Error(tr('请写下要怎么改'));
     this.data.paused = false;
     t.feedbacks.push({ ts: Date.now(), text });
@@ -528,20 +565,53 @@ export class TaskRun extends EventEmitter {
     sink.streaming = false;
     d.status = 'done';
     d.finishedAt = Date.now();
-    this.emit('done');
+    // 总结也放进任务空间的对话里（每写一次总结一张卡片）
+    const done = d.tasks.filter((t) => t.status === 'approved').length;
+    this.host.addMessage({
+      id: randomUUID(), kind: 'summary', memberId: coord.id, name: coord.name, engine: coord.engine, ts: Date.now(),
+      text: sink.text, error: sink.error, approved: done, total: d.tasks.length,
+    });
     this.changed();
+    this.host.save();
+    this.drainInbox();
+  }
+
+  gitForMerge() {
+    const d = this.data;
+    if (d.mode !== 'git' || d.status !== 'done') throw new Error(tr('现在不能合并'));
+    if (!d.tasks.some((t) => t.status === 'approved')) throw new Error(tr('没有通过审查的子任务，不需要合并'));
+    return d.git;
+  }
+
+  defaultCommitMessage() {
+    return tr('Agenda 任务：{0}', [this.data.objective.split('\n')[0].slice(0, 60)]);
+  }
+
+  async draftCommitMessage() {
+    const g = this.gitForMerge();
+    const d = this.data;
+    try {
+      const base = await G.mergeBase(g.repo, 'HEAD', g.intBranch);
+      const [commits, files] = await Promise.all([G.recentCommits(g.repo), G.changedFiles(g.repo, base, g.intBranch)]);
+      const summary = this.host.messages.findLast((m) => m.kind === 'summary' && m.text?.trim())?.text || d.summary?.text;
+      const coord = this.coordinator;
+      const reply = await this.call(coord, {
+        system: commitSystem(this.host, coord), prompt: commitPrompt(d, { commits, files, summary }),
+        cwd: this.host.workspacePath, access: 'read', key: Symbol('commit'), sink: { text: '', activities: [], streaming: true },
+      });
+      const message = str(reply.trim().replace(/^```[^\n]*\n(?:([\s\S]*?)\n)?```$/, '$1'), 4000);
+      if (message) return { message, drafted: true };
+    } catch { /* 起草失败或中止时，仍可用默认说明合并。 */ }
+    return { message: this.defaultCommitMessage(), drafted: false };
   }
 
   /** git 模式：把集成分支合并到你当前的分支。 */
-  async mergeIntoProject() {
+  async mergeIntoProject(message) {
     const d = this.data;
-    if (d.mode !== 'git' || d.status !== 'done') throw new Error(tr('现在不能合并'));
-    const g = d.git;
-    const approved = d.tasks.filter((t) => t.status === 'approved');
-    if (!approved.length) throw new Error(tr('没有通过审查的子任务，不需要合并'));
+    const g = this.gitForMerge();
     const info = await G.repoInfo(g.repo);
     if (info.dirtyTracked) throw new Error(tr('你的项目（{0} 分支）有 {1} 个文件改了还没提交。请先提交或暂存，再合并。', [info.branch, info.dirtyTracked]));
-    const r = await G.merge(g.repo, g.intBranch, tr('Agenda 任务：{0}', [d.objective.split('\n')[0].slice(0, 60)]));
+    const r = await G.merge(g.repo, g.intBranch, str(message, 5000) || this.defaultCommitMessage());
     if (!r.ok && r.conflicts.length) throw new Error(tr('合并冲突（{0}）。已放弃这次合并，你的项目没有变化。可以手动合并分支 {1}。', [r.conflicts.join('、'), g.intBranch]));
     if (!r.ok) throw new Error(tr('合并失败：{0}。你的项目没有变化，可以稍后再试，或手动合并分支 {1}。', [r.error || tr('未知错误'), g.intBranch]));
     d.merged = { at: Date.now(), branch: info.branch, head: r.head };
@@ -557,30 +627,262 @@ export class TaskRun extends EventEmitter {
   }
 
   stopForRemoval() {
+    this.inbox = [];
     this.data.paused = true;
     for (const c of this.controllers.values()) c.abort();
     clearTimeout(this.timer);
   }
 
-  async cancel() {
-    const d = this.data;
+  /** 停下所有正在做的（结束任务、删除空间时用）。 */
+  async stopAll() {
     for (const c of this.controllers.values()) c.abort();
-    for (const t of d.tasks) if (!SETTLED.has(t.status) && t.status !== 'failed') t.status = 'cancelled';
-    d.status = 'cancelled';
+    while (this.dispatching.size) await Promise.allSettled([...this.dispatching.values()]);
+  }
+
+  /**
+   * 结束任务：之后这个任务空间只读，留作记录。正在做的会先停下。
+   * git 项目没合并的结果留在集成分支上；依次直接改已经改了的文件不还原（可以在改动记录里撤销）。
+   */
+  async finish() {
+    const d = this.data;
+    if (d.closed) throw new Error(tr('这个任务已经结束了'));
+    this.inbox = [];
+    for (const m of this.host.messages) if (m.queued) { m.queued = false; m.unanswered = true; }
+    await this.stopAll();
+    for (const t of d.tasks) if (!SETTLED.has(t.status)) t.status = 'cancelled';
+    if (ACTIVE.has(d.status)) d.status = d.status === 'planning' || d.status === 'plan_review' ? 'cancelled' : (d.summary?.text ? 'done' : 'cancelled');
+    d.hold = null;
+    d.paused = false;
+    d.closed = true;
     d.finishedAt = Date.now();
-    await this.cleanup({ keepIntegration: false }).catch((e) => { d.error = tr('清理副本失败：{0}', [e.message]); });
+    if (d.mode === 'git') await this.cleanup({ keepIntegration: !d.merged && d.tasks.some((t) => t.status === 'approved') }).catch((e) => { d.error = tr('清理副本失败：{0}', [e.message]); });
     this.changed();
   }
 
-  /** 结束这次任务（done / failed 后），收起面板。git 模式下未合并的分支保留。 */
-  async close() {
+  /** 任务空间设置里改的选项。 */
+  updateSettings(patch = {}) {
     const d = this.data;
-    if (ACTIVE.has(d.status) && d.status !== 'plan_review') throw new Error(tr('任务还在进行，先取消'));
-    if (d.status === 'plan_review') d.status = 'cancelled';
-    d.closed = true;
-    if (d.mode === 'git' && !d.merged) await this.cleanup({ keepIntegration: true }).catch(() => {});
+    if ('planConfirm' in patch && PLAN_CONFIRM.includes(patch.planConfirm)) d.planConfirm = patch.planConfirm;
+    if ('autoApprove' in patch) d.autoApprove = !!patch.autoApprove;
+    if ('discuss' in patch) d.discuss = !!patch.discuss;
+    if ('maxParallel' in patch) d.maxParallel = Math.min(6, Math.max(1, parseInt(patch.maxParallel, 10) || d.maxParallel));
+    if ('coordinatorId' in patch && this.member(patch.coordinatorId)) d.coordinatorId = patch.coordinatorId;
     this.changed();
+    // 改成自动开始：等你确认的计划直接放行
+    if (d.planConfirm === 'auto') {
+      if (d.status === 'plan_review' && d.tasks.length) this.host.track(this.approvePlan().catch(() => {}));
+      if (d.hold) this.confirmPlan();
+    }
   }
+
+  // ---------- 你在任务空间发的消息：都先交给协调者 ----------
+  userMessage(text, attachments = []) {
+    const d = this.data;
+    text = str(text, 20000);
+    if (!text && !attachments.length) throw new Error(tr('消息不能为空'));
+    if (d.closed) throw new Error(tr('这个任务已经结束，只能查看'));
+    const msg = { id: randomUUID(), kind: 'user', name: tr('我'), text, ts: Date.now(), queued: true };
+    if (attachments.length) msg.attachments = attachments;
+    this.host.addMessage(msg);
+    this.inbox.push(msg);
+    this.host.save();
+    this.drainInbox();
+    return msg;
+  }
+
+  /** 协调者一条一条处理；规划中、写总结时先等着，做完会回来取。 */
+  drainInbox() {
+    const d = this.data;
+    if (this.thinking || !this.inbox.length || this.host.deleting || d.closed) return;
+    if (d.status === 'planning' || d.status === 'summarizing') return;
+    const msg = this.inbox.shift();
+    this.thinking = true;
+    this.changed();
+    this.host.track(this.handleMessage(msg).catch((e) => console.error(e)).finally(() => {
+      this.thinking = false;
+      msg.queued = false;
+      this.host.messageDone(msg);
+      this.changed();
+      if (this.inbox.length) this.drainInbox();
+      else this.tick();
+    }));
+  }
+
+  async handleMessage(msg) {
+    const d = this.data;
+    const userText = attachmentText(msg, this.host.workspacePath);
+    const images = this.host.images(msg.attachments);
+    // 还没有计划（规划失败）：把你的话当作意见，重新规划
+    if (!d.tasks.length) {
+      msg.queued = false;
+      await this.plan({ feedback: [{ name: tr('我'), text: userText }], images });
+      return;
+    }
+    const coord = this.coordinator;
+    const reply = { id: randomUUID(), kind: 'ai', memberId: coord.id, name: coord.name, engine: coord.engine, text: '', ts: Date.now(), streaming: true, activities: [], replyTo: msg.id };
+    if (coord.model) reply.model = coord.model;
+    this.host.addMessage(reply);
+    const history = this.host.messages
+      .filter((m) => m.id !== msg.id && !m.queued && (m.text || m.attachments?.length) && (m.kind === 'user' || (m.kind === 'ai' && m.replyTo)))
+      .slice(-6);
+    msg.queued = false;
+    let text;
+    try {
+      text = await this.call(coord, {
+        system: triageSystem(this.host, d, coord),
+        prompt: triagePrompt(this.host, d, userText, { history }),
+        images,
+        onNoImages: () => this.host.emit({ type: 'no_images', id: reply.id }),
+        cwd: this.host.workspacePath,
+        access: 'read',
+        key: 'coord',
+        sink: reply,
+        onDelta: (t) => this.host.emit({ type: 'delta', id: reply.id, text: t }),
+      });
+    } catch (e) {
+      reply.streaming = false;
+      if (e.aborted) reply.interrupted = true; else reply.error = e.message;
+      this.host.messageDone(reply);
+      return;
+    }
+    const r = parseTriage(text);
+    reply.text = r.reply;
+    try {
+      reply.decision = await this.applyDecision(r);
+    } catch (e) {
+      reply.decision = { type: 'answer' };
+      reply.error = tr('没能按这个判断修改计划：{0}', [e.message]);
+    }
+    reply.streaming = false;
+    this.host.messageDone(reply);
+  }
+
+  /** 按协调者的判断改：补充说明分给子任务；有冲突就停掉受影响的子任务、改计划。返回给卡片显示的摘要。 */
+  async applyDecision(r) {
+    const d = this.data;
+    const byId = new Map(d.tasks.map((t) => [t.id, t]));
+    if (r.type === 'note') {
+      const notes = r.notes.filter((n) => byId.has(n.task) && !SETTLED.has(byId.get(n.task).status));
+      for (const n of notes) byId.get(n.task).notes.push({ ts: Date.now(), text: n.text });
+      this.changed();
+      return { type: 'note', why: r.why, notes: notes.map((n) => ({ task: n.task, title: byId.get(n.task).title, text: n.text, running: byId.get(n.task).status === 'running' })) };
+    }
+    if (r.type !== 'change') return { type: r.type, why: r.why };
+    if (d.closed) throw new Error(tr('这个任务已经结束了'));
+
+    // 已通过 / 已跳过的子任务不能改：协调者没写进新计划的也照样留着
+    const raw = [...r.tasks];
+    for (const t of d.tasks) if (SATISFIED.has(t.status) && !raw.some((x) => String(x.id) === t.id)) raw.unshift({ id: t.id, title: t.title, assigneeId: t.assigneeId, deps: t.deps, spec: t.spec });
+    const plan = normalizePlan(raw, this.host.members, this.coordinator.id, { max: 30 });
+    const planned = new Map(plan.map((p) => [p.id, p]));
+
+    // 要停下的：协调者点名的，加上正在做、但被删掉或改了说明 / 负责人的（这种默认留着改动）
+    const stop = new Map(r.stop.map((x) => [x.task, x.keep]));
+    for (const t of d.tasks) {
+      if (t.status !== 'running') continue;
+      const p = planned.get(t.id);
+      if ((!p || p.spec !== t.spec || p.assigneeId !== t.assigneeId) && !stop.has(t.id)) stop.set(t.id, true);
+    }
+    const stopped = [];
+    for (const [id, keep] of stop) {
+      const t = byId.get(id);
+      if (t?.status === 'running') stopped.push(await this.stopForChange(t, keep));
+    }
+
+    const added = [];
+    const changed = [];
+    const removed = [];
+    const next = [];
+    for (const p of plan) {
+      const o = byId.get(p.id);
+      if (!o) { next.push(this.blankTask(p)); added.push({ task: p.id, title: p.title, assigneeId: p.assigneeId }); continue; }
+      next.push(o);
+      if (SATISFIED.has(o.status)) continue;
+      const what = [];
+      if (o.title !== p.title) what.push('title');
+      if (o.spec !== p.spec) what.push('spec');
+      if (o.assigneeId !== p.assigneeId) what.push('assignee');
+      if (o.deps.join() !== p.deps.join()) what.push('deps');
+      const revived = o.status === 'cancelled';
+      if (!what.length && !revived) continue;
+      Object.assign(o, { title: p.title, spec: p.spec, assigneeId: p.assigneeId, deps: p.deps, removed: false });
+      // 说明或负责人变了：做过的结果不再算数，按新说明重做（之前的改动还在，在此基础上接着改）
+      if (revived || ((what.includes('spec') || what.includes('assignee')) && ['review', 'failed', 'blocked'].includes(o.status))) {
+        o.status = 'pending';
+        o.question = null;
+      }
+      changed.push({ task: o.id, title: o.title, what, assigneeId: o.assigneeId });
+    }
+    for (const o of d.tasks) {
+      if (planned.has(o.id)) continue;
+      if (o.status !== 'cancelled') removed.push({ task: o.id, title: o.title });
+      o.status = 'cancelled';
+      o.removed = true;
+      next.push(o);
+    }
+    d.tasks = next;
+    d.planVersion = (d.planVersion || 0) + 1;
+    d.error = null;
+
+    let hold = false;
+    if (d.status === 'plan_review') {
+      // 还没开始执行：照常在计划卡片上等你确认（选了自动开始就直接放行）
+      if (d.planConfirm === 'auto') await this.approvePlan();
+    } else if (d.tasks.some((t) => !SETTLED.has(t.status))) {
+      if (d.status === 'done' || d.status === 'failed') {
+        await this.ensureIntegration();
+        d.status = 'executing';
+        d.finishedAt = null;
+      }
+      d.paused = false;
+      if (d.planConfirm === 'manual') { d.hold = { at: Date.now() }; hold = true; }
+    }
+    this.changed();
+    return { type: 'change', why: r.why, stopped, added, changed, removed, hold };
+  }
+
+  /** 协调者要改计划，先停下这个子任务；keep=false 时丢掉它这一次做了一半的改动。 */
+  async stopForChange(t, keep) {
+    t.stopping = true;
+    this.controllers.get(t.id)?.abort();
+    await this.dispatching.get(t.id)?.catch(() => {});
+    t.stopping = false;
+    const a = t.attempts.at(-1);
+    if (!keep && a) await this.discardAttempt(t, a).catch((e) => { a.note = tr('丢掉改动时出错：{0}', [e.message]); });
+    if (a && !a.note) a.note = keep ? tr('协调者按你的新要求停下了这一次，改动留着') : tr('协调者按你的新要求停下了这一次，改动已丢掉');
+    t.status = 'pending';
+    this.changed();
+    return { task: t.id, title: t.title, keep };
+  }
+
+  async discardAttempt(t, a) {
+    if (this.data.mode === 'git') {
+      if (!t.git || !a.startHead) return;
+      await G.resetHard(t.git.path, a.startHead);
+      t.git.head = a.startHead;
+      t.git.reviewBase = await G.mergeBase(t.git.path, this.data.git.intBranch, t.git.head);
+      t.changes = await G.changedFiles(t.git.path, t.git.reviewBase, t.git.head);
+      return;
+    }
+    const ids = [...(a.changeIds || [])].reverse();
+    for (const id of ids) {
+      try { this.host.ws.undo(id, { force: true }); } catch (e) { if (!/找不到|not found/i.test(e.message)) throw e; }
+    }
+    const gone = new Set(a.changeIds || []);
+    t.changes = (t.changes || []).map((c) => ({ ...c, ids: (c.ids || [c.id]).filter((id) => !gone.has(id)) })).filter((c) => c.ids.length);
+    if (ids.length) this.host.emit({ type: 'files_changed', changes: [] });
+  }
+
+  /** 改过的计划等你确认（选了「等我确认」时）。 */
+  confirmPlan() {
+    const d = this.data;
+    if (!d.hold) throw new Error(tr('没有等你确认的计划'));
+    d.hold = null;
+    d.paused = false;
+    this.changed();
+    this.tick();
+  }
+
 
   /** 子任务某个文件改动前后的内容。 */
   async fileDiff(taskId, file) {

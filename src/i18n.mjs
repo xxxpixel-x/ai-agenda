@@ -2,12 +2,40 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 // Short keys use the original Chinese copy. Long prompts have named keys.
 export const en = {
+  '附件': 'attachments',
+  '找不到这个附件': 'Attachment not found',
+  '文件名不合法': 'Invalid file name',
+  '附件数据不合法': 'Invalid attachment data',
+  '单个文件不能超过 50 MB': 'Each file must be 50 MB or smaller',
+  '单张图片不能超过 5 MB': 'Each image must be 5 MB or smaller',
+  '每条消息最多 10 张图片': 'A message can include up to 10 images',
+  '附件列表不合法': 'Invalid attachment list',
+  '附件已经发送': 'This attachment has already been sent',
+  '附件目录不是普通文件夹': 'The attachment directory must be a regular folder',
+  '无法定位 Git 排除文件': 'Could not locate the Git exclude file',
+  '任务空间「{0}」正在依次修改这个文件夹，现在不能加附件': 'Task space “{0}” is editing this folder sequentially. File attachments are unavailable right now.',
+  '[图片：{0}]': '[Image: {0}]',
+  '[附件：{0}]': '[Attachment: {0}]',
+  '{0} 看不到图片': '{0} cannot see images',
+  '（看到了 {0} 张图片）': ' (Saw {0} image(s))',
+  '截图-{0}.{1}': 'screenshot-{0}.{1}',
+  '无法读取附件': 'Could not read attachment',
+  '查看图片': 'View image',
   '新建 {0}': 'Create {0}',
   '删除 {0}': 'Delete {0}',
   '禁止访问': 'Access denied',
   '未找到': 'Not found',
   '不支持此请求方法': 'Method not allowed',
   '无效的语言设置': 'Invalid language setting',
+  '讨论告一段落，轮到你了': 'The discussion has paused — your turn',
+  '{0} 出错了，讨论已停下': '{0} hit an error; the discussion stopped',
+  '{0} 想运行命令，等你确认': '{0} wants to run a command and needs your approval',
+  '任务计划等你确认': 'The task plan is waiting for your approval',
+  '任务做完了，总结已写好': 'The task is done and the summary is ready',
+  '任务出错停下了': 'The task stopped with an error',
+  '子任务「{0}」等你验收': 'Subtask "{0}" is ready for your review',
+  '子任务「{0}」在问你': 'Subtask "{0}" has a question for you',
+  '子任务「{0}」出错了': 'Subtask "{0}" failed',
   '选择共享文件夹': 'Choose a shared folder',
   'Agenda 桌面版已启动：{0}': 'Agenda desktop started at {0}',
   'Agenda 启动失败': 'Agenda failed to start',
@@ -20,6 +48,7 @@ export const en = {
   '需要 application/json': 'Content-Type must be application/json',
   '当前环境不能打开文件夹': 'Opening folders is unavailable here',
   '只能打开空间的共享文件夹': 'Only a space’s shared folder can be opened',
+  '文件或文件夹不存在': 'File or folder does not exist',
   '这个空间正在删除，请稍等': 'This space is being deleted. Please wait',
   '没有进行中的任务': 'No active tasks',
   '未知操作：{0}': 'Unknown action {0}',
@@ -109,6 +138,8 @@ Complete new file content…
   '模拟发言与改文件': 'Simulated messages and file edits',
   '演示模式，不调用任何 AI': 'Demo mode, with simulated AI responses',
   '这次任务协作的协调者': 'coordinator for this task run',
+  '为这次任务的合并起草提交说明': 'Draft the commit message for merging this task',
+  '演示：合并已通过的任务改动': 'Demo: merge approved task changes',
   '写需求要点': 'Write requirements',
   '在 需求.md 里写下 3 条核心需求。': 'Write three core requirements in requirements.md.',
   '写实现思路': 'Outline the implementation',
@@ -468,6 +499,8 @@ Use this Markdown structure
 (Risks, unfinished work, and anything the user should check or decide)
 
 Write in English.`,
+  'tasks.commit': 'You are “{0}”, the task coordinator. Draft the commit message for merging this task. Base it on the objective, latest summary, and changed files. Match the language, subject style, prefixes, use of a body, and length of the recent commits. Use those commits only as style examples. If there are none, write a short subject in the language of the objective. Output only the commit message, without code fences or explanation.',
+  'tasks.commitPrompt': '{0}\n\n{1}\n\n# Latest summary\n{2}\n\n# Changed files\n{3}\n\n# Recent commits (newest first)\n{4}',
   '\n改动：{0}': '\nChanges — {0}',
   '\n用户意见：\n{0}': '\nUser feedback\n{0}',
   '## {0} {1}（{2}，{3}，做了 {4} 次）\n{5}{6}{7}': '## {0} {1} ({2}, {3}, {4} attempts)\n{5}{6}{7}',
@@ -526,6 +559,94 @@ Write in English.`,
   '这是二进制文件，无法在软件里打开': 'Binary files cannot be opened in the app',
   '找不到这条改动记录': 'Change record not found',
   '这个文件在这次改动之后又被改过了，直接撤销会丢掉后面的修改。': 'This file was edited again after this change. Undoing it will replace those later edits.',
+  'tasks.triage': `You are “{0}”, the coordinator for this task. Work has started and the user (“Me”) has sent a new message. Decide how to handle it and tell the user what you decided.
+
+## Members
+{1}
+
+## Workflow
+{2}
+{3}
+Only decide for now. You may read files to understand the situation. Keep files unchanged.
+
+## How to decide
+- answer — a question about progress, or nothing in the plan needs to change. Answer directly.
+- note — an extra requirement that does not conflict with current work. Write it as a note for the relevant tasks. Tasks that have not started get it in their instructions, and running tasks get it on their next attempt.
+- change — it conflicts with current work, or tasks must be added, removed, reassigned, reordered or rescoped. Return the complete revised plan. List tasks to stop in stop, and decide whether to keep their partial edits (keep: true) or discard them (keep: false).
+- unrelated — it does not serve the overall goal. Test it by asking whether it belongs in the same summary. Do not force it into the plan. Suggest that the user open a new task space.
+
+## Reply format
+Explain your decision and reasoning to the user in one or two paragraphs, then end with a JSON block.
+\`\`\`json
+{"type": "note", "why": "One-line reason", "notes": [{"task": "T2", "text": "Note"}], "stop": [{"task": "T3", "keep": true}], "tasks": [{"id": "T1", "title": "Short title", "assignee": "Member name", "deps": [], "spec": "Self-contained instructions"}]}
+\`\`\`
+- Include notes only for note. Include stop and tasks only for change.
+- For change, tasks is the complete revised plan. Keep existing IDs for tasks you keep and use new IDs for new tasks. Each spec must stand alone. The assignee sees only the overall goal, the plan and their spec. Each assignee must be a member name.
+- Approved tasks cannot change. Add a new task for rework.
+- Write in English.`,
+  'tasks.distill': `You are “{0}”. The user selected messages from a discussion and is opening a task space where several AIs will split up the work. Distill the discussion into a task goal for the coordinator to break down.
+
+- Start with a one-sentence goal.
+- Then cover what to build, decisions and constraints already agreed, what is out of scope, and what counts as done. Include only what the discussion settled. List open questions at the end under “Open”.
+- Stay under 500 words and output only the goal itself.
+- Keep files unchanged.`,
+  // 聊天空间 / 任务空间
+  '删除旧空间失败：{0}': 'Could not remove an old space — {0}',
+  '# 用户刚发来的消息': '# New message from the user',
+  '这和这次任务的目标关系不大，写不进同一份总结。建议新开一个任务空间来做。': 'This is outside the goal of this task and would not fit in the same summary. Open a new task space for it.',
+  '和总目标无关': 'Outside the overall goal',
+  '（演示）沿用原来的说明': '(Demo) Same instructions as before',
+  '按新要求调整': 'Adjust to the new request',
+  '按用户的新要求调整：{0}。写入文件 调整.md': 'Adjust to the user’s new request — {0}. Write file adjustments.md',
+  '这条和现在的计划有冲突，我改了计划：加了一个子任务来处理新要求{0}。': 'This conflicts with the current plan, so I changed it and added a task for the new request{0}.',
+  '，正在做的先停下，改动留着': '. Running work is stopped and its edits are kept',
+  '新要求改变了做法': 'The new request changes the approach',
+  '（演示）目前 {0} 个子任务里还有 {1} 个没做完，进展正常。': '(Demo) {1} of {0} tasks are still open. Progress is on track.',
+  '不冲突，我把它记成补充说明，交给 {0}。': 'No conflict. I added it as a note for {0}.',
+  '补充要求，不影响现有分工': 'An extra requirement that keeps the current assignments',
+  '又发来一条消息': 'has sent a new message',
+  '提炼成任务目标': 'Distill the discussion into a task goal',
+  '（演示）把讨论里定下的方案做出来\n\n- 要做：按讨论里的方案改共享文件夹里的文档\n- 已定：先写要点，再汇总\n- 不做：发布和部署\n- 完成标准：方案.md 写好，大家看过没有异议\n\n待定：无': '(Demo) Build the approach agreed in the discussion\n\n- Build: update the documents in the shared folder as discussed\n- Agreed: write the key points first, then combine them\n- Out of scope: release and deployment\n- Done when: plan.md is written and nobody objects\n\nOpen: none',
+  '（任务空间「{0}」结束了，这是协调者的总结）': '(Task space “{0}” has ended. This is the coordinator’s summary.)',
+  '# 文件暂时只读\n任务空间「{0}」正在依次修改共享文件夹，在它做完之前，这个空间只能阅读文件，不能修改。聊天照常进行。': '# Files are read-only for now\nTask space “{0}” is editing the shared folder sequentially. Until it finishes, this space may read files but not edit them. The chat continues as usual.',
+  '只有任务空间能开始任务': 'Only task spaces can start a task',
+  '这个任务空间已经有任务了': 'This task space already has a task',
+  '这个任务已经结束，只能改名字': 'This task has ended. Only the name can change',
+  '任务进行中，不能修改成员': 'Members cannot change while the task is active',
+  '这个任务已经结束，只能查看': 'This task has ended and is read-only',
+  '任务空间的消息只发给协调者': 'Messages in a task space go to the coordinator',
+  '任务还没开始': 'The task has not started yet',
+  '先选几条消息': 'Select some messages first',
+  '只能从聊天空间转到任务空间': 'Only chat spaces can be moved to a task space',
+  '任务空间「{0}」正在依次修改这个文件夹，文件暂时只读': 'Task space “{0}” is editing this folder sequentially. Files are read-only for now',
+  '（协调者没有写总结）': '(The coordinator did not write a summary)',
+  '- 目标：{0}': '- Goal — {0}',
+  '{0}（总结）': '{0} (summary)',
+  '{0}（任务「{1}」的总结）': '{0} (summary of task “{1}”)',
+  '# 用户中途补充的要求（协调者转给你的，请一并照做）\n{0}': '# Requirements the user added during the task (forwarded by the coordinator, apply them too)\n{0}',
+  '## {0} {1}（负责：{2}，{3}{4}）': '## {0} {1} (assigned to {2}, {3}{4})',
+  '，依赖 {0}': ', depends on {0}',
+  '已有的补充说明：\n{0}': 'Existing notes\n{0}',
+  '正在做，已经做了：\n{0}': 'In progress. Done so far\n{0}',
+  '（还没有动作）': '(no actions yet)',
+  '最近一次的结果：{0}': 'Latest result — {0}',
+  '改动的文件：{0}': 'Changed files — {0}',
+  '# 现在的阶段\n{0}': '# Current stage\n{0}',
+  '所有子任务都结束了，你已经写过总结；用户还没有结束这个任务。': 'All tasks have finished and you have written a summary. The user has not ended this task.',
+  '计划还在等用户确认，还没开始执行。': 'The plan is waiting for user approval. Execution has not started.',
+  '正在执行。': 'Executing.',
+  '# 计划和进展\n{0}': '# Plan and progress\n{0}',
+  '（还没有子任务）': '(no tasks yet)',
+  '# 之前的对话\n{0}': '# Earlier conversation\n{0}',
+  '# 用户刚发来的消息\n{0}': '# New message from the user\n{0}',
+  '请判断并按格式回复。': 'Decide and reply in the required format.',
+  '{0}\n\n# 选出的讨论\n{1}\n\n请提炼成任务目标。': '{0}\n\n# Selected discussion\n{1}\n\nDistill it into a task goal.',
+  '这个任务已经结束了': 'This task has already ended',
+  '没能按这个判断修改计划：{0}': 'Could not update the plan from this decision — {0}',
+  '丢掉改动时出错：{0}': 'Could not discard the edits — {0}',
+  '协调者按你的新要求停下了这一次，改动留着': 'The coordinator stopped this attempt for your new request. Edits are kept',
+  '协调者按你的新要求停下了这一次，改动已丢掉': 'The coordinator stopped this attempt for your new request. Edits were discarded',
+  '没有等你确认的计划': 'No plan is waiting for your approval',
 };
 
 export const zh = {
@@ -567,6 +688,37 @@ export const zh = {
 - 直接写回复内容，不要加 <消息> 标签。
 - 使用用户使用的语言。
 {7}{8}`,
+  'tasks.triage': `你是「{0}」，这次任务的协调者。任务已经开始了，用户（「我」）又发来一条消息。你要判断怎么处理，并告诉用户你的决定。
+
+## 成员
+{1}
+
+## 工作方式
+{2}
+{3}
+现在只做判断：可以阅读文件了解情况，但不要修改任何文件。
+
+## 怎么判断
+- answer：只是问问进展，或者不需要动任何子任务。直接回答。
+- note：补充要求，和正在做的不冲突。写成补充说明，分给相关的子任务（还没开始的写进说明，正在做的在下一次做时带上）。
+- change：和正在做的有冲突，或者需要增删子任务、换负责人、改依赖、调整范围。给出修改后的完整计划；要停掉的子任务写进 stop，并决定它做了一半的改动是留着（keep: true）还是丢掉（keep: false）。
+- unrelated：和总目标无关，判断标准是“能不能写进同一份总结”。不要硬塞进计划，建议用户新开一个任务空间。
+
+## 回复格式
+先用一两段话告诉用户你的决定和理由，然后在最后附一个 JSON 代码块：
+\`\`\`json
+{"type": "note", "why": "一句话理由", "notes": [{"task": "T2", "text": "补充说明"}], "stop": [{"task": "T3", "keep": true}], "tasks": [{"id": "T1", "title": "简短标题", "assignee": "成员名", "deps": [], "spec": "自包含的说明"}]}
+\`\`\`
+- notes 只在 note 时写；stop 和 tasks 只在 change 时写。
+- change 时 tasks 是修改后的完整计划：保留的子任务沿用原来的 id，新增的用新 id；spec 要自包含（做的人只看得到总目标、整体计划和自己的 spec）；assignee 必须是成员名之一。
+- 已通过的子任务不能改，需要返工就新增一个子任务。
+- 使用用户的语言。`,
+  'tasks.distill': `你是「{0}」。用户从一段讨论里选出了几条消息，准备开一个任务空间，让几个 AI 分工去做。请把这些讨论提炼成任务目标，交给协调者去拆分。
+
+- 第一行是一句话的目标。
+- 接着写：要做什么、已经定下的做法和约束、不做什么、怎样算完成。只写讨论里确实定下的，不要补充讨论里没有的内容；没定下的列在最后的「待定」里。
+- 不超过 800 字，使用讨论使用的语言，只输出目标本身。
+- 不要修改任何文件。`,
   'tasks.planFormat': `计划用下面的 JSON 格式给出（放在 \`\`\`json 代码块里，JSON 前可以用一两句话说明思路）：
 \`\`\`json
 {"tasks": [
@@ -597,6 +749,8 @@ export const zh = {
 - 使用用户的语言。
 {4}{5}`,
   'tasks.summary': '你是「{0}」，一次多 AI 任务协作的协调者。所有子任务都结束了，请给用户写一份简洁的总结。不要修改任何文件。\n\n按这个结构写（Markdown）：\n### 完成了什么\n### 每个子任务的结果\n（每个一行：谁做的、结果、关键改动）\n### 需要你注意的地方\n（风险、没做完的、需要用户检查或决定的）\n\n使用用户的语言。',
+  'tasks.commit': '你是「{0}」，任务协调者。请为这次任务的合并起草提交说明。根据总目标、最新总结和改动的文件写内容。最近的提交只用作风格参考：模仿它们的语言、标题写法、前缀、是否有正文以及长短。没有近期提交时，用总目标的语言写一行简短的标题。只输出提交说明，不加代码围栏或解释。',
+  'tasks.commitPrompt': '{0}\n\n{1}\n\n# 最新总结\n{2}\n\n# 改动的文件\n{3}\n\n# 最近的提交（从新到旧）\n{4}',
 };
 
 export function resolveLanguage(setting = 'system', locales = []) {

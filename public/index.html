@@ -15,8 +15,9 @@
         <svg class="brand-mark" viewBox="8 8 48 48" aria-hidden="true"><path d="M51.85 29.56A20 20 0 1 1 34.44 12.15" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round"/><circle cx="46.14" cy="17.86" r="6.5" fill="#d97757"/></svg>
         <span>Agenda</span>
         <span class="mock-tag" id="mockTag" hidden data-i18n="演示模式">演示模式</span>
+        <button class="icon-btn side-toggle" id="sideCollapseBtn" type="button"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><path d="M9.5 5v14"/></svg></button>
       </div>
-      <button class="btn block" id="newSpaceBtn" type="button" data-i18n="＋ 新建空间">＋ 新建空间</button>
+      <button class="btn block new-btn" id="newSpaceBtn" type="button"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span data-i18n="新建空间">新建空间</span></button>
       <nav class="space-list" id="spaceList"></nav>
       <div class="side-foot">
         <button class="engine-bar" id="enginesBtn" type="button" title="查看各个 AI 的登录状态，填写 API key" data-i18n-title="查看各个 AI 的登录状态，填写 API key">
@@ -30,16 +31,26 @@
 
     <!-- 中：聊天 -->
     <main class="main">
+      <button class="icon-btn side-expand" id="sideExpandBtn" type="button"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><path d="M9.5 5v14"/></svg></button>
       <div class="mobile-bar">
-        <button class="icon-btn" id="menuBtn" aria-label="打开侧栏" data-i18n-aria-label="打开侧栏"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
+        <button class="icon-btn" id="menuBtn" aria-label="打开侧栏" data-i18n-aria-label="打开侧栏"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
         <span class="mobile-title" id="mobileTitle">Agenda</span>
       </div>
 
       <section class="welcome" id="welcomeView" hidden>
         <div class="welcome-inner">
           <h1 data-i18n="让几个 AI 在同一个空间里一起想、一起写">让几个 AI 在同一个空间里一起想、一起写</h1>
-          <div class="welcome-actions">
-            <button class="btn primary lg" type="button" data-act="new" data-i18n="＋ 新建空间">＋ 新建空间</button>
+          <div class="welcome-kinds">
+            <button class="kind-card" type="button" data-act="new" data-kind="chat">
+              <span class="kind-icon" data-icon="chat"></span>
+              <b data-i18n="聊天空间">聊天空间</b>
+              <span data-i18n="几个 AI 和你自由讨论，可以一起改共享文件">几个 AI 和你自由讨论，可以一起改共享文件</span>
+            </button>
+            <button class="kind-card" type="button" data-act="new" data-kind="task">
+              <span class="kind-icon" data-icon="task"></span>
+              <b data-i18n="任务空间">任务空间</b>
+              <span data-i18n="写下一个目标，协调者拆成子任务，分给几个 AI 去做">写下一个目标，协调者拆成子任务，分给几个 AI 去做</span>
+            </button>
           </div>
           <div class="engine-summary" id="engineSummary"></div>
         </div>
@@ -47,10 +58,7 @@
 
       <section class="space" id="spaceView" hidden>
         <header class="space-head">
-          <div class="seg" id="viewSeg">
-            <button type="button" data-view="chat" class="active" data-i18n="聊天">聊天</button>
-            <button type="button" data-view="task" data-i18n="任务协作">任务协作 <span class="seg-dot" id="taskDot" hidden></span></button>
-          </div>
+          <span class="space-kind" id="spaceKind" aria-hidden="true"></span>
           <div class="space-title">
             <h2 id="spaceTitle"></h2>
             <div class="space-meta queue" id="queueInfo" hidden></div>
@@ -58,19 +66,13 @@
           <div class="space-actions" id="spaceActions"></div>
         </header>
         <div class="members-bar" id="membersBar"></div>
+        <div class="task-strip" id="taskStrip" hidden></div>
         <div class="messages" id="messages"></div>
-        <div class="task-view" id="taskView" hidden>
-          <div class="tv-inner">
-            <section class="task-imports" id="taskImports" aria-labelledby="taskImportsTitle" hidden>
-              <div class="task-imports-head"><h3 id="taskImportsTitle" data-i18n="导入的对话">导入的对话</h3><span class="hint" data-i18n="与聊天共享，作为任务背景">与聊天共享，作为任务背景</span></div>
-              <div id="taskImportList"></div>
-            </section>
-            <div id="taskContent"></div>
-          </div>
-        </div>
         <footer class="composer" id="composer">
-          <div class="task-bar" id="taskBar" hidden></div>
+          <div class="select-bar" id="selectBar" hidden></div>
+          <div class="ended-bar" id="endedBar" hidden></div>
           <div class="composer-box">
+            <div class="attachment-cards" id="attachmentCards" hidden></div>
             <textarea id="input" rows="1" placeholder="说点什么，@名字 点名" data-i18n-placeholder="说点什么，@名字 点名"></textarea>
             <button class="send-btn" id="sendBtn" type="button" title="发送" data-i18n-title="发送" aria-label="发送" data-i18n-aria-label="发送"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg></button>
           </div>
@@ -81,11 +83,11 @@
     <!-- 右：共享文件夹 -->
     <aside class="files" id="filesPanel" hidden>
       <header class="files-head">
-        <b class="files-title" id="filesTitle" data-i18n="共享文件夹">共享文件夹</b>
+        <b class="files-title" id="filesTitle"><span data-i18n="共享文件夹">共享文件夹</span><span class="files-lock" id="filesLock" tabindex="0" hidden><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg></span></b>
         <div class="files-tools">
-          <button class="icon-btn" id="openFolderBtn" type="button" title="在资源管理器中打开" data-i18n-title="在资源管理器中打开"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/></svg></button>
-          <button class="icon-btn" id="refreshFilesBtn" type="button" title="刷新" data-i18n-title="刷新"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5"/></svg></button>
-          <button class="icon-btn" id="closeFilesBtn" type="button" title="收起" data-i18n-title="收起"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+          <button class="icon-btn" id="openFolderBtn" type="button" title="在资源管理器中打开" data-i18n-title="在资源管理器中打开"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/></svg></button>
+          <button class="icon-btn" id="refreshFilesBtn" type="button" title="刷新" data-i18n-title="刷新"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5"/></svg></button>
+          <button class="icon-btn" id="closeFilesBtn" type="button" title="收起" data-i18n-title="收起"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
         </div>
       </header>
       <div class="tabs">
@@ -96,9 +98,16 @@
     </aside>
   </div>
 
+  <dialog id="imagePreview" class="image-preview" aria-label="查看图片" data-i18n-aria-label="查看图片"></dialog>
   <dialog class="modal" id="modal"></dialog>
   <div class="space-menu" id="spaceMenu" role="menu" aria-label="空间操作" data-i18n-aria-label="空间操作" hidden>
     <button type="button" role="menuitem" data-i18n="删除空间">删除空间</button>
+  </div>
+  <div class="space-menu plain" id="fileMenu" role="menu" aria-labelledby="filesTitle" hidden>
+    <button type="button" role="menuitem" data-file-action="reveal"></button>
+    <button type="button" role="menuitem" data-file-action="open" data-i18n="用默认程序打开">用默认程序打开</button>
+    <button type="button" role="menuitem" data-file-action="copy" data-i18n="复制路径">复制路径</button>
+    <button type="button" role="menuitem" data-file-action="relative" data-i18n="复制相对路径">复制相对路径</button>
   </div>
   <div class="member-pop" id="memberPop" role="dialog" hidden></div>
   <div class="toasts" id="toasts"></div>

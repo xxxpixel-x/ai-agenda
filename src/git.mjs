@@ -2,6 +2,7 @@
 import { t as tr } from './i18n.mjs';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
+import path from 'node:path';
 
 const IDENTITY = (name) => ['-c', `user.name=${name}`, '-c', 'user.email=agenda@localhost', '-c', 'core.quotepath=false'];
 
@@ -20,6 +21,24 @@ export function git(args, { cwd, input, author = 'Agenda', allowFail = false, ti
     });
     if (input != null) child.stdin.end(input);
   });
+}
+
+// --git-path 能找到 worktree 共用的 exclude；前缀按工作目录相对仓库根目录计算。
+export async function excludeFolder(cwd, folder) {
+  const info = await git(['rev-parse', '--show-prefix', '--git-path', 'info/exclude'], { cwd, allowFail: true });
+  if (!info.ok) {
+    if (info.code === 'ENOENT' || /not a git repository/i.test(info.stderr)) return;
+    throw new Error(tr('无法定位 Git 排除文件'));
+  }
+  const [prefix, file] = info.stdout.trimEnd().split(/\r?\n/);
+  const pattern = '/' + (prefix + folder).replace(/[\\*?[\]]/g, '\\$&') + '/';
+  const target = path.resolve(cwd, file);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  let prior = '';
+  try { prior = fs.readFileSync(target, 'utf8'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  if (!prior.split(/\r?\n/).includes(pattern)) {
+    fs.appendFileSync(target, (prior && !prior.endsWith('\n') ? '\n' : '') + pattern + '\n');
+  }
 }
 
 let available = null;
@@ -46,6 +65,11 @@ export async function repoInfo(dir) {
 }
 
 export const headOf = async (cwd, ref = 'HEAD') => (await git(['rev-parse', ref], { cwd })).stdout.trim();
+
+export async function recentCommits(cwd, n = 20) {
+  const { stdout } = await git(['log', '-n', String(n), '--format=%B%x00'], { cwd, allowFail: true });
+  return stdout.split('\0').map((msg) => msg.trim()).filter(Boolean);
+}
 
 export async function addWorktree(repo, wtPath, branch, base) {
   await git(['worktree', 'add', '--no-track', '-b', branch, wtPath, base], { cwd: repo });
@@ -90,6 +114,12 @@ export async function showFile(cwd, rev, file) {
   const r = await git(['show', `${rev}:${file}`], { cwd, allowFail: true });
   if (!r.ok) return null;
   return r.stdout.includes('\u0000') ? tr('（二进制文件）') : r.stdout;
+}
+
+/** 把副本退回到 rev，丢掉之后的提交和没提交的改动。 */
+export async function resetHard(cwd, rev) {
+  await git(['reset', '--hard', rev], { cwd });
+  await git(['clean', '-fd'], { cwd });
 }
 
 /** 在 cwd 所在副本里合并 branch。冲突时返回冲突文件（并保持合并中状态，除非 abortOnConflict）。 */

@@ -9,7 +9,7 @@ const MAX_LOG_LINE = 2000;
 /**
  * @param registry  引擎注册表
  * @param member    成员（engine / model / effort / name）
- * @param opts.system / prompt / cwd / access / sessionId / fork / signal   传给引擎（fork：复制一份会话再接）
+ * @param opts.system / prompt / cwd / access / sessionId / fork / resumeAt / signal   传给引擎（fork：复制一份会话再接；resumeAt：只复制到这条消息）
  * @param opts.sink         写入对象：{ text, activities, note?, log? }；有 log 数组时记录原始输出
  * @param opts.ws           API 型 AI 的文件块写到哪个 Workspace；不给则不写入
  * @param opts.maxActivities / maxLog   保留的动作条数、日志行数
@@ -18,12 +18,16 @@ const MAX_LOG_LINE = 2000;
  * @returns 引擎的返回值，其中 text 已去掉文件块
  */
 export async function runAgentTurn(registry, member, {
-  system, prompt, cwd, access, sessionId, fork, signal,
+  system, prompt, cwd, access, sessionId, fork, resumeAt, signal,
   sink, ws = null, maxActivities = 60, maxLog = 600,
-  onDelta, onActivity, onApproval,
+  onDelta, onActivity, onApproval, images = [], onNoImages,
 }) {
   sink.activities ||= [];
+  const markNoImages = () => { sink.noImages = true; onNoImages?.(); };
+  const canSee = images.length && registry.supportsImages(member.engine);
+  if (images.length && !canSee) markNoImages();
   const r = await registry.runTurn(member.engine, {
+    ...(canSee ? { images, onNoImages: markNoImages } : {}),
     system,
     prompt,
     model: member.model,
@@ -32,6 +36,7 @@ export async function runAgentTurn(registry, member, {
     access,
     sessionId,
     fork,
+    resumeAt,
     signal,
     onApproval,
     onDelta: (t) => { sink.text = (sink.text || '') + t; onDelta?.(t); },

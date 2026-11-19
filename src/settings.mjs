@@ -1,4 +1,4 @@
-// 全局设置：各命令行的路径、Gemini API key、OpenAI 兼容接口列表。保存在 data/settings.json。
+// 全局设置：语言、提醒和防睡眠开关、各命令行的路径、Gemini API key、OpenAI 兼容接口列表。保存在 data/settings.json。
 // 桌面版里 API key 用系统加密（Electron safeStorage，绑定当前 Windows 账户）后再存盘。
 import { t as tr } from './i18n.mjs';
 import fs from 'node:fs';
@@ -8,6 +8,8 @@ import { randomUUID } from 'node:crypto';
 // paths 里有哪些键由调用方传入（命令行引擎的 id），这里不写死
 const defaults = (pathKeys) => ({
   language: 'system',
+  notify: true,    // AI 做完或等你处理时弹系统通知（桌面版）
+  keepAwake: true, // 有 AI 在干活时不让电脑睡眠（桌面版）
   paths: Object.fromEntries(pathKeys.map((k) => [k, ''])),
   gemini: { apiKey: '', baseUrl: '' },
   providers: [], // [{ id, name, baseUrl, apiKey, model }]
@@ -34,6 +36,8 @@ export function createSettings(file, { pathKeys = [], protect = (s) => ({ plain:
     const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
     data = {
       language: ['system', 'zh', 'en'].includes(raw.language) ? raw.language : 'system',
+      notify: raw.notify !== false,
+      keepAwake: raw.keepAwake !== false,
       paths: { ...DEFAULTS.paths, ...(raw.paths || {}) },
       gemini: { baseUrl: raw.gemini?.baseUrl || '', apiKey: decodeKey(raw.gemini?.apiKey) },
       providers: (raw.providers || []).map((p) => ({ ...p, apiKey: decodeKey(p.apiKey) })),
@@ -43,6 +47,8 @@ export function createSettings(file, { pathKeys = [], protect = (s) => ({ plain:
   function save() {
     const out = {
       language: data.language,
+      notify: data.notify,
+      keepAwake: data.keepAwake,
       paths: data.paths,
       gemini: { baseUrl: data.gemini.baseUrl, apiKey: encodeKey(data.gemini.apiKey) },
       providers: data.providers.map((p) => ({ ...p, apiKey: encodeKey(p.apiKey) })),
@@ -56,9 +62,17 @@ export function createSettings(file, { pathKeys = [], protect = (s) => ({ plain:
 
   return {
     get: () => data,
+    disableProviderImages(conn) {
+      const current = data.providers.find((p) => p.id === conn.id && p.baseUrl === conn.baseUrl);
+      if (!current || current.images === false) return;
+      current.images = false;
+      try { save(); } catch (e) { delete current.images; throw e; }
+    },
     /** 给界面看的版本：不回传 key 本身 */
     publicView: () => ({
       language: data.language,
+      notify: data.notify,
+      keepAwake: data.keepAwake,
       paths: data.paths,
       gemini: { baseUrl: data.gemini.baseUrl, hasKey: !!data.gemini.apiKey, keyHint: mask(data.gemini.apiKey) },
       providers: data.providers.map((p) => ({ id: p.id, name: p.name, baseUrl: p.baseUrl, model: p.model, hasKey: !!p.apiKey, keyHint: mask(p.apiKey) })),
@@ -72,6 +86,7 @@ export function createSettings(file, { pathKeys = [], protect = (s) => ({ plain:
           if (!['system', 'zh', 'en'].includes(patch.language)) throw new Error(tr('无效的语言设置'));
           data.language = patch.language;
         }
+        for (const k of ['notify', 'keepAwake']) if (typeof patch[k] === 'boolean') data[k] = patch[k];
         if (patch.paths) {
           for (const k of Object.keys(DEFAULTS.paths)) {
             if (k in patch.paths) data.paths[k] = str(patch.paths[k], 1000);
@@ -91,6 +106,7 @@ export function createSettings(file, { pathKeys = [], protect = (s) => ({ plain:
               id: prev.id || randomUUID().slice(0, 8),
               name,
               baseUrl: str(p.baseUrl),
+              ...(prev.images === false && prev.baseUrl === str(p.baseUrl) ? { images: false } : {}),
               model: str(p.model, 100),
               apiKey: typeof p.apiKey === 'string' ? str(p.apiKey) : prev.apiKey || '',
             };
