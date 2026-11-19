@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { isFile, isWin, capture, runJsonl, brief, relPath } from './proc.mjs';
+import { usageOf, contextOf } from './usage-fields.mjs';
 
 export const meta = {
   images: false,
@@ -19,7 +20,27 @@ export const meta = {
   efforts: ['', 'off', 'low', 'medium', 'high', 'xhigh', 'max'], // 具体型号支持哪些，detect 时从型号目录查
   resume: true, // 每个成员复用同一个 dsh 会话，避免在 DeepSeek Harness 里留下一大串会话
   get capabilities() { return tr('读写共享文件、在共享文件夹内运行命令'); },
+  usage: { tokens: true, context: false, quota: false }, // 只有每一步的 token；不报窗口和额度
 };
+
+/**
+ * 用量：headless --json 每一步结束的 status / step_end 事件带 usage
+ *   { inputTokens（没命中缓存的部分）, outputTokens, totalTokens?, cacheReadTokens?, cacheWriteTokens?, reasoningTokens? }
+ * 缓存字段为 0 时不出现；某一步拿不全时整步不带 usage。按它安装包里的源码写（dsh-headless 的 json-stream），
+ * 本机账号余额不足，没能跑通一次完整回复，未实测。上下文长度取最后一步的提示加输出，窗口大小它不报。
+ */
+export function usageFrom(steps) {
+  if (!steps.length) return undefined;
+  const sum = (k) => (steps.some((s) => typeof s[k] === 'number') ? steps.reduce((n, s) => n + (s[k] || 0), 0) : undefined);
+  const last = steps.at(-1);
+  return usageOf({
+    input: sum('inputTokens'),
+    output: sum('outputTokens'),
+    cacheRead: sum('cacheReadTokens'),
+    cacheWrite: sum('cacheWriteTokens'),
+    contextUsed: contextOf({ input: last.inputTokens, cacheRead: last.cacheReadTokens, cacheWrite: last.cacheWriteTokens, output: last.outputTokens }),
+  });
+}
 
 const EXE = 'DeepSeek Harness.exe';
 const cliOf = (root) => path.join(root, 'resources', 'app.asar', 'dsh', 'node_modules', '@deepseek-ai', 'dsh-desktop-host', 'lib', 'cli.js');
@@ -203,6 +224,7 @@ export async function runTurn({ system, prompt, model, effort, cwd, access = 'ed
     let final = null;
     let newSession = sessionId || null;
     let steps = 0;
+    const stepUsage = []; // 每一步的用量
     const emit = (t) => { if (t) { text += t; onDelta?.(t); } };
 
     const r = await runJsonl({
@@ -221,6 +243,7 @@ export async function runTurn({ system, prompt, model, effort, cwd, access = 'ed
           if (steps++ > 0 && text && !text.endsWith('\n')) emit('\n\n');
           emit(ev.text);
         } else if (ev.type === 'tool_call') onActivity?.(activityOf(ev, cwd));
+        else if (ev.type === 'status' && ev.phase === 'step_end' && ev.usage) stepUsage.push(ev.usage);
         else if (ev.type === 'final') final = ev;
       },
     });
@@ -240,7 +263,8 @@ export async function runTurn({ system, prompt, model, effort, cwd, access = 'ed
     }
     if (!text && final.text) emit(final.text);
     if (!text.trim()) throw new Error(tr('DeepSeek Harness 没有返回内容'));
-    return { text, sessionId: newSession };
+    const usage = usageFrom(stepUsage);
+    return { text, sessionId: newSession, ...(usage ? { usage } : {}) };
   }
 
   try {

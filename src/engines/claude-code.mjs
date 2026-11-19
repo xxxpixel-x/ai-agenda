@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { findOnPath, isFile, capture, runJsonl, brief, relPath } from './proc.mjs';
+import { usageOf, quotaOf, contextOf } from './usage-fields.mjs';
 
 export const meta = {
   images: true,
@@ -26,6 +27,7 @@ export const meta = {
   get capabilities() { return tr('读写共享文件、联网搜索'); },
   approvals: true, // 运行命令前可以先问你
   continuesImports: true, // 导入它自己的对话时，对应成员复制一份原会话接着聊（runTurn 的 sessionId + fork）
+  usage: { tokens: true, context: true, quota: true }, // 结果里的 token 和上下文窗口、rate_limit_event 里的账号额度（2.1.325 实测）
 };
 
 function compareVersions(a, b) {
@@ -140,6 +142,30 @@ function activityOf(block, cwd) {
   }
 }
 
+/**
+ * 用量（Claude Code 2.1.325 实测）：
+ *   result.usage 是这一轮所有请求的合计，usage.iterations 的最后一项是最后一次请求（算上下文长度）；
+ *   result.modelUsage[型号].contextWindow 是窗口大小（用了子代理时取用量最大的那个型号）；
+ *   rate_limit_event 的 unifiedWindows（five_hour / seven_day）里有 utilization（0–1）和 resetsAt（秒）。
+ */
+export function usageFrom(result, rateLimit) {
+  const u = result?.usage;
+  if (!u) return undefined;
+  const last = u.iterations?.at(-1);
+  const size = (m) => (m?.inputTokens || 0) + (m?.cacheReadInputTokens || 0) + (m?.cacheCreationInputTokens || 0);
+  const main = Object.values(result.modelUsage || {}).reduce((a, b) => (size(b) > size(a) ? b : a), null);
+  const windows = rateLimit ? Object.values(rateLimit.unifiedWindows || { one: rateLimit }) : [];
+  return usageOf({
+    input: u.input_tokens,
+    output: u.output_tokens,
+    cacheRead: u.cache_read_input_tokens,
+    cacheWrite: u.cache_creation_input_tokens,
+    contextUsed: last ? contextOf({ input: last.input_tokens, cacheRead: last.cache_read_input_tokens, cacheWrite: last.cache_creation_input_tokens, output: last.output_tokens }) : undefined,
+    contextWindow: main?.contextWindow,
+    quota: quotaOf(windows.map((w) => ({ usedPct: typeof w?.utilization === 'number' ? w.utilization * 100 : undefined, resetsAt: w?.resetsAt }))),
+  });
+}
+
 function friendly(text, bin) {
   const t = brief(text, 300);
   if (/not logged in|\/login|invalid api key|authentication/i.test(t)) {
@@ -186,6 +212,7 @@ export async function runTurn({ system, prompt, images = [], model, effort, cwd,
 
   let text = '';
   let result = null;
+  let rateLimit = null;
   let blocks = 0;
   const emit = (t) => { if (t) { text += t; onDelta?.(t); } };
 
@@ -237,6 +264,8 @@ export async function runTurn({ system, prompt, images = [], model, effort, cwd,
           for (const b of msg.message?.content || []) {
             if (b.type === 'tool_use') onActivity?.(activityOf(b, cwd));
           }
+        } else if (msg.type === 'rate_limit_event') {
+          rateLimit = msg.rate_limit_info || null;
         } else if (msg.type === 'result') {
           result = msg;
           if (ask) ctl.finish();
@@ -253,7 +282,8 @@ export async function runTurn({ system, prompt, images = [], model, effort, cwd,
     if (!result && r.code !== 0) throw fail(r.stderr || tr('退出码 {0}', [r.code]));
     if (!text && result?.result) emit(result.result);
     if (!text.trim()) throw fail(r.stderr);
-    return { text, sessionId: sessionId ? result?.session_id || null : undefined };
+    const usage = usageFrom(result, rateLimit);
+    return { text, sessionId: sessionId ? result?.session_id || null : undefined, ...(usage ? { usage } : {}) };
   } finally {
     fs.rm(sysFile, { force: true }, () => {});
   }

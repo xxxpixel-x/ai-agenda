@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { findOnPath, isFile, isWin, capture, runJsonl, brief } from './proc.mjs';
+import { usageOf, quotaOf, uncached } from './usage-fields.mjs';
 
 export const meta = {
   images: true,
@@ -20,7 +21,20 @@ export const meta = {
   efforts: ['', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'], // 具体型号支持哪些，detect 时从 codex debug models 查
   get capabilities() { return tr('读写共享文件、在共享文件夹内运行命令（沙箱）、联网搜索'); },
   approvals: true, // 运行命令前可以先问你（走 app-server）
+  // codex exec 的输出只有 token；上下文窗口和账号额度只有走 app-server（运行命令前先问你）时才有（0.169 实测）
+  usage: { tokens: true, context: true, quota: true },
 };
+
+// Codex 的输入 token 含缓存命中（0.169 实测：total = input + output），换成没命中的部分
+const tokensOf = (input, cached, cacheWrite, output) => ({
+  input: uncached(input, cached, cacheWrite), output, cacheRead: cached, cacheWrite,
+});
+
+/** codex exec 的 turn.completed.usage：{ input_tokens, cached_input_tokens, cache_write_input_tokens, output_tokens, reasoning_output_tokens }（0.169 实测） */
+export function execUsage(u) {
+  if (!u) return undefined;
+  return usageOf(tokensOf(u.input_tokens, u.cached_input_tokens, u.cache_write_input_tokens, u.output_tokens));
+}
 
 // Windows 上 Codex 桌面版是应用商店应用，codex.exe 在包目录里，需要问系统要安装位置
 let storeLookup = null;
@@ -112,6 +126,7 @@ export async function runTurn({ system, prompt, images = [], model, effort, cwd,
 
   let text = '';
   let failure = null;
+  let usage;
   const warnings = [];
   const emit = (t) => {
     if (!t) return;
@@ -142,6 +157,7 @@ export async function runTurn({ system, prompt, images = [], model, effort, cwd,
         else if (item.type === 'mcp_tool_call') onActivity?.({ kind: 'tool', label: `${item.server || ''} ${item.tool || ''}`.trim() || tr('工具') });
         else if (item.type === 'error' && !/Ignored unsupported/i.test(item.message || '')) warnings.push(item.message);
       } else if (ev.type === 'turn.completed') {
+        usage = execUsage(ev.usage);
         ctl.finish(); // 回合结束后进程还会逗留几十秒，不等它
       } else if (ev.type === 'turn.failed') {
         failure = ev.error?.message || tr('回合失败');
@@ -157,7 +173,7 @@ export async function runTurn({ system, prompt, images = [], model, effort, cwd,
     const why = warnings[0] || r.stderr || tr('退出码 {0}', [r.code]);
     throw new Error(tr('Codex 没有返回内容：{0}', [brief(why, 300)]));
   }
-  return { text };
+  return usage ? { text, usage } : { text };
 }
 
 // ---------- 运行命令前先问你：app-server ----------
@@ -168,7 +184,24 @@ const rpc = (obj) => ({ jsonrpc: '2.0', ...obj });
 const refusal = (note) => tr('「我」没有同意运行刚才那条命令{0}。按这个调整做法，不要换一种写法绕过。', [note ? tr('，理由：{0}', [note]) : '']);
 const approvalNote = (note) => tr('「我」同意了刚才那条命令，并补充：{0}', [note]);
 
+// app-server 的用量（0.169 实测）：thread/tokenUsage/updated 里 total 是这个会话的合计（每轮一个新会话，就是这一轮），
+// last 是最后一次请求，modelContextWindow 是窗口；account/rateLimits/updated 里 primary / secondary 是各个额度窗口
+export function appServerUsage(tokens, limits) {
+  if (!tokens && !limits) return undefined;
+  const t = tokens?.total || {};
+  const last = tokens?.last;
+  const windows = limits ? [limits.primary, limits.secondary] : [];
+  return usageOf({
+    ...(tokens ? tokensOf(t.inputTokens, t.cachedInputTokens, t.cacheWriteInputTokens, t.outputTokens) : {}),
+    contextUsed: last ? (last.inputTokens || 0) + (last.outputTokens || 0) : undefined,
+    contextWindow: tokens?.modelContextWindow,
+    quota: quotaOf(windows.map((w) => ({ usedPct: w?.usedPercent, resetsAt: w?.resetsAt }))),
+  });
+}
+
 async function runAsking({ bin, images, input, model, effort, cwd, signal, onDelta, onActivity, onRaw, onApproval }) {
+  let tokens = null;
+  let limits = null;
   let text = '';
   let failure = null;
   const warnings = [];
@@ -232,6 +265,10 @@ async function runAsking({ bin, images, input, model, effort, cwd, signal, onDel
         else if (item.type === 'fileChange') for (const c of item.changes || []) onActivity?.({ kind: 'edit', label: tr('修改 {0}', [path.basename(c.path || '')]) });
         else if (item.type === 'webSearch' && item.query) onActivity?.({ kind: 'search', label: tr('搜索：{0}', [brief(item.query, 60)]) });
         else if (item.type === 'mcpToolCall') onActivity?.({ kind: 'tool', label: `${item.server || ''} ${item.tool || ''}`.trim() || tr('工具') });
+      } else if (m.method === 'thread/tokenUsage/updated') {
+        tokens = p.tokenUsage || tokens;
+      } else if (m.method === 'account/rateLimits/updated') {
+        limits = p.rateLimits || limits;
       } else if (m.method === 'error' && !p.willRetry) {
         warnings.push(p.error?.message);
       } else if (m.method === 'turn/completed') {
@@ -246,5 +283,6 @@ async function runAsking({ bin, images, input, model, effort, cwd, signal, onDel
     const why = warnings.find(Boolean) || r.stderr || tr('退出码 {0}', [r.code]);
     throw new Error(tr('Codex 没有返回内容：{0}', [brief(why, 300)]));
   }
-  return { text };
+  const usage = appServerUsage(tokens, limits);
+  return usage ? { text, usage } : { text };
 }
