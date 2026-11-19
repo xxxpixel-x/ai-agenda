@@ -149,7 +149,6 @@ export async function openNewSpaceModal(opts = {}) {
     const box = $('#nsImport', dlg);
     const topic = $('input[name=impMode]:checked', box)?.value === 'topic' ? safeName($('#impTopic', box).value) : '';
     autoFolder = topic ? `${imp.cwd.replace(/[\\/]+$/, '')}\\${topic}` : imp.cwd;
-    if (f.value !== autoFolder) moreOptions.open = true;
     f.value = autoFolder;
     $('input[name=ws][value=folder]', dlg).checked = true;
   };
@@ -169,15 +168,15 @@ export async function openNewSpaceModal(opts = {}) {
       <div class="field"><div class="label">${tr('成员')}</div><div id="nsMembers"></div></div>
       <div class="field" data-for="task"><label for="nsCoord">${tr('协调者')}</label><select id="nsCoord" class="w-auto"></select>
         <div class="hint">${tr('拆分计划、分配子任务、处理你中途发来的消息、写总结')}</div></div>
-      <details class="more-opts" ${opts.from || opts.folder ? 'open' : ''}>
+      <div class="field"><div class="label">${tr('共享文件夹')}</div>
+        <div class="choices">${sharedChoice}
+          <label class="choice"><input type="radio" name="ws" value="managed" ${sharedChoice || opts.folder ? '' : 'checked'}><span><b>${tr('新建一个空文件夹')}</b><div class="d">${tr('适合写作和讨论')}</div></span></label>
+          <label class="choice"><input type="radio" name="ws" value="folder" ${!sharedChoice && opts.folder ? 'checked' : ''}><span><b>${tr('用电脑上已有的文件夹')}</b><div class="d">${tr('AI 会直接读写里面的文件')}</div>
+            <div class="folder-row"><input id="nsFolder" placeholder="${tr('点右边按钮选择')}" readonly value="${esc(opts.folder || '')}"><button class="btn sm" type="button" data-act="pick">${tr('选择…')}</button></div></span></label>
+        </div></div>
+      <div class="field"><div class="label">${tr('AI 的权限')}</div><div class="choices">${accessChoices(opts.access || (ACCESS[load('lastAccess')] ? load('lastAccess') : 'edit'))}</div></div>
+      <details class="more-opts">
         <summary>${tr('更多选项')}</summary>
-        <div class="field"><div class="label">${tr('共享文件夹')}</div>
-          <div class="choices">${sharedChoice}
-            <label class="choice"><input type="radio" name="ws" value="managed" ${sharedChoice || opts.folder ? '' : 'checked'}><span><b>${tr('新建一个空文件夹')}</b><div class="d">${tr('适合写作和讨论')}</div></span></label>
-            <label class="choice"><input type="radio" name="ws" value="folder" ${!sharedChoice && opts.folder ? 'checked' : ''}><span><b>${tr('用电脑上已有的文件夹')}</b><div class="d">${tr('AI 会直接读写里面的文件')}</div>
-              <div class="folder-row"><input id="nsFolder" placeholder="${tr('点右边按钮选择')}" readonly value="${esc(opts.folder || '')}"><button class="btn sm" type="button" data-act="pick">${tr('选择…')}</button></div></span></label>
-          </div></div>
-        <div class="field"><div class="label">${tr('AI 的权限')}</div><div class="choices">${accessChoices(opts.access || (ACCESS[load('lastAccess')] ? load('lastAccess') : 'edit'))}</div></div>
         <div data-for="task">${taskOptionsHtml(opts.task)}</div>
         <div class="field" data-for="chat"><label for="nsTurns">${tr('每次最多来回几次')}</label>
           <input id="nsTurns" type="number" min="1" max="30" value="6" class="w-num"></div>
@@ -240,7 +239,6 @@ export async function openNewSpaceModal(opts = {}) {
       try { imp = await api(`/api/import/session?source=${s.source}&id=${encodeURIComponent(s.id)}`); } catch (e) { toast(e.message, 'error'); return; }
       $('#nsTitle', dlg).value = imp.title;
       if (imp.cwd) {
-        moreOptions.open = true;
         autoFolder = imp.cwd;
         $('#nsFolder', dlg).value = imp.cwd;
         $('input[name=ws][value=folder]', dlg).checked = true;
