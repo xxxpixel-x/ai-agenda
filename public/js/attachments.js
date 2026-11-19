@@ -112,7 +112,7 @@ export function messageAttachments(items) {
 
 $('#messages').addEventListener('click', (e) => {
   const chip = e.target.closest('[data-attachment-path]');
-  if (chip) { state.files.tab = 'files'; openFile(chip.dataset.attachmentPath); }
+  if (chip) openFile(chip.dataset.attachmentPath);
   const img = e.target.closest('[data-preview]')?.querySelector('img');
   if (img) { preview.replaceChildren(img.cloneNode()); preview.showModal(); }
 });

@@ -32,7 +32,9 @@ Electron 主进程启动仅监听 `127.0.0.1` 的 HTTP 服务，并以随机端�
 | `src/imports.mjs` | 导入方式、摘要、主题简报、补导和背景版本 |
 | `src/importers/` | 只读解析外部工具的会话记录，以及粘贴文字和导出文件的整理（新增来源见 [importers.md](importers.md)） |
 | `src/engines/` | CLI / API 适配器与统一注册表 |
-| `public/` | 界面与静态素材：`app.js` 是入口（路由与启动），各部分在 `public/js/`（`util.js` 是工具和全局状态，不依赖其他模块） |
+| `public/` | 界面与静态素材：`app.js` 是入口（路由与启动），各部分在 `public/js/`（`util.js` 是工具和全局状态，不依赖其他模块）。样式变量在 `public/css/tokens.css`，其他样式只用变量 |
+| `public/js/slots.js` | 挂载点：设置分类（`settings`）、资源库分类（`library`）、空间设置标签（`spaceTabs`）、右侧栏面板（`panels`）都用 `register(slot, def)` 注册，加功能加一个文件，不改布局 |
+| `public/js/pages.js` / `rightbar.js` | 整页视图（`#/settings/<id>`、`#/library/<id>`）；右侧栏（一次看一个面板，能收起） |
 
 `Chat`、`TaskRun` 和导入流程分别通过 `Space.createChatHost()`、`createRunHost()`、`createImportHost()` 提供的接口访问空间，不直接碰 `Space`。任务空间的对话（你的消息、协调者的回复和判断、总结）也存在空间的 `messages` 里，`TaskRun` 通过宿主接口的 `addMessage` / `messageDone` 写入。
 

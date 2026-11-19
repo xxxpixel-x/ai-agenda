@@ -322,6 +322,7 @@ export const en = {
   '原对话在 {0}，和共享文件夹不同，原对话里的文件路径可能对不上。': 'The original conversation uses {0}, which differs from the shared folder. File paths may no longer match.',
   '导入': 'Import',
   '&nbsp;正在整理': '&nbsp;Preparing',
+  '正在整理': 'Preparing',
   '看对比': 'Compare',
   '采用': 'Accept',
   '简报文件已删除': 'Brief file deleted',
@@ -477,6 +478,24 @@ export const en = {
   '{0}（任务「{1}」的总结）': '{0} (summary of task “{1}”)',
   '几个 AI 和你自由讨论，可以一起改共享文件': 'Talk freely with several AIs and edit shared files together',
   '写下一个目标，协调者拆成子任务，分给几个 AI 去做': 'Write a goal. The coordinator splits it into tasks for several AIs',
+  // 整页设置、资源库
+  '通用': 'General',
+  '外观': 'Appearance',
+  'AI 连接': 'AI connections',
+  '本机程序': 'Local apps',
+  'API 密钥': 'API key',
+  '未保存': 'Not saved',
+  '添加接口': 'Add provider',
+  '删除接口': 'Delete provider',
+  '最多可添加 20 个接口': 'You can add up to 20 providers',
+  '接口已删除': 'This provider has been deleted',
+  '资源库': 'Library',
+  '关闭': 'Close',
+  '改动': 'Changes',
+  '文件操作': 'File actions',
+  '常规': 'General',
+  '任务选项': 'Task options',
+  '更多选项': 'More options',
 };
 
 export const zh = Object.fromEntries(Object.keys(en).map((key) => [key, key]));

@@ -152,6 +152,7 @@ export class Space extends EventEmitter {
    * 新建空间。任务空间要另外调用 startTask() 开始规划（要先检查文件夹是不是 git 项目）。
    * input.kind：'chat' | 'task'
    * 任务空间：input.objective、coordinatorId、planConfirm、clarify、discuss、autoApprove、maxParallel、source（{ spaceId, title }，从聊天空间转来时）
+
    */
   static create(input, deps) {
     const engines = deps.registry.list();
@@ -184,6 +185,9 @@ export class Space extends EventEmitter {
       createdAt: now,
       updatedAt: now,
     };
+    // 定时任务建出来的空间记住是哪个定时任务建的（侧栏按它分组）
+    const scheduleId = str(input.scheduleId, 100);
+    if (scheduleId) data.scheduleId = scheduleId;
     if (kind === 'task') {
       const src = input.source && deps.hooks?.spaceTitle?.(input.source.spaceId);
       if (src) data.source = { spaceId: input.source.spaceId, title: src, messages: clampInt(input.source.messages, 0, 9999, 0) };
@@ -251,10 +255,11 @@ export class Space extends EventEmitter {
       needsYou: runNeedsUser(r),
       finished: !!r?.closed,
       lastAt: last?.ts || null,
-      members: d.members.map((m) => ({ name: m.name, color: m.color })),
+      members: d.members.map((m) => ({ name: m.name, color: m.color, engine: m.engine })),
       preview: last ? `${last.kind === 'user' ? tr('我') : last.name}：${(last.text || last.attachments[0].name).slice(0, 40)}` : (r ? r.objective.split('\n')[0].slice(0, 60) : ''),
       workspaceType: d.workspace.type,
       readOnly: !!this.readOnly,
+      scheduleId: d.scheduleId || null,
     };
   }
 

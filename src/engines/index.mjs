@@ -2,7 +2,10 @@
 //   detect(opts)  -> { available, ready, note, command?, bin?, models?, efforts?, defaultModel? }
 //     models：查到的型号（字符串或 [型号, 显示名]）；efforts：{ 型号: [该型号支持的思考档位] }
 //     meta.models / meta.efforts 是写死的常用型号和这个 AI 的全部档位（查不到时用）
-//   runTurn(opts) -> { text, sessionId? }   流式内容通过 onDelta，工具动作通过 onActivity
+//   runTurn(opts) -> { text, sessionId?, usage? }   流式内容通过 onDelta，工具动作通过 onActivity
+//     usage：这一轮的用量 { input, output, cacheRead, cacheWrite, contextUsed?, contextWindow?, quota?: { usedPct, resetsAt } }，
+//     input 不含缓存命中，拿不到的字段不写（见 usage-fields.mjs）；meta.usage = { tokens, context, quota } 写这个引擎能报哪几样
+//     （context 指能算出上下文百分比，即同时有 contextUsed 和 contextWindow）
 //     meta.approvals 为 true 的引擎：opts.onApproval({ command }) 存在时，运行命令前先 await 它，
 //     得到 { allow, reason } 再决定运行还是拒绝（reason 转告 AI）
 // 引擎的能力写在它自己模块的 meta 里：kind（'cli' | 'api'）、resume（能否续接会话）、
