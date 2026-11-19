@@ -1,5 +1,5 @@
 // 桌面版入口：在本机起一个只给自己用的服务，再用一个独立窗口显示界面。
-const { app, BrowserWindow, ipcMain, dialog, shell, net, safeStorage, Menu, nativeTheme, Notification, powerSaveBlocker } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, net, safeStorage, Menu, nativeTheme, Notification, powerSaveBlocker, Tray, nativeImage } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -76,6 +76,16 @@ function createWindow(url) {
     if (!target.startsWith(url)) { e.preventDefault(); if (/^https?:\/\//i.test(target)) shell.openExternal(target); }
   });
   win.on('focus', () => win.flashFrame(false));
+  // 设了定时任务：关窗口只是藏到托盘，定时任务照常运行；从托盘菜单或系统退出时才真的关
+  win.on('close', (e) => {
+    if (!keepInTray || quitting) return;
+    e.preventDefault();
+    win.hide();
+    trayMenu();
+    trayNotice();
+  });
+  win.on('show', () => { if (!keepInTray) setTray(false); });
+  win.on('session-end', () => { quitting = true; }); // Windows 注销 / 关机：别拦着
   // F12 打开开发者工具，Ctrl+R 刷新
   win.webContents.on('before-input-event', (e, input) => {
     if (input.type !== 'keyDown') return;
@@ -85,11 +95,52 @@ function createWindow(url) {
   win.loadURL(url);
 }
 
-app.on('second-instance', () => {
-  if (win) { if (win.isMinimized()) win.restore(); win.focus(); }
-});
+const showWindow = () => {
+  if (!win) return;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+};
+
+app.on('second-instance', showWindow);
 
 const notices = new Set();
+
+// ---------- 托盘（设了定时任务时）----------
+let tray = null;
+let keepInTray = false;
+let quitting = false;
+function trayMenu() {
+  tray?.setContextMenu(Menu.buildFromTemplate([
+    { label: tr('打开 Agenda'), click: showWindow },
+    { label: tr('退出'), click: () => { quitting = true; app.quit(); } },
+  ]));
+}
+function setTray(on) {
+  keepInTray = on;
+  if (on && !tray) {
+    // Windows 用 ico（系统自己挑合适的尺寸）；macOS 菜单栏和 Linux 托盘要小图
+    const icon = nativeImage.createFromPath(ICON);
+    tray = new Tray(process.platform === 'win32' ? icon : icon.resize({ width: process.platform === 'darwin' ? 18 : 24 }));
+    tray.setToolTip('Agenda');
+    tray.on('click', showWindow);
+    trayMenu();
+  } else if (!on && tray && win?.isVisible()) {
+    // 窗口还藏着的时候（比如只跑一次的定时任务刚跑完）先留着托盘，不然就打不开窗口了；窗口出来后再去掉
+    tray.destroy();
+    tray = null;
+  }
+}
+// 第一次缩到托盘时提示一次
+function trayNotice() {
+  if (readUi().trayNotice || !Notification.isSupported()) return;
+  const n = new Notification({ title: tr('Agenda 还在后台运行'), body: tr('设了定时任务，关掉窗口后会照常运行。从托盘图标可以打开或退出。'), icon: ICON });
+  notices.add(n);
+  n.on('click', showWindow);
+  n.on('close', () => notices.delete(n));
+  n.show();
+  try { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(UI_FILE, JSON.stringify({ ...readUi(), trayNotice: true })); } catch { /* 记不住就下次再提示 */ }
+}
 let blocker = null;
 
 app.whenReady().then(async () => {
@@ -122,9 +173,7 @@ app.whenReady().then(async () => {
         const n = new Notification({ title, body, icon: ICON });
         notices.add(n); // 留着引用，不然被回收后点通知没反应
         n.on('click', () => {
-          if (win.isMinimized()) win.restore();
-          win.show();
-          win.focus();
+          showWindow();
           win.webContents.send('open-space', spaceId);
         });
         n.on('close', () => notices.delete(n));
@@ -135,6 +184,8 @@ app.whenReady().then(async () => {
         if (on && blocker === null) blocker = powerSaveBlocker.start('prevent-app-suspension');
         else if (!on && blocker !== null) { powerSaveBlocker.stop(blocker); blocker = null; }
       },
+      // 有没有启用的定时任务：决定关窗口是缩到托盘还是退出
+      scheduleActive: (on) => setTray(on),
       protect: (s) => (canEncrypt ? { enc: safeStorage.encryptString(s).toString('base64') } : { plain: s }),
       unprotect: (o) => (o?.enc ? safeStorage.decryptString(Buffer.from(o.enc, 'base64')) : o?.plain || ''),
     },
@@ -165,4 +216,4 @@ app.on('window-all-closed', () => {
   app.quit();
 });
 // 不是关窗口退出的（系统注销、任务栏“关闭窗口”之外的退出）也要结束 AI 进程；重复调用没关系
-app.on('before-quit', () => srv?.close());
+app.on('before-quit', () => { quitting = true; srv?.close(); });

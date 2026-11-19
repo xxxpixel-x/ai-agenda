@@ -10,6 +10,7 @@ import { Space, KINDS, folderKey, removeSpaceFiles } from './space.mjs';
 import { createSettings } from './settings.mjs';
 import { createRegistry, CLI_ENGINE_IDS } from './engines/index.mjs';
 import { listSessions, configureImporters, stagePasted } from './importers/index.mjs';
+import { createScheduler } from './scheduler.mjs';
 import { sessionDetail, forkedSessionIds, importSession, checkImport, refreshImport, recompressImport, resolveBrief, topicFolder } from './imports.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -34,10 +35,12 @@ const TYPES = {
  * @param opts.port      0 表示随机端口
  * @param opts.dataDir   数据目录
  * @param opts.mock      演示模式
- * @param opts.hooks     { openPath(p), revealPath(p), protect(s), unprotect(o), attention(), desktop: true }
+ * @param opts.hooks     { openPath(p), revealPath(p), protect(s), unprotect(o), attention(), scheduleActive(on), desktop: true }
  *                       attention：有命令等你确认（桌面版让任务栏图标闪烁）
+ *                       scheduleActive：有没有启用的定时任务变了（桌面版据此决定关窗口是缩到托盘还是退出）
+ * @param opts.clock     { now, setTimer, clearTimer }：测试用假时钟换掉定时任务的时钟
  */
-export async function startServer({ port = 3210, dataDir, mock = false, hooks = {} } = {}) {
+export async function startServer({ port = 3210, dataDir, mock = false, hooks = {}, clock = {} } = {}) {
   fs.mkdirSync(path.join(dataDir, 'spaces'), { recursive: true });
   const settings = createSettings(path.join(dataDir, 'settings.json'), { pathKeys: CLI_ENGINE_IDS, protect: hooks.protect, unprotect: hooks.unprotect });
   let browserLocales = [];
@@ -155,6 +158,80 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
   // 建好但还没开始规划就关了软件的任务空间：接着开始
   for (const s of spaces.values()) if (s.isTask && !s.run && s.data.pendingTask) s.startTask().catch((e) => console.warn(e.message));
 
+  // ---------- 定时任务 ----------
+  // 调度器不认识空间：到点要做的事都在这里接到空间上
+  const scheduledSpaces = (id) => [...spaces.values()].filter((s) => s.data.scheduleId === id && !s.deleting);
+  // 新建任务空间（POST /api/spaces 和定时任务共用）：建好直接进入规划；开不了（比如文件夹出问题）就不留下这个空间
+  const createTaskSpace = async (input) => {
+    const space = addSpace(Space.create({ ...input, kind: 'task' }, deps));
+    try { await space.startTask(); } catch (e) {
+      await space.remove().catch(() => {});
+      spaces.delete(space.id);
+      seenAlerts.delete(space.id);
+      throw e;
+    }
+    return space;
+  };
+  const scheduleActions = {
+    // 模板：{ title, goal, members, coordinatorId, workspace, access, planConfirm, reviewPlan, autoApprove, maxParallel }
+    async createTaskSpace(tpl, schedule) {
+      const space = await createTaskSpace({
+        title: tpl.title, objective: tpl.goal, members: tpl.members, coordinatorId: tpl.coordinatorId,
+        workspace: tpl.workspace, access: tpl.access, planConfirm: tpl.planConfirm, discuss: tpl.reviewPlan,
+        autoApprove: tpl.autoApprove, maxParallel: tpl.maxParallel,
+        scheduleId: schedule.id, clarify: false, // 定时建的任务不做规划前澄清
+      });
+      hub.emit('spaces');
+      return space.id;
+    },
+    // 像你在输入框里发的一样，成员照常发言
+    postMessage(spaceId, text) {
+      const space = spaces.get(spaceId);
+      if (!space || space.deleting) throw new Error(tr('这个空间不存在'));
+      if (space.isTask) throw new Error(tr('定时消息只能发到聊天空间'));
+      return space.userMessage(text);
+    },
+    // 上一次还没跑完：建的任务空间还在规划或执行（写完总结、失败、结束都算跑完），或者聊天空间这一轮还没说完
+    isBusy(schedule) {
+      if (schedule.action.type === 'task') {
+        return scheduledSpaces(schedule.id).some((s) => !!s.data.pendingTask || (!!s.run && !s.run.data.closed && s.run.active));
+      }
+      const target = spaces.get(schedule.spaceId);
+      return !!target && (target.running || !!target.importing);
+    },
+  };
+  let scheduleOn = null;
+  let scheduler = null;
+  scheduler = createScheduler({
+    file: path.join(dataDir, 'schedules.json'),
+    ...clock,
+    actions: scheduleActions,
+    onChange() {
+      if (!scheduler) return;
+      const on = scheduler.hasActive();
+      if (on !== scheduleOn) { scheduleOn = on; hooks.scheduleActive?.(on); }
+      hub.emit('schedules');
+    },
+  });
+  // 所属空间被删了：停用，运行记录里记一笔（不删，全局设置里还看得到）
+  const disableSchedulesOf = (spaceId) => {
+    for (const s of scheduler.list()) if (s.spaceId === spaceId && s.enabled) scheduler.disable(s.id, 'space_deleted');
+  };
+  for (const s of scheduler.list()) if (s.enabled && !spaces.has(s.spaceId)) scheduler.disable(s.id, 'space_deleted');
+  if (scheduleOn === null) { scheduleOn = scheduler.hasActive(); hooks.scheduleActive?.(scheduleOn); }
+  scheduler.start();
+  // 新建 / 修改定时任务：检查所属空间和动作对得上
+  const checkSchedule = (def) => {
+    const space = spaces.get(def.spaceId);
+    if (!space || space.deleting) throw new Error(tr('这个空间不存在'));
+    if (def.action?.type === 'message' && space.isTask) throw new Error(tr('定时消息只能发到聊天空间'));
+    if (def.action?.type === 'task') {
+      const tpl = def.action.template || {};
+      if (typeof tpl.goal !== 'string' || !tpl.goal.trim()) throw new Error(tr('请写下这次要完成的目标'));
+      if (!Array.isArray(tpl.members) || !tpl.members.length) throw new Error(tr('任务模板里没有成员'));
+    }
+  };
+
   let actualPort = port;
 
   // ---------- 工具 ----------
@@ -217,9 +294,11 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
     res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
     res.write('retry: 2000\n\n');
     const send = () => res.write(`data: ${JSON.stringify({ type: 'spaces' })}\n\n`);
+    const sendSchedules = () => res.write(`data: ${JSON.stringify({ type: 'schedules' })}\n\n`);
     hub.on('spaces', send);
+    hub.on('schedules', sendSchedules);
     const ping = setInterval(() => res.write(': ping\n\n'), 20000);
-    req.on('close', () => { hub.off('spaces', send); clearInterval(ping); });
+    req.on('close', () => { hub.off('spaces', send); hub.off('schedules', sendSchedules); clearInterval(ping); });
   }
 
   const getSpace = (id) => {
@@ -279,6 +358,30 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
     if (p === '/api/spaces' && method === 'GET') {
       return sendJson(res, 200, [...spaces.values()].map((s) => s.listItem()).sort((a, b) => b.updatedAt - a.updatedAt));
     }
+    // ---- 定时任务 ----
+    if (p === '/api/schedules' && method === 'GET') {
+      const spaceId = url.searchParams.get('spaceId');
+      return sendJson(res, 200, scheduler.list().filter((s) => !spaceId || s.spaceId === spaceId));
+    }
+    if (p === '/api/schedules' && method === 'POST') {
+      const def = await readJson(req);
+      checkSchedule(def);
+      return sendJson(res, 201, scheduler.add(def));
+    }
+    if (p === '/api/schedules/runs' && method === 'GET') return sendJson(res, 200, scheduler.runs());
+    const sm = p.match(/^\/api\/schedules\/([a-f0-9-]{36})(\/runs)?$/i);
+    if (sm) {
+      const current = scheduler.list().find((s) => s.id === sm[1]);
+      if (!current) return sendJson(res, 404, { error: tr('没有这个定时任务') });
+      if (sm[2] && method === 'GET') return sendJson(res, 200, scheduler.runs(current.id));
+      if (!sm[2] && method === 'GET') return sendJson(res, 200, current);
+      if (!sm[2] && method === 'PATCH') {
+        const patch = await readJson(req);
+        checkSchedule({ ...current, ...patch, spaceId: current.spaceId });
+        return sendJson(res, 200, scheduler.update(current.id, patch));
+      }
+      if (!sm[2] && method === 'DELETE') { scheduler.remove(current.id); return sendJson(res, 200, { ok: true }); }
+    }
     // ---- 导入外部 AI 对话 ----
     if (p === '/api/import/sessions' && method === 'GET') {
       return sendJson(res, 200, listSessions({ exclude: { ids: forkedSessionIds([...spaces.values()].map((s) => s.importHost)), dir: dataDir } }));
@@ -295,16 +398,7 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
     if (p === '/api/spaces' && method === 'POST') {
       const body = await readJson(req);
       if (body.import?.mode === 'topic' && body.workspace?.type === 'folder') topicFolder(body.workspace.path, body.import);
-      const space = Space.create(body, deps);
-      addSpace(space);
-      if (space.isTask) {
-        // 任务空间建好直接进入规划；开不了（比如文件夹出问题）就不留下这个空间
-        try { await space.startTask(); } catch (e) {
-          await space.remove().catch(() => {});
-          spaces.delete(space.id);
-          throw e;
-        }
-      }
+      const space = body.kind === 'task' ? await createTaskSpace(body) : addSpace(Space.create(body, deps));
       let importError;
       if (body.import) {
         // 新建空间时从一段对话开始：对应的成员已在成员列表里，取第一个同类成员
@@ -323,7 +417,14 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
 
       if (sub === '' && method === 'GET') return sendJson(res, 200, space.toJSON());
       if (sub === '' && method === 'PATCH') { space.update(await readJson(req)); return sendJson(res, 200, space.toJSON()); }
-      if (sub === '' && method === 'DELETE') { await space.remove(); spaces.delete(space.id); seenAlerts.delete(space.id); refreshAwake(); return sendJson(res, 200, { ok: true }); }
+      if (sub === '' && method === 'DELETE') {
+        await space.remove();
+        spaces.delete(space.id);
+        seenAlerts.delete(space.id);
+        disableSchedulesOf(space.id);
+        refreshAwake();
+        return sendJson(res, 200, { ok: true });
+      }
       // ---- 任务 ----
       if (sub === '/taskcheck' && method === 'GET') return sendJson(res, 200, await space.taskPreflight());
       if (sub === '/run' && method === 'POST' && arg) return sendJson(res, 200, await space.runAction(arg, await readJson(req)));
@@ -436,6 +537,7 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
     stopAll() { for (const s of spaces.values()) s.stop(); },
     // 退出时结束所有 AI 进程（包括任务协作里的），不留在后台继续花额度、改文件
     close() {
+      scheduler.stop();
       for (const s of spaces.values()) s.shutdown();
       if (server.listening) server.close();
     },
