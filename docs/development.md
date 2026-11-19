@@ -17,14 +17,15 @@ Electron 主进程启动仅监听 `127.0.0.1` 的 HTTP 服务，并以随机端�
 | 模块 | 职责 |
 | --- | --- |
 | `electron/main.cjs` | 桌面生命周期、本机服务、系统代理、系统加密 |
-| `electron/preload.cjs` | 仅向界面暴露文件夹选择能力 |
+| `electron/preload.cjs` | 向界面暴露选择文件夹、主题和点通知打开空间 |
 | `src/app-server.mjs` | 静态资源、JSON API、SSE、Host 与跨站请求检查 |
-| `src/space.mjs` | 空间数据、保存与事件；给聊天、任务、导入各提供一个宿主接口 |
+| `src/space.mjs` | 空间数据、保存与事件，分聊天空间和任务空间（`kind`）；给聊天、任务、导入各提供一个宿主接口 |
 | `src/chat.mjs` | 聊天队列、点名与停止规则、单次发言与会话续接、命令审批 |
 | `src/members.mjs` | 成员校验与起名 |
-| `src/taskrun.mjs` | 规划、依赖调度、审查、退回、冲突处理、总结与合并 |
+| `src/taskrun.mjs` | 规划、依赖调度、审查、退回、冲突处理、总结与合并；你中途发的消息交给协调者判断（补充说明 / 改计划），结束任务 |
 | `src/turn-runner.mjs` | 聊天与任务共用的单次引擎调用、流式输出、日志和文件块 |
 | `src/prompts.mjs` / `src/task-prompts.mjs` | 聊天与任务的提示词、标记和计划解析 |
+| `src/attachments.mjs` | 输入框里的附件：暂存在空间数据目录，图片按文件头识别，普通文件发送时复制到共享文件夹的附件目录 |
 | `src/workspace.mjs` | 文件扫描、读写、改动记录、撤销冲突检测 |
 | `src/git.mjs` | Git worktree、提交、对比与合并 |
 | `src/store.mjs` / `src/settings.mjs` | 空间持久化、连接配置、密钥编码与界面脱敏 |
@@ -33,9 +34,11 @@ Electron 主进程启动仅监听 `127.0.0.1` 的 HTTP 服务，并以随机端�
 | `src/engines/` | CLI / API 适配器与统一注册表 |
 | `public/` | 界面与静态素材：`app.js` 是入口（路由与启动），各部分在 `public/js/`（`util.js` 是工具和全局状态，不依赖其他模块） |
 
-`Chat`、`TaskRun` 和导入流程分别通过 `Space.createChatHost()`、`createRunHost()`、`createImportHost()` 提供的接口访问空间，不直接碰 `Space`。`TaskRun` 完成后发出 `done` 事件，空间负责把总结写入聊天。
+`Chat`、`TaskRun` 和导入流程分别通过 `Space.createChatHost()`、`createRunHost()`、`createImportHost()` 提供的接口访问空间，不直接碰 `Space`。任务空间的对话（你的消息、协调者的回复和判断、总结）也存在空间的 `messages` 里，`TaskRun` 通过宿主接口的 `addMessage` / `messageDone` 写入。
 
-引擎的差异都写在各自模块的 `meta` 里（`kind`、`resume`、`approvals`、`continuesImports`、`logo` 等），注册表、导入和界面只看这些字段，不按具体引擎 id 判断。
+跨空间的事（同一个文件夹的聊天空间暂时只读、结束任务时把总结发回聊天空间、删除空间时软件建的文件夹还有没有别的空间在用）由 `app-server.mjs` 通过 `hooks` 交给各个空间，空间之间不直接互相引用。没有 `kind` 的旧版空间在启动时删除。
+
+引擎的差异都写在各自模块的 `meta` 里（`kind`、`resume`、`approvals`、`images`、`continuesImports`、`logo` 等），注册表、导入和界面只看这些字段，不按具体引擎 id 判断。
 
 ## 引擎接口
 
@@ -45,6 +48,7 @@ Electron 主进程启动仅监听 `127.0.0.1` 的 HTTP 服务，并以随机端�
 - `detect(opts)`：返回可用性、登录状态、说明，可附加动态模型、档位与默认模型。
 - `runTurn(opts)`：返回 `{ text, sessionId? }`；通过 `onDelta`、`onActivity`、`onRaw` 报告流式文本、动作与原始事件，并响应 `AbortSignal`。
 - API 引擎通过 `file-blocks.mjs` 约定的文件块修改共享文件，CLI 引擎在指定工作目录执行。
+- 图片：`meta.images` 为 `true` 的引擎会收到 `images: [{ path, type, name }]`（绝对路径，只含这个成员上次发言之后的新图片）。Claude Code 改用 stream-json 输入带 base64 图片块；Codex `exec` 用 `--image=<路径>`，app-server 用 `localImage`；Gemini API 用 `inline_data`；OpenAI 兼容接口用 `image_url`，接口返回 4xx 时去掉图片重发一次，并在设置里把这个接口记成 `images: false`。看不了图时调用 `onNoImages()`，界面在这次发言前显示「X 看不到图片」。
 - 命令审批：`meta.approvals` 为 `true` 的引擎，在 `access` 为 `run` 且收到 `onApproval({ command })` 时，运行命令前先 `await` 它，按返回的 `{ allow, note }` 运行或拒绝，并把附言（同意、拒绝都可能有）转告 AI。Claude Code 用 `--input-format stream-json --permission-prompts host --permission-prompt-tool stdio`，先发 `initialize` 握手，再回答 `can_use_tool` 请求：拒绝时附言写进拒绝信息，同意时紧跟着再发一条用户消息；Codex 改走 `codex app-server`（JSON-RPC），回答 `item/commandExecution/requestApproval`，附言用 `turn/steer` 补发。这一轮结束时还没处理的卡片由 `Space` 作废。不支持审批的 CLI 引擎，在这一档由 `Space` 降为 `edit`。放行规则见 `src/approvals.mjs`。任务协作不传 `onApproval`。
 
 调用方通过注册表判断能力，避免在空间和任务调度中散落特定厂商判断。
@@ -87,6 +91,7 @@ data/                           正常模式（已忽略；安装版在 userData
     <空间 ID>.json              成员、消息、任务与导入状态
     <空间 ID>/
       history.json              文件改动历史
+      attachments/              输入框里的图片，和还没发送的附件
       files/                    软件管理的共享文件夹
       runs/<任务 ID>/           临时 worktree 和任务文件
 data-mock/                      演示模式（已忽略）
