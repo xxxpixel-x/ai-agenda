@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { findOnPath, isFile, capture, runJsonl, brief, relPath, resolveNodeShim, nodeRunner } from './proc.mjs';
+import { usageOf, uncached } from './usage-fields.mjs';
 
 export const meta = {
   images: false,
@@ -21,6 +22,7 @@ export const meta = {
   freeModel: true,
   efforts: [''], // 命令行没有思考档位参数
   get capabilities() { return tr('读写共享文件、联网搜索（Google 搜索）'); },
+  usage: { tokens: true, context: false, quota: false }, // 按官方文档，未实测
 };
 
 const homeDir = () => path.join(process.env.GEMINI_CLI_HOME || os.homedir(), '.gemini');
@@ -157,5 +159,19 @@ export async function runTurn({ system, prompt, model, cwd, access = 'edit', sig
   if (result?.status === 'error') throw new Error(friendly(result.error?.message || errors.join('；'), bin));
   if (!result && r.code !== 0) throw new Error(friendly(errors.join('；') || r.stderr || tr('退出码 {0}', [r.code]), bin));
   if (!text.trim()) throw new Error(friendly(errors.join('；') || r.stderr, bin));
-  return { text };
+  const usage = usageFrom(result?.stats);
+  return usage ? { text, usage } : { text };
+}
+
+/**
+ * 用量：stream-json 的 result 事件带 stats { total_tokens, input_tokens（含缓存命中）, output_tokens, cached, input（没命中的部分）, … }。
+ * 按官方文档（docs/cli/headless.md）写，本机没装，未实测。不报上下文窗口和额度。
+ */
+export function usageFrom(stats) {
+  if (!stats) return undefined;
+  return usageOf({
+    input: typeof stats.input === 'number' ? stats.input : uncached(stats.input_tokens, stats.cached),
+    output: stats.output_tokens,
+    cacheRead: stats.cached,
+  });
 }

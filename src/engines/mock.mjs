@@ -16,6 +16,7 @@ export const meta = {
   efforts: [''],
   get capabilities() { return tr('模拟发言与改文件'); },
   approvals: true,
+  usage: { tokens: true, context: true, quota: true }, // 编造的用量，见 fakeUsage
 };
 
 const sleep = (ms, signal) => new Promise((resolve, reject) => {
@@ -59,7 +60,23 @@ async function stream(text, onDelta, signal) {
   return { text };
 }
 
-export async function runTurn({ system, prompt, images = [], cwd, access, signal, onDelta, onActivity, onRaw, onApproval }) {
+/** 编造的演示用量：每 4 个字符算一个 token，缓存、窗口和账号额度取固定值。 */
+function fakeUsage({ system, prompt }, text) {
+  const input = Math.ceil((system.length + prompt.length) / 4);
+  const output = Math.ceil(text.length / 4);
+  return {
+    input, output, cacheRead: 0, cacheWrite: 0,
+    contextUsed: input + output, contextWindow: 200000,
+    quota: { usedPct: 12, resetsAt: Date.UTC(2030, 0, 1) },
+  };
+}
+
+export async function runTurn(opts) {
+  const r = await reply(opts);
+  return { ...r, usage: fakeUsage(opts, r.text) };
+}
+
+async function reply({ system, prompt, images = [], cwd, access, signal, onDelta, onActivity, onRaw, onApproval }) {
   const me = (system.match(/(?:你是「|You are “)([^」”]+)[」”]/) || [])[1] || tr('演示');
   const members = [...system.matchAll(/^- @([^（(\s]+)/gm)].map((m) => m[1]);
   onRaw?.(`{"type":"mock.start","me":"${me}"}`);

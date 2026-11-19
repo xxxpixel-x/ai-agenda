@@ -10,7 +10,7 @@ const MAX_LOG_LINE = 2000;
  * @param registry  引擎注册表
  * @param member    成员（engine / model / effort / name）
  * @param opts.system / prompt / cwd / access / sessionId / fork / resumeAt / signal   传给引擎（fork：复制一份会话再接；resumeAt：只复制到这条消息）
- * @param opts.sink         写入对象：{ text, activities, note?, log? }；有 log 数组时记录原始输出
+ * @param opts.sink         写入对象：{ text, activities, note?, log? }；有 log 数组时记录原始输出，引擎返回用量时写入 usage 并补上缺少的 memberId
  * @param opts.ws           API 型 AI 的文件块写到哪个 Workspace；不给则不写入
  * @param opts.maxActivities / maxLog   保留的动作条数、日志行数
  * @param opts.onDelta / onActivity     sink 更新之后的回调（用于推送事件）
@@ -50,6 +50,10 @@ export async function runAgentTurn(registry, member, {
       if (sink.log.length > maxLog) sink.log.splice(0, sink.log.length - maxLog);
     } : undefined,
   });
+  if (r.usage) {
+    sink.usage = r.usage;
+    sink.memberId ??= member.id;
+  }
   const text = registry.isApi(member.engine) ? applyFileBlocks(r.text, { member, ws, access, sink }) : r.text;
   return { ...r, text };
 }

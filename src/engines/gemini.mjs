@@ -3,6 +3,7 @@ import { t as tr } from '../i18n.mjs';
 import { request, errorText, readSse } from './http.mjs';
 import fs from 'node:fs';
 import { brief } from './proc.mjs';
+import { usageOf, uncached } from './usage-fields.mjs';
 
 export const meta = {
   images: true,
@@ -17,12 +18,13 @@ export const meta = {
   freeModel: true,
   efforts: ['', 'minimal', 'low', 'medium', 'high'], // thinkingLevel；接口不说哪个型号支持哪几档，选了不支持的会看到报错
   get capabilities() { return tr('联网搜索（Google 搜索）；通过软件修改共享文件'); },
+  usage: { tokens: true, context: true, quota: false }, // 按官方文档，未实测（没有 key）
 };
 
 const DEFAULT_BASE = 'https://generativelanguage.googleapis.com';
 const baseOf = (conn) => (conn?.baseUrl || DEFAULT_BASE).replace(/\/+$/, '');
 
-let modelCache = { key: null, at: 0, list: [] };
+let modelCache = { key: null, at: 0, list: [], limits: {} };
 
 export async function listModels(conn) {
   if (!conn?.apiKey) return [];
@@ -30,11 +32,12 @@ export async function listModels(conn) {
   const res = await request(`${baseOf(conn)}/v1beta/models?pageSize=200`, { headers: { 'x-goog-api-key': conn.apiKey } });
   if (!res.ok) throw new Error(`Gemini：${await errorText(res)}`);
   const j = await res.json();
+  const limits = Object.fromEntries((j.models || []).filter((m) => m.inputTokenLimit).map((m) => [m.name.replace(/^models\//, ''), m.inputTokenLimit]));
   const list = (j.models || [])
     .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
     .map((m) => m.name.replace(/^models\//, ''))
     .filter((n) => /^gemini-/.test(n) && !/(image|tts|audio|live|embedding|vision|robotics|computer)/i.test(n));
-  modelCache = { key: conn.apiKey + baseOf(conn), at: Date.now(), list };
+  modelCache = { key: conn.apiKey + baseOf(conn), at: Date.now(), list, limits };
   return list;
 }
 
@@ -84,8 +87,10 @@ export async function runTurn({ system, prompt, images = [], model, effort, conn
 
   let text = '';
   let finish = null;
+  let usageMeta = null; // usageMetadata：每个分片都带，取最后一个
   const searched = new Set();
   await readSse(res, (chunk) => {
+    if (chunk.usageMetadata) usageMeta = chunk.usageMetadata;
     const c = chunk.candidates?.[0];
     if (!c) {
       if (chunk.promptFeedback?.blockReason) finish = tr('被拦截（{0}）', [chunk.promptFeedback.blockReason]);
@@ -101,5 +106,23 @@ export async function runTurn({ system, prompt, images = [], model, effort, conn
   }, signal);
 
   if (!text.trim()) throw new Error(tr('Gemini 没有返回内容{0}', [finish ? `（${finish}）` : '']));
-  return { text, model: name };
+  const usage = usageFrom(usageMeta, modelCache.limits[name]);
+  return { text, model: name, ...(usage ? { usage } : {}) };
+}
+
+/**
+ * 用量：usageMetadata { promptTokenCount（含 cachedContentTokenCount）, cachedContentTokenCount, candidatesTokenCount,
+ * thoughtsTokenCount, toolUsePromptTokenCount }；窗口是型号列表里的 inputTokenLimit。按官方文档写，没有 key，未实测。
+ */
+export function usageFrom(m, window) {
+  if (!m) return undefined;
+  const prompt = (m.promptTokenCount || 0) + (m.toolUsePromptTokenCount || 0);
+  const output = (m.candidatesTokenCount || 0) + (m.thoughtsTokenCount || 0);
+  return usageOf({
+    input: uncached(prompt, m.cachedContentTokenCount),
+    output,
+    cacheRead: m.cachedContentTokenCount ?? 0,
+    contextUsed: prompt + output,
+    contextWindow: window,
+  });
 }
