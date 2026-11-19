@@ -1,137 +1,107 @@
+<img src="public/brand/agenda.svg" width="64" height="64" alt="">
+
 # Agenda
 
 [中文](README.md) · English
 
-A meeting room for you and several AIs. Claude Code, Codex, Gemini and DeepSeek sit at the same table, discuss, split up the work, and edit the same folder together. Code works, and so do documents, papers and plans.
+Agenda is a desktop workspace where you can bring Claude Code, Codex, Gemini, DeepSeek, and other AIs together to discuss, divide up work, and edit the same folder. Start with a discussion or continue a conversation from another AI app. Step in when it's time to approve a plan, review the results, or merge.
 
-Started something in another AI and got halfway? Bring that conversation in and keep going. Or pull out just one topic, turn it into a brief, and hand it to a different AI.
+**Windows / macOS / Linux · MIT licensed**
 
-**Desktop app · Windows / macOS / Linux · MIT licensed**
+> **Upgrading from 0.3.x?** On first launch, Agenda removes legacy spaces from before the split into chat and task spaces, including shared folders that Agenda created for them. Folders you selected yourself are kept. Before upgrading, use **Export** in the top right of each old space and copy any shared files you want to keep.
 
-In Settings (bottom left), choose the interface language: Follow system (default; non-Chinese systems show English), 中文 or English. The interface and AI prompts switch immediately.
+## Two kinds of space
 
-> **Upgrading from 0.3.x?** This version splits spaces into chat spaces and task spaces and does not keep old spaces. **The first launch after upgrading removes all existing spaces**, along with the shared folders the app created for them. Folders you chose and their files stay untouched. Before upgrading, select Export at the top right of each space to save any chats you need.
+| Space | How it works |
+| --- | --- |
+| **Chat space** | Discuss a plan, write together, or edit shared files. Members take turns and can respond to one another. Use `@` to address a member, or interrupt, skip, or stop at any time. |
+| **Task space** | Give a coordinator a goal and it breaks the work into subtasks with dependencies. Approve the plan and review the results yourself, or enable automatic starts and approvals. Git projects can run in parallel in separate worktrees, and you merge the result into your branch after review. Other folders are edited sequentially. |
 
-## How it works
-
-1. **Connect an AI.** Agenda does not ship with an AI of its own. You need at least one: a locally installed and signed-in Claude Code, Codex, DeepSeek Harness or Gemini CLI, or an API key (Gemini, DeepSeek, Qwen, Kimi, Zhipu, OpenAI, local Ollama and so on).
-2. **Create a space.** A space is one meeting: the AIs taking part (members), a shared folder they all work in, and the permission level you give them.
-3. **Send a message.** You say something, members reply in turn, react to each other and edit files when needed. You can `@` a specific AI, cut in, or stop at any time.
-4. **Review the result.** The file panel on the right shows who changed what, with diffs and undo. Once a discussion settles on an approach, select messages and move them to a task space, where a coordinator plans the work and assigns it.
-
-No AI account? Try demo mode to see the interface and workflow.
-
-## Features
-
-- **Open discussion**: members speak in turn and build on each other. Supports `@` mentions, interrupting, skipping, stopping and a round limit. When everyone has nothing to add, it stops and waits for you.
-- **Edit files together**: use a folder the app creates, or an existing project on your computer. Whichever AI changes a file, and however it does it, every change is recorded with its author and can be diffed, undone, or commented on line by line for whoever made it. Drag images and files straight into the message box.
-- **Task spaces**: one goal and one plan. Plan → you approve, or start automatically → run by dependency → you review → summary. Messages you send during the task go to the coordinator, which decides whether they are notes or plan changes and shows a card with what it stopped and changed. In Git projects each AI works in its own worktree in parallel, then you merge with one click. Move selected chat messages into a new task space and post the summary back when it ends.
-- **Import conversations**: automatically lists local sessions from Claude Code, Codex, DeepSeek Harness, Gemini CLI, WorkBuddy / CodeBuddy and ZCode. For other apps such as ChatGPT, Claude.ai or Gemini on the web, paste the conversation or pick an exported file. Imported Claude Code sessions can be resumed in place; long ones are summarized automatically; if the original conversation grows, you can import the new part.
-- **Topic handoff**: building a game in Claude Code and only want to hand the script to Gemini? Enter "script" and Agenda picks out just the relevant parts and writes a brief (background / decided / constraints and interfaces / open questions / relevant quotes), saved in the shared folder as `主题-<topic>.md`. Other members read only the brief, not the whole original conversation.
-- **Mixed members**: command-line AIs use their own account quota, and API models can edit files too. You can add the same AI more than once with different roles (e.g. "you find the flaws"), models and reasoning levels.
-- **Command approval**: when AIs are allowed to run commands, each command shows a card first. You can allow it once, always allow that program, or deny it, and add a note for the AI with any of them.
+Once a discussion settles on a plan, select messages and choose **Move to a task space**. Send new requirements to the coordinator while work is underway. It can record them as notes or revise the plan. When the task ends, you can post the summary back to the original chat space.
 
 ## Install
 
+This README describes the current source tree. Check the release notes for features available in the installer, or run from source to try the current changes.
+
 ### Download
 
-Get the installer for your system from [Releases](https://github.com/xxxpixel-x/ai-agenda/releases/latest):
+| System | Installer |
+| --- | --- |
+| Windows 10 / 11 (x64) | `Agenda-<version>-win-x64.exe` |
+| macOS (Apple silicon) | `Agenda-<version>-mac-arm64.dmg` |
+| macOS (Intel) | `Agenda-<version>-mac-x64.dmg` |
+| Linux (x64) | `Agenda-<version>-linux-x86_64.AppImage` or `Agenda-<version>-linux-amd64.deb` |
 
-| System | Download | First launch |
-| --- | --- | --- |
-| Windows 10 / 11 | `Agenda-<version>-win-x64.exe` | The installer is unsigned. When SmartScreen appears, click "More info" → "Run anyway" |
-| macOS (Apple silicon: M1 and later) | `Agenda-<version>-mac-arm64.dmg` | See below |
-| macOS (Intel) | `Agenda-<version>-mac-x64.dmg` | See below |
-| Linux | `Agenda-<version>-linux-x86_64.AppImage` or `Agenda-<version>-linux-amd64.deb` | Make the AppImage executable first: `chmod +x Agenda-*.AppImage` |
+Choose the installer for your system and architecture. [Releases](https://github.com/xxxpixel-x/ai-agenda/releases/latest)
 
-**macOS**: open the dmg and drag Agenda into Applications. Because the app is not signed by Apple, the first time you need to right-click Agenda in Applications and choose "Open". If macOS says the app "is damaged and can't be opened", run this once in Terminal and try again:
+Installers are unsigned. On Windows, if SmartScreen appears, choose **More info → Run anyway**. On macOS, open the DMG, drag Agenda into Applications, then right-click it there and choose **Open**. If macOS reports that the app is damaged, run `xattr -cr /Applications/Agenda.app` in Terminal, then open it again. For the Linux AppImage, first run `chmod +x Agenda-*.AppImage`.
 
-```sh
-xattr -cr /Applications/Agenda.app
-```
-
-The Windows build has been tested. The macOS and Linux installers are built automatically by GitHub Actions and have not yet been fully tested on real machines. Please [open an issue](https://github.com/xxxpixel-x/ai-agenda/issues) if you run into problems.
+Recent changes were tested primarily on Windows. GitHub Actions builds the macOS and Linux installers, and full testing on those platforms is pending. [Report an issue](https://github.com/xxxpixel-x/ai-agenda/issues)
 
 ### Run from source
 
-Requires [Node.js](https://nodejs.org/) **22.12.0 or later**. Parallel task spaces in Git projects also need [Git](https://git-scm.com/).
+Requires Node.js **22.12.0 or later**. Parallel task execution in a Git project also requires Git.
 
 ```sh
 git clone https://github.com/xxxpixel-x/ai-agenda.git
 cd ai-agenda
 npm ci
-npm start          # open the app
-npm run mock       # or: demo mode, no AI calls
+npm start
 ```
 
-On Windows you can also double-click [`启动.cmd`](启动.cmd). The first run installs dependencies and downloads Electron through a mirror in China by default (your own `ELECTRON_MIRROR` is used if set).
+To explore the interface and workflow first, run `npm run mock`. Demo mode needs no AI account or API key.
 
-To open it with a double-click like a regular app, run `npm run build:launcher -- -DesktopShortcut` to generate `Agenda.exe` and a desktop shortcut (Windows only; it must stay with the project folder).
+On Windows, you can also double-click `启动.cmd` in the project folder. It installs dependencies on first run. Use `npm run build:launcher -- -DesktopShortcut` to generate an `Agenda.exe` launcher in the project folder and a desktop shortcut.
 
-## Connecting AIs
+## Start collaborating
 
-After opening the app, click Settings at the bottom left.
+1. **Connect an AI.** Open **Settings → AI connections** in the lower left. You can mix local tools and API models. CLI tools use your existing accounts and quotas.
+2. **Create a space.** Choose a chat or task space and add members. Expand **More options** to pick a folder and permission level, or use a shared folder created by Agenda. You can add the same AI more than once, with different roles, models, and supported reasoning levels.
+3. **Send a message or set a goal.** Send a message in a chat space. In a task space, planning starts on creation. Open **Plan** in the right sidebar to see subtasks, dependencies, progress, and items awaiting review.
+4. **Review the files.** Switch between **Files**, **Changes**, and **Plan** (task spaces) in the collapsible right sidebar. Preview and edit shared files, view or undo tracked changes, or send inline diff comments to the member who made a change. Drag files and images into the message field. Image input depends on the engine.
 
-| AI | How it connects | What you need to do |
+| Connection | Supported AIs | Setup |
 | --- | --- | --- |
-| Claude Code | Local CLI, found automatically | Sign in once as prompted; set the path manually if it is not found |
-| Codex | Local CLI, found automatically | Be signed in to Codex |
-| DeepSeek Harness | Local install, found automatically | Be signed in to DeepSeek Harness |
-| Gemini CLI | Local CLI, shown only if installed | Run `gemini` once in a terminal and sign in with your Google account |
-| Gemini API | API | Enter an API key |
-| OpenAI-compatible API | API | Enter the endpoint, API key and model; presets for DeepSeek, Qwen, Kimi, Zhipu, OpenAI and Ollama |
+| Local tool | Claude Code, Codex, DeepSeek Harness, Gemini CLI | Install and sign in to the tool. Set its executable path manually if Agenda can't find it. |
+| Gemini API | Gemini models | Enter an API key. |
+| OpenAI-compatible API | DeepSeek, Qwen, Kimi, Zhipu, OpenAI, Ollama, and others | Enter the endpoint, model, and any key required by the service. Local services such as Ollama can leave the key blank. |
 
-Command-line AIs use your account and quota in that tool, no API key needed. Which models you can pick and how much you can use depend on your account and local install.
+In **Settings → General**, choose Chinese, English, or the system language, switch between light and dark appearance, and manage desktop notifications and whether to prevent sleep while AI is working. When Agenda is in the background, it can notify you that a discussion has ended, a task needs attention, or a command is waiting for approval. Click a notification to open its space.
 
-## Permissions
+## Import conversations and hand off work
 
-Each space has one level, changeable any time in Space settings:
+- **Bring in an existing conversation.** Read local sessions from Claude Code, Codex, DeepSeek Harness, Gemini CLI, WorkBuddy / CodeBuddy, and ZCode. You can also paste text or import an export from ChatGPT, Claude.ai, Gemini on the web, or another tool.
+- **Keep the context you need.** Retain the transcript, summarize the older portion, or write a Markdown handoff. Agenda can copy a Claude Code session up to the last imported message and continue from there. You can import later additions separately.
+- **Hand off a single topic.** Choose **By topic** and enter a topic. Agenda writes the relevant background, decisions, constraints, and open items into a Markdown brief in the shared folder, ready for other members to use.
 
-| Level | What the AIs can do |
-| --- | --- |
-| Read only | Read the shared folder, no changes |
-| Edit files | Change files in the shared folder |
-| Run commands | Also run commands in the shared folder, asking you before each one |
-| Full access | No limits: read and write anywhere on the computer, run any command |
+Import instructions and supported formats are documented in Chinese. [Conversation import guide](docs/usage.md#导入别处的对话) · [Supported import sources](docs/importers.md)
 
-Permissions are enforced through each AI's own tool restrictions, sandbox or prompts, not OS-level isolation. The first three levels turn off external connections on your accounts (plugins, MCP and so on). See the [usage guide](docs/usage.md#使用) (Chinese) for per-AI details.
+## Permissions and data
 
-## Data and privacy
+- Spaces have four permission levels, **Read only**, **Edit files**, **Run commands**, and **Full access**. Restrictions depend on each engine's tools, sandbox, or prompts. **Full access** allows access outside the shared folder.
+- With **Run commands**, Claude Code and Codex in chat spaces ask for approval. You can allow a command once, allow a program, or deny the request, with an optional note. DeepSeek Harness and Gemini CLI use the **Edit files** level in this case. Task workers run with at least **Edit files**, and their engines handle commands according to the applicable permissions.
+- File history tracks up to 3,000 text files of at most 1 MiB each. Recover large or binary files through your project's version history or backups. **Raw output** in task spaces shows the execution log.
+- Chat history and settings are stored locally. The default paths for installed apps are `%APPDATA%\Agenda\data` on Windows, `~/Library/Application Support/Agenda/data` on macOS, and `~/.config/Agenda/data` on Linux. Source runs use the project's `data/` directory, and demo mode uses `data-mock/`.
+- API keys are stored in `settings.json` in the data directory. They are encrypted when system encryption is available and stored in plain text otherwise. Real AI calls send relevant conversation and file context to the selected engine or API service.
 
-- Chats and settings are stored on your computer:
-  - Installed app: Windows `%APPDATA%\Agenda`, macOS `~/Library/Application Support/Agenda`, Linux `~/.config/Agenda`
-  - From source: `data/` in the project (`data-mock/` for demo mode)
-- API keys are kept in a local `settings.json`, encrypted when the system supports it and in plain text otherwise. Don't share that file.
-- Stored locally does not mean offline: when an AI speaks, the relevant chat and file content is sent to the AI service you configured.
+## In development
 
-## Known limitations
+- **Scheduling.** The local `/api/schedules` endpoint supports one-time, weekly, and fixed-interval scheduling. It can create task spaces or post messages to chat spaces. Overlapping or missed runs are skipped. With an enabled schedule, closing the window hides Agenda in the system tray or menu bar. The computer and Agenda must both keep running. Desktop configuration is pending. [Scheduling design](docs/需求-定时任务.md)
+- **Usage and context.** The backend records token, cache, context, and quota data when the engine reports it. Member usage indicators, the context panel, and automatic handoff are planned. [Context and quota design](docs/需求-上下文与额度.md)
+- The backlog tracks progress on role cards, teams, memory, and other features. [Project backlog](docs/待办.md)
 
-- Installers are not code-signed; the macOS and Linux builds have not yet been fully tested on real machines.
-- Command approval cards only work for Claude Code and Codex in chat. Codex uses its `codex app-server` protocol, which Codex marks as experimental, so a Codex update may require changes here.
-- The terminal view in task spaces is an output log, not an interactive terminal.
-- File history only tracks text files under 1 MiB, up to 3,000 files; large and binary files can't be undone.
-- Automated tests use mock AIs. Sign-in, network and model compatibility of real AIs need to be checked in their own environments.
-
-## Documentation
-
-The detailed docs are in Chinese:
-
-- [Usage guide](docs/usage.md): discussion, files, permissions, importing, chat and task spaces, and troubleshooting
-- [Development notes](docs/development.md): code layout, engine interface, tests, packaging and releases
-- [Contributing](CONTRIBUTING.md): local checks and commit conventions
-- [Import sources](docs/importers.md): start here to make Agenda read conversations from another AI app
-
-## Development
+## Development and documentation
 
 ```sh
-npm run verify     # syntax checks + automated tests; no window, no real AI calls
-npm run dist       # build an installer for the current system into dist/
+npm run verify     # Syntax checks and automated tests using mock AIs
+npm run dist       # Build an installer for the current system into dist/
 ```
 
-Pushing a `v*` tag makes GitHub Actions build installers for all three systems and upload them to the release. See [development notes](docs/development.md#打包与发布).
+The detailed documentation is in Chinese.
 
-## License and credits
+- [Usage guide](docs/usage.md)
+- [Development and release notes](docs/development.md)
+- [Contributing guide](CONTRIBUTING.md)
+- [Requirements and product direction](docs/需求说明.md)
 
-[MIT License](LICENSE). AI brand icons come from LobeHub; see the [icon notice](public/icons/LICENSE.md) for copyright and license. Third-party components are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-
-The coordinator / worker and dependency-graph design of task spaces was inspired by [orca](https://github.com/stablyai/orca).
+Agenda is MIT licensed. AI brand icons come from LobeHub. Orca informed the coordinator and worker roles and the dependency graph in task spaces. [MIT License](LICENSE) · [Icon license](public/icons/LICENSE.md) · [Third-party notices](THIRD_PARTY_NOTICES.md) · [Orca](https://github.com/stablyai/orca)
