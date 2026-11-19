@@ -1,4 +1,5 @@
 // 任务协作（参考 orca 的 Run → Task DAG → Dispatch 模型）：
+//   澄清：首次规划可先问你几个问题；自动开始的等十分钟按默认继续，手动确认的一直等
 //   规划：协调者拆子任务 →（可选）其他成员审阅 → 协调者定稿 → 你确认/修改计划
 //   执行：依赖都通过的子任务派给负责人；git 项目里每个子任务在独立副本里并行，否则依次直接改
 //   审查：子任务做完 → 你看改动对比 → 通过（合并进集成分支）/ 带意见退回重做；需要你决定的问题会停下来问你
@@ -9,6 +10,7 @@
 //   host.members / access / workspacePath / workspaceType / dir
 //   host.registry / ws / importBackground / deleting / messages / track(promise) / emit(ev) / save()
 //   host.addMessage(msg) / messageDone(msg)：往任务空间的对话里加一条、一条写完了
+//   澄清结束后用 host.track 接着规划；等回答期间，输入框发来的消息先排队
 import { t as tr } from './i18n.mjs';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
@@ -22,11 +24,17 @@ import { AbortedError } from './engines/proc.mjs';
 import { parseMarkers, attachmentText } from './prompts.mjs';
 import {
   plannerSystem, plannerPrompt, reviewerSystem, reviewerPrompt, workerSystem, workerPrompt,
-  summarySystem, summaryPrompt, commitSystem, commitPrompt, extractPlan, normalizePlan, parseReport,
+  summarySystem, summaryPrompt, commitSystem, commitPrompt, parsePlan, parseClarify, normalizePlan, parseReport,
   triageSystem, triagePrompt, parseTriage,
 } from './task-prompts.mjs';
 
-const ACTIVE = new Set(['planning', 'plan_review', 'executing', 'summarizing']);
+const ACTIVE = new Set(['planning', 'clarifying', 'plan_review', 'executing', 'summarizing']);
+export const CLARIFY_WAIT = 10 * 60 * 1000;
+export const clock = {
+  now: () => Date.now(),
+  setTimeout: (fn, ms) => setTimeout(fn, ms),
+  clearTimeout: (t) => clearTimeout(t),
+};
 export const PLAN_CONFIRM = ['manual', 'auto'];
 const SATISFIED = new Set(['approved', 'skipped']);
 const SETTLED = new Set(['approved', 'skipped', 'cancelled']);
@@ -68,6 +76,7 @@ export class TaskRun extends EventEmitter {
     this.data = data;
     this.controllers = new Map(); // taskId / 'plan' -> AbortController
     this.timer = null;
+    this.clarifyTimer = null;
     // 往集成分支的合并必须一个接一个：同一个副本里同时跑两个 git merge 会撞上 index.lock
     this.integrationQueue = Promise.resolve();
     this.merging = new Set(); // 正在排队/合并的子任务，防止重复点“通过”
@@ -95,6 +104,7 @@ export class TaskRun extends EventEmitter {
       if (m.queued) { m.queued = false; m.unanswered = true; }
       if (m.streaming) { m.streaming = false; m.interrupted = true; }
     }
+    if (data.status === 'clarifying') this.scheduleClarify();
   }
 
   static create(host, opts, pre) {
@@ -104,6 +114,7 @@ export class TaskRun extends EventEmitter {
       id,
       objective: str(opts.objective, 8000),
       coordinatorId: coordinator.id,
+      clarifyFirst: opts.clarify !== false,
       discuss: opts.discuss !== false && host.members.length > 1,
       maxParallel: Math.min(6, Math.max(1, parseInt(opts.maxParallel, 10) || 3)),
       autoApprove: !!opts.autoApprove,
@@ -227,26 +238,50 @@ export class TaskRun extends EventEmitter {
 
     try {
       const previous = d.tasks.length ? d.tasks.map((t) => ({ id: t.id, title: t.title, assignee: this.member(t.assigneeId)?.name, deps: t.deps, spec: t.spec })) : null;
-      let raw = extractPlan(await say(coord, plannerSystem(this.host, d, coord), plannerPrompt(d, { feedback, previous }), images));
-      if (!raw) throw new Error(tr('{0} 没有给出可识别的计划（需要 JSON 格式）。可以换一个协调者，或点“重新规划”。', [coord.name]));
-      let tasks = normalizePlan(raw, this.host.members, coord.id);
+      const canAsk = d.clarifyFirst && !d.clarify && !d.tasks.length && !feedback.length;
+      const text = await say(coord, plannerSystem(this.host, d, coord, { clarify: canAsk }), plannerPrompt(d, { feedback, previous, clarify: d.clarify }), images);
+      if (this.host.deleting || d.closed) return;
+      const plan = parsePlan(text);
+      if (!plan) {
+        const clarification = canAsk && parseClarify(text);
+        if (!clarification) throw new Error(tr('{0} 没有给出可识别的计划（需要 JSON 格式）。可以换一个协调者，或点“重新规划”。', [coord.name]));
+        const askedAt = clock.now();
+        d.clarify = { questions: clarification.questions, answers: {}, askedAt };
+        if (d.planConfirm === 'auto') d.clarify.deadline = askedAt + CLARIFY_WAIT;
+        d.status = 'clarifying';
+        this.changed();
+        this.scheduleClarify();
+        return;
+      }
+      let tasks = normalizePlan(plan.tasks, this.host.members, coord.id);
+      let assumptions = plan.assumptions;
 
       // 第一次规划且开启了“先商量”：其他成员各提一次意见，协调者再定稿
       if (d.discuss && !previous && !feedback.length) {
         const opinions = [];
         for (const m of this.host.members.filter((x) => x.id !== coord.id)) {
           const draft = tasks.map((t) => ({ ...t, assignee: this.member(t.assigneeId)?.name }));
-          const text = await say(m, reviewerSystem(this.host, d, m, coord), reviewerPrompt(d, draft));
+          const text = await say(m, reviewerSystem(this.host, d, m, coord), reviewerPrompt(d, draft, { clarify: d.clarify }));
           const mk = parseMarkers(text.replace(/\[(?:同意|Agree)\]/gi, '[Skip]'));
           if (!mk.passed && mk.text) opinions.push({ name: m.name, text: mk.text });
         }
         if (opinions.length) {
           const prev = tasks.map((t) => ({ id: t.id, title: t.title, assignee: this.member(t.assigneeId)?.name, deps: t.deps, spec: t.spec }));
-          raw = extractPlan(await say(coord, plannerSystem(this.host, d, coord), plannerPrompt(d, { feedback: opinions, previous: prev })));
-          if (raw) tasks = normalizePlan(raw, this.host.members, coord.id);
+          const final = parsePlan(await say(coord, plannerSystem(this.host, d, coord), plannerPrompt(d, { feedback: opinions, previous: prev, clarify: d.clarify })));
+          if (final) {
+            tasks = normalizePlan(final.tasks, this.host.members, coord.id);
+            if (final.assumptions.length) assumptions = final.assumptions;
+          }
         }
       }
       d.tasks = tasks.map((t) => this.blankTask(t));
+      const defaults = (d.clarify?.resolvedAt != null ? d.clarify.questions : [])
+        .filter((q) => !Object.hasOwn(d.clarify.answers, q.id))
+        .map((q) => [q.text.replace(/[?？:：\s]+$/, ''), q.default])
+        .map(([q, def]) => (def ? tr('{0}：按默认处理（{1}）', [q, def]) : tr('{0}：按默认处理', [q])));
+      // 默认条目始终排在前面；重新规划时只沿用后面的协调者假设。
+      if (!assumptions.length && d.assumptions) assumptions = d.assumptions.slice(defaults.length);
+      d.assumptions = [...defaults, ...assumptions];
       d.status = 'plan_review';
     } catch (e) {
       d.status = d.tasks.length ? 'plan_review' : 'failed';
@@ -262,6 +297,44 @@ export class TaskRun extends EventEmitter {
 
   blankTask(t) {
     return { ...t, status: 'pending', attempts: [], feedbacks: [], notes: [], question: null, answer: null, changes: [], git: null };
+  }
+
+  clearClarifyTimer() {
+    if (this.clarifyTimer != null) clock.clearTimeout(this.clarifyTimer);
+    this.clarifyTimer = null;
+  }
+
+  scheduleClarify() {
+    this.clearClarifyTimer();
+    const d = this.data;
+    if (d.status !== 'clarifying' || d.clarify.deadline == null) return;
+    const timer = clock.setTimeout(() => {
+      if (this.clarifyTimer === timer && d.status === 'clarifying' && !this.host.deleting) this.resolveClarify({}, true);
+    }, Math.max(0, d.clarify.deadline - clock.now()));
+    this.clarifyTimer = timer;
+  }
+
+  answerClarify(answers) {
+    this.resolveClarify(answers);
+  }
+
+  useDefaults() {
+    this.resolveClarify({});
+  }
+
+  resolveClarify(answers, timedOut = false) {
+    if (this.data.status !== 'clarifying') throw new Error(tr('现在没有在等你回答问题'));
+    this.clearClarifyTimer();
+    const c = this.data.clarify;
+    const entries = Array.isArray(answers) ? answers.map((a) => [a?.id, a?.text]) : Object.entries(answers || {});
+    const ids = new Set(c.questions.map((q) => q.id));
+    c.answers = Object.fromEntries(entries.filter(([id, text]) => ids.has(id) && typeof text === 'string' && text.trim())
+      .map(([id, text]) => [id, str(text, 2000)]));
+    c.resolvedAt = clock.now();
+    c.defaulted = c.questions.filter((q) => !Object.hasOwn(c.answers, q.id)).map((q) => q.id);
+    if (timedOut) c.timedOut = true;
+    this.changed();
+    this.host.track(this.plan());
   }
 
   replan(feedbackText) {
@@ -627,6 +700,7 @@ export class TaskRun extends EventEmitter {
   }
 
   stopForRemoval() {
+    this.clearClarifyTimer();
     this.inbox = [];
     this.data.paused = true;
     for (const c of this.controllers.values()) c.abort();
@@ -646,11 +720,12 @@ export class TaskRun extends EventEmitter {
   async finish() {
     const d = this.data;
     if (d.closed) throw new Error(tr('这个任务已经结束了'));
+    this.clearClarifyTimer();
     this.inbox = [];
     for (const m of this.host.messages) if (m.queued) { m.queued = false; m.unanswered = true; }
     await this.stopAll();
     for (const t of d.tasks) if (!SETTLED.has(t.status)) t.status = 'cancelled';
-    if (ACTIVE.has(d.status)) d.status = d.status === 'planning' || d.status === 'plan_review' ? 'cancelled' : (d.summary?.text ? 'done' : 'cancelled');
+    if (ACTIVE.has(d.status)) d.status = ['planning', 'clarifying', 'plan_review'].includes(d.status) ? 'cancelled' : (d.summary?.text ? 'done' : 'cancelled');
     d.hold = null;
     d.paused = false;
     d.closed = true;
@@ -662,7 +737,14 @@ export class TaskRun extends EventEmitter {
   /** 任务空间设置里改的选项。 */
   updateSettings(patch = {}) {
     const d = this.data;
-    if ('planConfirm' in patch && PLAN_CONFIRM.includes(patch.planConfirm)) d.planConfirm = patch.planConfirm;
+    if (PLAN_CONFIRM.includes(patch.planConfirm) && patch.planConfirm !== d.planConfirm) {
+      d.planConfirm = patch.planConfirm;
+      if (d.status === 'clarifying') {
+        if (d.planConfirm === 'auto') d.clarify.deadline = d.clarify.askedAt + CLARIFY_WAIT;
+        else delete d.clarify.deadline;
+        this.scheduleClarify();
+      }
+    }
     if ('autoApprove' in patch) d.autoApprove = !!patch.autoApprove;
     if ('discuss' in patch) d.discuss = !!patch.discuss;
     if ('maxParallel' in patch) d.maxParallel = Math.min(6, Math.max(1, parseInt(patch.maxParallel, 10) || d.maxParallel));
@@ -690,11 +772,11 @@ export class TaskRun extends EventEmitter {
     return msg;
   }
 
-  /** 协调者一条一条处理；规划中、写总结时先等着，做完会回来取。 */
+  /** 协调者一条一条处理；澄清、规划、写总结时先等着，做完会回来取。 */
   drainInbox() {
     const d = this.data;
     if (this.thinking || !this.inbox.length || this.host.deleting || d.closed) return;
-    if (d.status === 'planning' || d.status === 'summarizing') return;
+    if (['planning', 'clarifying', 'summarizing'].includes(d.status)) return;
     const msg = this.inbox.shift();
     this.thinking = true;
     this.changed();

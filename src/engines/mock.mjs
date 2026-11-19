@@ -85,13 +85,22 @@ async function reply({ system, prompt, images = [], cwd, access, signal, onDelta
   // ---- 任务协作：规划 / 审阅 / 子任务 / 总结 ----
   if (system.includes(tr('为这次任务的合并起草提交说明'))) return stream(tr('演示：合并已通过的任务改动'), onDelta, signal);
   if (system.includes(tr('这次任务协作的协调者'))) {
+    const goal = prompt.split(tr('# 总目标\n{0}', [''])).at(-1).split('\n</')[0];
+    if (system.includes(tr('## 先问还是直接规划')) && goal.includes(tr('含糊'))) {
+      const questions = [
+        { id: 'Q1', text: tr('方案写给谁看？'), default: tr('团队成员') },
+        { id: 'Q2', text: tr('要不要配图？'), default: tr('不要') },
+      ];
+      return stream(tr('开始前想确认两件事。\n\n```json\n{0}\n```', [JSON.stringify({ questions })]), onDelta, signal);
+    }
     const all = [me, ...members.filter((n) => n !== me)];
     const tasks = [
       { id: 'T1', title: tr('写需求要点'), assignee: all[0], deps: [], spec: tr('在 需求.md 里写下 3 条核心需求。') },
       { id: 'T2', title: tr('写实现思路'), assignee: all[1] || all[0], deps: [], spec: tr('在 实现.md 里写下实现思路。') },
       { id: 'T3', title: tr('汇总成方案'), assignee: all[2] || all[0], deps: ['T1', 'T2'], spec: tr('读 需求.md 和 实现.md，写 方案.md。') },
     ];
-    return stream(tr('我把目标拆成三步，前两步可以同时做。\n\n```json\n{0}\n```', [JSON.stringify({ tasks }, null, 1)]), onDelta, signal);
+    const assumptions = [tr('（演示）沿用共享文件夹里现有的文件结构')];
+    return stream(tr('我把目标拆成三步，前两步可以同时做。\n\n```json\n{0}\n```', [JSON.stringify({ tasks, assumptions }, null, 1)]), onDelta, signal);
   }
   if (system.includes(tr('请你审阅计划'))) return stream(tr('[同意]'), onDelta, signal);
   // ---- 任务空间：你中途发来的消息，协调者判断怎么处理 ----

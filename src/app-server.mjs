@@ -102,11 +102,12 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
   const notify = (space, body) => {
     if (settings.get().notify) hooks.notify?.({ spaceId: space.id, title: space.data.title || 'Agenda', body });
   };
-  // 任务空间里需要提醒的状态：计划待确认、子任务等验收 / 在问你 / 出错、任务做完。只提醒新出现的
+  // 任务空间里需要提醒的状态：协调者先问你、计划待确认、子任务等验收 / 在问你 / 出错、任务做完。只提醒新出现的
   const taskAlerts = (space) => {
     const r = space.run?.data;
     const out = new Map();
     if (!r || r.closed) return out;
+    if (r.status === 'clarifying') out.set('clarify', tr('协调者有几个问题想先问你'));
     if (r.status === 'plan_review' && r.planConfirm !== 'auto') out.set('plan', tr('任务计划等你确认'));
     if (r.status === 'done') out.set('done', tr('任务做完了，总结已写好'));
     if (r.status === 'failed') out.set('failed', tr('任务出错停下了'));

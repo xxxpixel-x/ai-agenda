@@ -29,7 +29,7 @@ export const folderKey = (p) => {
 };
 
 /** 任务在等你：确认计划（含改过的计划）、审查、回答问题、处理失败、合并。 */
-export const runNeedsUser = (r) => !!r && !r.closed && (r.status === 'plan_review' || !!r.paused || !!r.hold
+export const runNeedsUser = (r) => !!r && !r.closed && (r.status === 'clarifying' || r.status === 'plan_review' || !!r.paused || !!r.hold
   || r.tasks.some((t) => ['review', 'blocked', 'failed'].includes(t.status))
   || (r.status === 'done' && r.mode === 'git' && !r.merged && r.tasks.some((t) => t.status === 'approved')));
 
@@ -151,8 +151,8 @@ export class Space extends EventEmitter {
   /**
    * 新建空间。任务空间要另外调用 startTask() 开始规划（要先检查文件夹是不是 git 项目）。
    * input.kind：'chat' | 'task'
-   * 任务空间：input.objective、coordinatorId、planConfirm、discuss、autoApprove、maxParallel、source（{ spaceId, title }，从聊天空间转来时）
-   * input.scheduleId：定时任务建的空间，记下来源
+   * 任务空间：input.objective、coordinatorId、planConfirm、clarify、discuss、autoApprove、maxParallel、source（{ spaceId, title }，从聊天空间转来时）
+
    */
   static create(input, deps) {
     const engines = deps.registry.list();
@@ -193,6 +193,7 @@ export class Space extends EventEmitter {
       if (src) data.source = { spaceId: input.source.spaceId, title: src, messages: clampInt(input.source.messages, 0, 9999, 0) };
       data.pendingTask = {
         objective,
+        clarify: !input.source && input.clarify !== false,
         coordinatorId: members.some((m) => m.id === input.coordinatorId) ? input.coordinatorId : members[Math.max(0, clampInt(input.coordinatorIndex, 0, members.length - 1, 0))].id,
         planConfirm: PLAN_CONFIRM.includes(input.planConfirm) ? input.planConfirm : 'manual',
         discuss: input.discuss !== false,
@@ -435,6 +436,8 @@ export class Space extends EventEmitter {
     if (!run) throw new Error(tr('没有进行中的任务'));
     if (run.data.closed) throw new Error(tr('这个任务已经结束，只能查看'));
     const actions = {
+      'clarify-answer': () => run.answerClarify(body.answers),
+      'clarify-defaults': () => run.useDefaults(),
       'approve-plan': () => run.approvePlan(body.tasks),
       'confirm-plan': () => run.confirmPlan(),
       replan: () => run.replan(body.feedback),

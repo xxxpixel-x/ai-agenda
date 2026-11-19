@@ -409,12 +409,42 @@ Read the latest content before editing because others may have just changed it. 
 {"tasks": [
   {"id": "T1", "title": "Short title", "assignee": "Member name", "deps": [], "spec": "Self-contained instructions"},
   {"id": "T2", "title": "…", "assignee": "Member name", "deps": ["T1"], "spec": "…"}
-]}
+], "assumptions": ["…"]}
 \`\`\`
 
-- Each spec must stand alone. The assignee sees only the overall goal, full plan, their spec and dependency results. Include the goal, changes, constraints, permitted files and completion criteria.
+- In assumptions, list the choices you made where the goal left room for interpretation. Use one sentence per choice, or an empty array if there are none.
+- Each spec must stand alone. The assignee sees the overall goal, decisions, full plan, their spec and dependency results. Include the goal, changes, constraints, permitted files and completion criteria.
 - Usually use two to six tasks. Add dependencies only when a task truly requires another to finish first.
 - Match assignments to members’ strengths. Each assignee must be a member name.`,
+  'tasks.clarify': `## Ask first or plan
+If the goal is clear, give the plan directly. Ask only when different interpretations would lead to substantially different results. For example, should a login page support a username and password or SMS verification?
+Ask all your questions at once, up to three, with a default answer for each. If you ask, reply with one explanatory sentence and a JSON block only. Leave the plan for the next turn.
+
+\`\`\`json
+{"questions": [{"id": "Q1", "text": "Which login method?", "default": "Username and password"}]}
+\`\`\`
+
+If you have no questions, use the usual plan format and record any choices you are unsure about in assumptions.`,
+  '## 先问还是直接规划': '## Ask first or plan',
+  '# 规划前的澄清\n{0}': '# Clarification before planning\n{0}',
+  '用户的回答：{0}': 'User answer: {0}',
+  '没回答，按默认：{0}': 'No answer, use the default: {0}',
+  '没回答，按你认为最合理的处理': 'No answer, use your best judgment',
+  '按用户的回答规划。软件会将按默认处理的问题列进假设，assumptions 里不用重复。': 'Plan according to the user’s answers. The app will list the defaults used, so omit them from assumptions.',
+  '# 已经定下的\n{0}': '# Decisions so far\n{0}',
+  '## 用户的回答\n{0}': '## User answers\n{0}',
+  '## 假设\n{0}': '## Assumptions\n{0}',
+  '{0}：按默认处理（{1}）': '{0}: Used the default ({1})',
+  '{0}：按默认处理': '{0}: Used the default',
+  '现在没有在等你回答问题': 'No questions are awaiting your answer',
+  '协调者有几个问题想先问你': 'The coordinator has a few questions before planning',
+  '含糊': 'vague',
+  '方案写给谁看？': 'Who will read the proposal?',
+  '团队成员': 'Team members',
+  '要不要配图？': 'Should the proposal include illustrations?',
+  '不要': 'No',
+  '开始前想确认两件事。\n\n```json\n{0}\n```': 'I have two questions before I start.\n\n```json\n{0}\n```',
+  '（演示）沿用共享文件夹里现有的文件结构': '(Demo) Keep the existing file structure in the shared folder',
   'tasks.planner': `You are “{0}”, the coordinator for this task run. Break the user’s goal into tasks and assign them to members. Write in English.
 
 ## Members
@@ -748,12 +778,22 @@ export const zh = {
 {"tasks": [
   {"id": "T1", "title": "简短标题", "assignee": "成员名", "deps": [], "spec": "自包含的说明"},
   {"id": "T2", "title": "……", "assignee": "成员名", "deps": ["T1"], "spec": "……"}
-]}
+], "assumptions": ["……"]}
 \`\`\`
 要求：
-- spec 必须自包含：做这件事的人看不到规划过程，只能看到总目标、整体计划、自己的 spec 和前置任务的结果。写清目标、要改什么、限制、可以动哪些文件、怎样算完成。
+- assumptions 列出目标里没说清、由你按最合理的理解决定的事，每条一句话，没有就给空数组。
+- spec 必须自包含：做这件事的人看不到规划过程，只能看到总目标、已经定下的事、整体计划、自己的 spec 和前置任务的结果。写清目标、要改什么、限制、可以动哪些文件、怎样算完成。
 - 一般 2～6 个子任务；能同时做的不要设依赖（deps）；deps 只写真正需要先完成的任务 id。
 - 按成员的特点分工，assignee 必须是成员名之一。`,
+  'tasks.clarify': `## 先问还是直接规划
+目标够清楚就直接给计划，不要为问而问。只有不同理解会做出明显不同的结果时才问，例如「做个登录页」是只要账号密码，还是要短信验证码。
+一次问完，最多三个问题，每个都带默认答案。提问时只回复一句说明，加上一个 JSON 代码块，等回答后再给计划。
+
+\`\`\`json
+{"questions": [{"id": "Q1", "text": "登录方式？", "default": "账号密码"}]}
+\`\`\`
+
+不问时照常按计划格式给计划，拿不准的写进 assumptions。`,
   'tasks.planner': '你是「{0}」，这次任务协作的协调者。你负责把用户的总目标拆成子任务，分给成员去做。\n\n## 成员\n{1}\n\n## 工作方式\n{2}\n{3}\n现在是规划阶段：你可以阅读文件来了解情况，但不要修改任何文件。\n\n{4}',
   'tasks.reviewer': '你是「{0}」。协调者「{1}」为一次任务协作拟了计划，请你审阅计划。\n\n## 成员\n{2}\n\n## 工作方式\n{3}\n现在是规划阶段，不要修改任何文件。\n\n从你的角度提意见：分工是否合理、依赖是否正确、有没有遗漏或多余的子任务、spec 是否说清楚了。一两段话即可。完全同意就只回复 [同意]。',
   'tasks.worker': `你是「{0}」，正在一次多 AI 任务协作里做被分派给你的子任务 {1}。只做这一个子任务，不要做计划里别人的事。
