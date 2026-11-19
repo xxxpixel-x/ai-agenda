@@ -18,18 +18,33 @@ const accessLine = (space) => (canRun(space.access)
   ? tr('成员可以在工作目录里运行命令（例如跑测试），spec 里可以要求用命令验证。')
   : tr('成员只能读写文件、不能运行命令，所以 spec 里不要要求“运行/测试来验证”，改成“检查代码/内容是否正确”。'));
 
-export function plannerSystem(space, run, me) {
-  return tr('tasks.planner', [me.name, roster(space), modeLine(run), accessLine(space), tr('tasks.planFormat')]);
+export function plannerSystem(space, run, me, { clarify = false } = {}) {
+  const system = tr('tasks.planner', [me.name, roster(space), modeLine(run), accessLine(space), tr('tasks.planFormat')]);
+  return clarify ? system + '\n\n' + tr('tasks.clarify') : system;
 }
 
 /** 总目标是用户写的，带上发言人标记（见 prompts.mjs）。 */
 const objective = (run, key) => tr('# 总目标\n{0}', [said(key, '', run.objective, true)]);
 
-export function plannerPrompt(run, { feedback = [], previous = null, key = newKey() } = {}) {
+function clarifyText(clarify, key) {
+  if (clarify?.resolvedAt == null) return '';
+  const lines = clarify.questions.map((q) => {
+    const answer = Object.hasOwn(clarify.answers, q.id)
+      ? tr('用户的回答：{0}', [said(key, '', clarify.answers[q.id], true)])
+      : q.default ? tr('没回答，按默认：{0}', [q.default]) : tr('没回答，按你认为最合理的处理');
+    return `- ${q.id} ${q.text}\n  ${answer}`;
+  });
+  return tr('# 规划前的澄清\n{0}', [lines.join('\n')]);
+}
+
+export function plannerPrompt(run, { feedback = [], previous = null, key = newKey(), clarify } = {}) {
   const parts = [keyRule(key), objective(run, key)];
+  const clarification = clarifyText(clarify, key);
+  if (clarification) parts.push(clarification);
   if (previous) parts.push(tr('# 你之前给出的计划\n```json\n{0}\n```', [JSON.stringify({ tasks: previous }, null, 1)]));
   if (feedback.length) parts.push(tr('# 意见\n{0}', [feedback.map((f) => said(key, f.name, f.text)).join('\n\n')]));
   parts.push(previous ? tr('根据意见修改计划，重新给出完整计划。') : tr('请给出计划。'));
+  if (clarification) parts.push(tr('按用户的回答规划。软件会将按默认处理的问题列进假设，assumptions 里不用重复。'));
   return parts.join('\n\n');
 }
 
@@ -37,8 +52,9 @@ export function reviewerSystem(space, run, me, coordinator) {
   return tr('tasks.reviewer', [me.name, coordinator.name, roster(space), modeLine(run)]);
 }
 
-export function reviewerPrompt(run, tasks, { key = newKey() } = {}) {
-  return tr('{0}\n\n{1}\n\n# 计划\n{2}\n\n请提意见，没有意见只回复 [同意]。', [keyRule(key), objective(run, key), planText(tasks, null)]);
+export function reviewerPrompt(run, tasks, { key = newKey(), clarify } = {}) {
+  const goal = [objective(run, key), clarifyText(clarify, key)].filter(Boolean).join('\n\n');
+  return tr('{0}\n\n{1}\n\n# 计划\n{2}\n\n请提意见，没有意见只回复 [同意]。', [keyRule(key), goal, planText(tasks, null)]);
 }
 
 function planText(tasks, members, mine) {
@@ -78,8 +94,19 @@ export function workerSystem(space, run, task, me, { api = false, cwd } = {}) {
   ]);
 }
 
+function decisionsText(run, key) {
+  const parts = [];
+  const answers = (run.clarify?.questions || []).filter((q) => Object.hasOwn(run.clarify.answers, q.id));
+  if (answers.length) parts.push(tr('## 用户的回答\n{0}', [answers.map((q) => `- ${q.text}\n  ${said(key, '', run.clarify.answers[q.id], true)}`).join('\n')]));
+  if (run.assumptions?.length) parts.push(tr('## 假设\n{0}', [run.assumptions.map((a) => `- ${a}`).join('\n')]));
+  return parts.length ? tr('# 已经定下的\n{0}', [parts.join('\n\n')]) : '';
+}
+
 export function workerPrompt(space, run, task, { files = null, conflict = null, key = newKey() } = {}) {
-  const parts = [keyRule(key), objective(run, key), tr('# 整体计划\n{0}', [planText(run.tasks, space.members, task.id)])];
+  const parts = [keyRule(key), objective(run, key)];
+  const decisions = decisionsText(run, key);
+  if (decisions) parts.push(decisions);
+  parts.push(tr('# 整体计划\n{0}', [planText(run.tasks, space.members, task.id)]));
   if (files) parts.push(filesForPrompt(files));
   parts.push(tr('# 你的子任务 {0}：{1}\n{2}', [task.id, task.title, task.spec]));
   const deps = run.tasks.filter((t) => task.deps.includes(t.id));
@@ -143,8 +170,8 @@ export function commitPrompt(run, { commits, files, summary, key = newKey() }) {
   ]);
 }
 
-/** 从协调者回复里取出计划 JSON。 */
-export function extractPlan(text) {
+/** 优先看最后一个代码块，再试整段回复里的 JSON。 */
+function* planObjects(text) {
   const s = String(text || '');
   const blocks = [...s.matchAll(/```(?:json)?\s*\n([\s\S]*?)\n```/g)].map((m) => m[1]);
   const candidates = blocks.length ? blocks.reverse() : [];
@@ -153,10 +180,42 @@ export function extractPlan(text) {
   if (a >= 0 && b > a) candidates.push(s.slice(a, b + 1));
   for (const c of candidates) {
     try {
-      const j = JSON.parse(c);
-      const tasks = Array.isArray(j) ? j : j.tasks;
-      if (Array.isArray(tasks) && tasks.length) return tasks;
+      yield JSON.parse(c);
     } catch { /* 下一个 */ }
+  }
+}
+
+export function parsePlan(text) {
+  for (const j of planObjects(text)) {
+    const tasks = Array.isArray(j) ? j : j?.tasks;
+    if (!Array.isArray(tasks) || !tasks.length) continue;
+    const assumptions = Array.isArray(j.assumptions)
+      ? j.assumptions.filter((a) => typeof a === 'string' && a.trim()).slice(0, 10).map((a) => a.trim().slice(0, 300)) : [];
+    return { tasks, assumptions };
+  }
+  return null;
+}
+
+export function extractPlan(text) {
+  return parsePlan(text)?.tasks || null;
+}
+
+export function parseClarify(text) {
+  for (const j of planObjects(text)) {
+    if (!Array.isArray(j?.questions) || !j.questions.length) continue;
+    if (Array.isArray(j.tasks) && j.tasks.length) return null;
+    const questions = [];
+    const ids = new Set();
+    for (const q of j.questions) {
+      if (typeof q?.text !== 'string' || !q.text.trim()) continue;
+      let id = String(q.id ?? '').replace(/[^A-Za-z0-9-]/g, '').slice(0, 12);
+      let n = questions.length + 1;
+      while (!id || ids.has(id)) id = `Q${n++}`;
+      ids.add(id);
+      questions.push({ id, text: q.text.trim().slice(0, 300), default: typeof q.default === 'string' ? q.default.trim().slice(0, 200) : '' });
+      if (questions.length === 3) break;
+    }
+    if (questions.length) return { questions };
   }
   return null;
 }
@@ -224,6 +283,8 @@ export function triageSystem(space, run, me) {
 export function triagePrompt(space, run, text, { history = [], key = newKey() } = {}) {
   const parts = [keyRule(key), objective(run, key)];
   parts.push(tr('# 现在的阶段\n{0}', [run.status === 'done' ? tr('所有子任务都结束了，你已经写过总结；用户还没有结束这个任务。') : run.status === 'plan_review' ? tr('计划还在等用户确认，还没开始执行。') : tr('正在执行。')]));
+  const decisions = decisionsText(run, key);
+  if (decisions) parts.push(decisions);
   parts.push(tr('# 计划和进展\n{0}', [progressText(space, run) || tr('（还没有子任务）')]));
   if (history.length) parts.push(tr('# 之前的对话\n{0}', [history.map((m) => said(key, m.name, attachmentText(m, space.workspacePath), m.kind === 'user')).join('\n\n')]));
   parts.push(tr('# 用户刚发来的消息\n{0}', [said(key, '', text, true)]));
