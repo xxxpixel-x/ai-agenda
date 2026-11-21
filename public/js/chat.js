@@ -1,5 +1,7 @@
 // 空间视图：消息、成员标签、命令审批、输入框。聊天空间和任务空间共用，任务空间另有顶部的计划条（tasks.js）
 import { attachmentDraft, renderAttachments, messageAttachments } from './attachments.js';
+import { formatActionSummary } from './context-memory-format.js';
+import { resetRecap, syncRecapSlot } from './recap.js';
 import { loadFiles, loadHistory, onFilesChanged, openChange, renderFilesBody, renderFilesPanel, resetViews } from './files.js';
 import { checkImports, importHtml, openImportModal, replaceImport } from './imports.js';
 import { trackNoteView } from './notes.js';
@@ -21,6 +23,7 @@ const stopWelcomeFx = () => { welcomeFx?.stop(); welcomeFx = null; };
 /** 离开空间（去整页设置等）：断开事件流，空间、欢迎页和文件面板都收起。 */
 export function leaveSpace() {
   closeStream();
+  resetRecap();
   trackNoteView(null);
   stopWelcomeFx();
   state.space = null;
@@ -44,6 +47,7 @@ export function openSpace(id) {
   $('#welcomeView').hidden = true;
   $('#spaceView').hidden = false;
   if (state.space?.id !== id) {
+    resetRecap();
     state.space = null;
     $('#messages').innerHTML = '';
     $('#spaceTitle').textContent = tr('加载中…');
@@ -152,7 +156,13 @@ function handleEvent(ev) {
       toast(ev.text, ev.level);
       break;
   }
+  if (['snapshot', 'message_done', 'state', 'members', 'run'].includes(ev.type)) {
+    window.dispatchEvent(new CustomEvent('agenda:space-event', { detail: { type: ev.type, space: state.space, event: ev } }));
+  }
 }
+
+const hiddenMessage = (m) => m.kind === 'ai' && !m.streaming && !m.text && !m.error && !m.passed &&
+  !m.changes?.length && !m.actions?.length && !m.interrupted && !m.decision;
 
 function renderSpace() {
   const sp = state.space;
@@ -165,9 +175,10 @@ function renderSpace() {
   renderHeader();
   renderMembersBar();
   const box = $('#messages');
-  box.innerHTML = sp.kind === 'task' ? '<div id="taskIntro"></div>' : '';
+  box.innerHTML = (sp.kind === 'task' ? '<div id="taskIntro"></div>' : '') + '<div id="recapSlot" hidden></div>';
+  syncRecapSlot(sp);
   box.classList.toggle('selecting', !!state.picking);
-  const shown = sp.messages.filter((m) => !(m.kind === 'ai' && !m.streaming && !m.text && !m.error && !m.passed && !m.changes?.length && !m.decision));
+  const shown = sp.messages.filter((m) => !hiddenMessage(m));
   for (const m of shown) box.insertAdjacentHTML('beforeend', messageHtml(m));
   renderTaskSpace();
   renderComposer();
@@ -392,15 +403,18 @@ export function messageHtml(m) {
   if (m.kind === 'task') return taskBackHtml(m, pick);
   if (m.kind === 'user') {
     const wait = m.queued ? `<div class="msg-note">${tr('等协调者看')}</div>` : m.unanswered ? `<div class="msg-note">${tr('软件关闭时协调者还没回这条，可以再发一次')}</div>` : '';
-    return `<div class="msg user ${pick ? 'pickable' : ''}" id="m-${m.id}">${pick}
+    return `<div class="msg user ${pick ? 'pickable' : ''}" id="m-${m.id}" data-seq="${esc(m.seq)}">${pick}
       <div class="msg-main"><div class="msg-head"><span class="n">${tr('我')}</span><span class="m" title="${esc(userMeta(m))}">${clock(m.ts)}</span>${transferBtn(m)}</div>
       <div class="msg-body">${m.text ? `<div class="md">${md(m.text)}</div>` : ''}${messageAttachments(m.attachments)}</div>${wait}</div></div>`;
   }
   const mem = memberOf(m.memberId);
   const color = mem?.color || engineOf(m.engine)?.color || '#888';
   const imageNote = m.noImages ? `<div class="image-note">${tr('{0} 看不到图片', [esc(m.name)])}</div>` : '';
+  const summary = m.kind === 'ai' && formatActionSummary(m.actions, tr);
+  const actions = summary ? `<div class="msg-actions-summary" title="${esc(summary.text)}"><span class="mas-label">${esc(tr('运行了：'))}</span>
+    <span class="mas-cmds">${summary.items.slice(0, 5).map((cmd) => `<code>${esc(cmd)}</code>`).join('<span class="mas-sep">·</span>')}${summary.items.length > 5 ? ' …' : ''}</span></div>` : '';
   if (m.passed && !m.streaming) {
-    return `<div class="pass-line" id="m-${m.id}" style="--c:${color}">${imageNote}<b>${esc(m.name)}</b> ${tr('没有补充{0}', [m.changes?.length ? tr('，但修改了 {0} 个文件', [m.changes.length]) : ''])}</div>`;
+    return `<div class="pass-line" id="m-${m.id}" data-seq="${esc(m.seq)}" style="--c:${color}">${imageNote}<b>${esc(m.name)}</b> ${tr('没有补充{0}', [m.changes?.length ? tr('，但修改了 {0} 个文件', [m.changes.length]) : ''])}${actions}</div>`;
   }
   const meta = m.seq ? [tr('消息 {0}', [m.seq])] : [];
   if (m.durationMs) meta.push(tr('{0} 秒', [(m.durationMs / 1000).toFixed(0)]));
@@ -413,21 +427,21 @@ export function messageHtml(m) {
   if (m.streaming && !text) body = `<div class="think"><span class="think-art"></span><span class="think-label">${esc(last ? localizeActivity(last.label) : tr('思考中'))}</span></div>`;
   else body = text ? `<div class="md ${m.streaming ? 'cursor' : ''}">${md(text)}</div>` : '';
   const changes = m.changes?.length ? `<div class="changes">${m.changes.map((c) => `<button type="button" class="change-chip" data-change="${c.id}">${ICON.file}${esc(c.path)} ${c.created ? `<span class="plus">${tr('新建')}</span>` : c.deleted ? `<span class="minus">${tr('删除')}</span>` : `<span class="plus">+${c.added}</span><span class="minus">−${c.removed}</span>`}</button>`).join('')}</div>` : '';
-  return `<div class="msg ai ${m.error ? 'error' : ''} ${pick ? 'pickable' : ''}" id="m-${m.id}" style="--c:${color}">${pick}
+  return `<div class="msg ai ${m.error ? 'error' : ''} ${pick ? 'pickable' : ''}" id="m-${m.id}" data-seq="${esc(m.seq)}" style="--c:${color}">${pick}
     ${avatarHtml(mem?.engine || m.engine, m.name, m.model || mem?.model)}
     <div class="msg-main">${imageNote}
       <div class="msg-head"><span class="n">${esc(m.name)}</span>${m.replyTo ? `<span class="role">${tr('协调者')}</span>` : ''}<span class="m" title="${esc(meta.join(' · '))}">${clock(m.ts)}</span>${transferBtn(m)}</div>
       <div class="msg-body">${activitiesHtml(m.activities, m.streaming)}${approvalsHtml(m)}${body}
         ${m.interrupted ? `<div class="note">${tr('（发言被中断）')}</div>` : ''}
         ${m.note ? `<div class="note">${esc(m.note)}</div>` : ''}
-        ${m.error ? errHtml(m.error) : ''}${changes}</div>
+        ${m.error ? errHtml(m.error) : ''}${changes}${actions}</div>
       ${m.decision ? decisionHtml(m) : ''}
     </div></div>`;
 }
 
 /** 聊天空间里：任务空间结束时发回来的总结。 */
 function taskBackHtml(m, pick) {
-  return `<div class="msg task-back ${pick ? 'pickable' : ''}" id="m-${m.id}">${pick}
+  return `<div class="msg task-back ${pick ? 'pickable' : ''}" id="m-${m.id}" data-seq="${esc(m.seq)}">${pick}
     <div class="tb-card">
       <div class="tb-head"><span class="tb-icon">${ICON.task}</span><span class="tb-title">${tr('任务「{0}」结束了', [esc(m.title)])}</span>
         <span class="m" title="${m.seq ? tr('消息 {0}', [m.seq]) : ''}">${tr('{0}/{1} 个子任务通过', [m.approved, m.total])}${m.merged ? tr(' · 已合并到 {0}', [esc(m.merged)]) : ''} · ${clock(m.ts)}</span>${transferBtn(m)}</div>
@@ -455,7 +469,7 @@ function syncThinking() {
 export function updateMessage(m) {
   const el = document.getElementById(`m-${m.id}`);
   const stick = nearBottom();
-  const hidden = m.kind === 'ai' && !m.streaming && !m.text && !m.error && !m.passed && !m.changes?.length && !m.interrupted && !m.decision;
+  const hidden = hiddenMessage(m);
   if (!el) { if (!hidden) appendMessage(m); return; }
   if (hidden) { el.remove(); return; }
   // 正在卡片上写附言时消息重绘了：把光标放回原处

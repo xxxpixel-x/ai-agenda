@@ -1,4 +1,5 @@
 import { applyTheme, theme } from '../sidebar.js';
+import { AUTO_HANDOFF_PRESETS, normalizeAutoHandoffPct } from '../context-memory-format.js';
 import { register } from '../slots.js';
 import { $, $$, ICON, api, esc, state, toast, tr } from '../util.js';
 
@@ -10,6 +11,8 @@ async function render(el) {
   const languages = [['system', tr('跟随系统')], ['zh', '中文'], ['en', 'English']];
   const themes = [['system', tr('跟随系统')], ['light', tr('浅色')], ['dark', tr('深色')]];
   const toggles = [['notify', tr('AI 做完或等你处理时提醒我')], ['keepAwake', tr('AI 工作时不让电脑睡眠')]];
+  let currentAutoHandoff = normalizeAutoHandoffPct(settings.autoHandoffPct);
+  const thresholds = [...new Set([...AUTO_HANDOFF_PRESETS, currentAutoHandoff])].sort((a, b) => a - b);
   el.innerHTML = `<section class="set-group">
     <div class="set-row">
       <label class="set-label" for="appLanguage">${esc(tr('语言'))}</label>
@@ -22,6 +25,11 @@ async function render(el) {
       <div class="set-control"><div class="seg" role="radiogroup" aria-label="${esc(tr('外观'))}">
         ${themes.map(([value, label]) => `<button type="button" class="seg-btn" role="radio" data-theme-opt="${esc(value)}">${esc(label)}</button>`).join('')}
       </div></div>
+    </div>
+    <div class="set-row">
+      <label class="set-label" for="autoHandoffPct">${tr('上下文达到此比例时自动交接')}</label>
+      <div class="set-control"><select id="autoHandoffPct">${thresholds.map((v) =>
+        `<option value="${v}" ${v === currentAutoHandoff ? 'selected' : ''}>${v === 0 ? tr('不自动交接') : v === 50 ? tr('{0}%（默认）', [v]) : v + '%'}</option>`).join('')}</select></div>
     </div>
     ${state.app.desktop ? toggles.map(([key, label]) => `<div class="set-row">
       <span class="set-label" id="${esc(key)}-label">${esc(label)}</span>
@@ -63,6 +71,19 @@ async function render(el) {
       target.disabled = false;
       toast(e.message, 'error');
     }
+  };
+  $('#autoHandoffPct', el).onchange = async ({ target }) => {
+    target.disabled = true;
+    try {
+      const saved = await api('/api/settings', { method: 'PUT', body: { autoHandoffPct: Number(target.value) } });
+      if (saved?.autoHandoffPct == null) throw new Error(tr('当前服务器不支持自动交接设置'));
+      currentAutoHandoff = normalizeAutoHandoffPct(saved.autoHandoffPct);
+      target.value = String(currentAutoHandoff);
+      toast(tr('已保存'));
+    } catch (e) {
+      target.value = String(currentAutoHandoff);
+      toast(e.message, 'error');
+    } finally { target.disabled = false; }
   };
   for (const box of $$('[data-toggle]', el)) {
     box.closest('.set-row').onclick = (event) => {
