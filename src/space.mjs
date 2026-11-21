@@ -372,9 +372,9 @@ export class Space extends EventEmitter {
       const soloChanged = (previous.length === 1) !== this.chat.solo;
       if (!(changed || soloChanged || oldAccess !== this.data.access)) continue;
       if (state.importId && old.engine === member.engine && old.source === member.source && !soloChanged) continue;
-      if (this.memberBusy(old.id) || this.handoffing.has(old.id)) continue;
+      if (this.memberBusy(old.id)) continue;
       delete this.data.memberState[old.id];
-      if (state.sessionId) this.handoffMember(old.id, 'config_changed', { oldMember: old, oldState: state });
+      if (state.sessionId && !this.handoffing.has(old.id)) this.handoffMember(old.id, 'config_changed', { oldMember: old, oldState: state });
     }
   }
 
