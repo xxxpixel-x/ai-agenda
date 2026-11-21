@@ -18,6 +18,8 @@ import { runAgentTurn } from './turn-runner.mjs';
 import { distillSystem, distillPrompt } from './task-prompts.mjs';
 import { normalizeAllowed } from './approvals.mjs';
 import { normalizeMembers } from './members.mjs';
+import { openMemory } from './memory/store.mjs';
+import { organize } from './memory/organize.mjs';
 
 const str = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
 const clampInt = (v, lo, hi, d) => { const n = parseInt(v, 10); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
@@ -34,6 +36,9 @@ export const runNeedsUser = (r) => !!r && !r.closed && (r.status === 'clarifying
   || (r.status === 'done' && r.mode === 'git' && !r.merged && r.tasks.some((t) => t.status === 'approved')));
 
 export class Space extends EventEmitter {
+  /** 空闲时自动整理记忆库。成员要到上下文管理接上后才看得到记忆库，在那之前先关着，免得白花 token（2026-11-21 定）。 */
+  static memoryAuto = false;
+
   constructor(data, { registry, store, dataDir, hooks = {} }) {
     super();
     this.setMaxListeners(100);
@@ -50,6 +55,7 @@ export class Space extends EventEmitter {
       if (m.streaming && data.kind === 'chat') { m.streaming = false; m.interrupted = true; }
       for (const a of m.approvals || []) if (a.status === 'pending') a.status = 'cancelled';
     }
+    this.numberMessages(); // 旧空间：按顺序补上消息编号
     this.ws = new Workspace(this.workspacePath, path.join(this.dir, 'history.json'));
     this.attachments = new Attachments(this.dir, (a) => this.checkAttachment(a));
     this.chat = new Chat(this.createChatHost());
@@ -61,6 +67,8 @@ export class Space extends EventEmitter {
     this.runHost = this.createRunHost();
     // 任务空间只有一个任务；聊天空间没有任务
     this.run = data.kind === 'task' && data.runs[0] ? new TaskRun(this.runHost, data.runs[0]) : null;
+    this.memoryHost = this.createMemoryHost();
+    this.approvedSeen = this.approvedKey();
   }
 
   get isTask() { return this.data.kind === 'task'; }
@@ -145,6 +153,28 @@ export class Space extends EventEmitter {
       track: (operation) => space.track(operation),
       emit: (ev) => space.emitEvent(ev),
       save: () => space.save(),
+    };
+  }
+
+  /** 记忆库整理用的宿主接口：memory/organize.mjs 只通过它读空间（只读）。 */
+  createMemoryHost() {
+    const space = this;
+    return {
+      get registry() { return space.registry; },
+      get members() { return space.data.members; },
+      get workspacePath() { return space.workspacePath; },
+      get kind() { return space.data.kind; },
+      // 编号大于 since 的消息，按编号排；遇到还在写的就停，免得跳过它
+      messages: (since = 0) => {
+        const out = [];
+        for (const m of [...space.data.messages].sort((a, b) => a.seq - b.seq)) {
+          if (!(m.seq > since)) continue;
+          if (m.streaming) break;
+          out.push(m);
+        }
+        return out;
+      },
+      tasks: () => space.run?.data.tasks || [],
     };
   }
 
@@ -286,6 +316,11 @@ export class Space extends EventEmitter {
     }
     if ('maxTurns' in patch) this.data.maxTurns = clampInt(patch.maxTurns, 1, 30, this.data.maxTurns);
     if ('allowedPrograms' in patch) this.data.allowedPrograms = normalizeAllowed(patch.allowedPrograms);
+    // 整理记忆库的成员（不给或已不在空间里：第一个成员）
+    if ('memoryWriterId' in patch) {
+      if (this.data.members.some((m) => m.id === patch.memoryWriterId)) this.data.memoryWriterId = patch.memoryWriterId;
+      else delete this.data.memoryWriterId;
+    }
     // 任务空间的选项：计划确认方式、审阅计划、自动通过、最多同时几个、协调者
     if (this.run && patch.task) this.run.updateSettings(patch.task);
     this.save();
@@ -490,6 +525,68 @@ export class Space extends EventEmitter {
     return true;
   }
 
+  // ---------- 记忆库 ----------
+  get memory() { return (this.memoryStore ||= openMemory(path.join(this.dir, 'memory'))); }
+  get memoryWriter() { return this.data.members.find((m) => m.id === this.data.memoryWriterId) || this.data.members[0]; }
+
+  /** 子任务通过的情况（编号 + 通过时间），用来发现新通过的子任务。 */
+  approvedKey() {
+    return (this.run?.data.tasks || []).filter((t) => t.status === 'approved').map((t) => `${t.id}@${t.approvedAt}`).join(',');
+  }
+
+  /**
+   * 空闲时把新的聊天和任务结果整理进记忆库：在后台进行，不阻塞下一轮；
+   * 正在整理时又来新内容就排到下一次。整理失败只记日志（memory/organize.jsonl），不影响聊天。
+   */
+  organizeMemory() {
+    if (this.deleting || this.deleted || this.closing || !this.data.members.length) return null;
+    if (this.memoryRun) { this.memoryAgain = true; return this.memoryRun; }
+    this.memoryAgain = false;
+    const controller = new AbortController();
+    this.memoryController = controller;
+    const work = (async () => {
+      await new Promise((resolve) => setImmediate(resolve));
+      let next = false;
+      try {
+        const r = await organize(this.memoryHost, this.memory, { writer: this.memoryWriter, signal: controller.signal });
+        next = !!r.more && !r.error; // 积压的旧消息分批整理
+      } catch (e) {
+        if (!e.aborted) console.warn(tr('整理记忆库失败：'), e.message);
+      } finally {
+        this.memoryRun = null;
+        this.memoryController = null;
+      }
+      if ((next || this.memoryAgain) && !controller.signal.aborted) this.organizeMemory();
+    })();
+    this.memoryRun = this.track(work);
+    return this.memoryRun;
+  }
+
+  /** 只读查看记忆库（排查和以后的展示页用）。 */
+  memoryView() {
+    if (this.deleting || this.deleted) throw Object.assign(new Error(tr('这个空间正在删除，请稍等')), { status: 409 });
+    const mem = this.memory;
+    return {
+      writerId: this.memoryWriter?.id || null,
+      organizing: !!this.memoryRun,
+      lastSeq: mem.lastSeq,
+      compactedAt: mem.compactedAt,
+      entries: mem.entries(),
+      text: mem.render({}),
+      logs: mem.logs(20),
+    };
+  }
+
+  /** 空间自己的事件里，哪些说明有新内容可以整理：聊天一轮结束、任务空间的回复写完、子任务通过。 */
+  memoryTrigger(ev) {
+    if (ev.type === 'round_end' || (ev.type === 'message_done' && this.isTask && !ev.message?.streaming)) return true;
+    if (ev.type !== 'run') return false;
+    const key = this.approvedKey();
+    const fresh = key !== this.approvedSeen && key.split(',').some((k) => k && !this.approvedSeen.split(',').includes(k));
+    this.approvedSeen = key;
+    return fresh;
+  }
+
   // ---------- 其他 ----------
   /**
    * 软件退出：先把眼下的状态存好，再结束这个空间里所有正在运行的 AI（聊天、任务、整理导入）。
@@ -502,16 +599,31 @@ export class Space extends EventEmitter {
     this.chat.shutdown();
     if (this.run) { clearTimeout(this.run.timer); for (const c of this.run.controllers.values()) c.abort(); }
     this.importController?.abort();
+    this.memoryController?.abort();
+  }
+
+  /**
+   * 消息编号 seq：空间内递增、不复用（删掉的消息的编号也不再用）。在这里统一补，聊天、任务、导入都不用管。
+   * 只有一条消息时只补这一条；不给时把所有还没编号的按顺序补上（打开旧空间、导入直接改了消息列表时）。
+   */
+  numberMessages(msg) {
+    const d = this.data;
+    if (!Number.isInteger(d.nextSeq)) d.nextSeq = d.messages.reduce((n, m) => (Number.isInteger(m.seq) ? Math.max(n, m.seq + 1) : n), 1);
+    for (const m of msg ? [msg] : d.messages) if (!Number.isInteger(m.seq)) m.seq = d.nextSeq++;
   }
 
   emitEvent(ev) {
+    if (ev.type === 'message' && ev.message) this.numberMessages(ev.message);
+    else if (ev.type === 'snapshot') this.numberMessages();
     if (this.deleted || this.closing) return;
     this.emit('event', ev);
     if (ev.type === 'files_changed' && ev.changes?.length) syncBriefs(this.importHost, ev.changes); // 主题简报被改了
+    if (this.memoryTrigger(ev) && Space.memoryAuto) this.organizeMemory();
   }
 
   save() {
     if (this.deleted || this.closing) return;
+    this.numberMessages();
     this.data.updatedAt = Date.now();
     try { this.store.save(this.data); } catch (e) { console.error(tr('保存失败：'), e.message); }
   }
@@ -535,6 +647,7 @@ export class Space extends EventEmitter {
       this.stop();
       this.importController?.abort();
       this.distillController?.abort();
+      this.memoryController?.abort();
       this.run?.stopForRemoval();
       // 等发言、任务和导入的收尾写入结束，再删文件，避免后台把空间重新保存出来。
       while (this.pendingOperations.size) await Promise.allSettled([...this.pendingOperations]);

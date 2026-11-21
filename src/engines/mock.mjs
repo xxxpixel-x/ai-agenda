@@ -82,6 +82,11 @@ async function reply({ system, prompt, images = [], cwd, access, signal, onDelta
   onRaw?.(`{"type":"mock.start","me":"${me}"}`);
   await sleep(400, signal);
 
+  if (system.startsWith(tr('你是这个空间记忆库的整理者'))) {
+    const { mockOps } = await import('../memory/organize.mjs');
+    return stream('```json\n' + JSON.stringify({ ops: mockOps(prompt) }) + '\n```', onDelta, signal);
+  }
+
   // ---- 任务协作：规划 / 审阅 / 子任务 / 总结 ----
   if (system.includes(tr('为这次任务的合并起草提交说明'))) return stream(tr('演示：合并已通过的任务改动'), onDelta, signal);
   if (system.includes(tr('这次任务协作的协调者'))) {
