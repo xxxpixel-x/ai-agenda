@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { importSession } from '../src/imports.mjs';
-import { makeSpace, settleSpace, tempDir, testInChinese as test, until } from './helpers.mjs';
+import { makeSpace, settleSpace, tempDir, testInChinese as test, until, isMemoryCall } from './helpers.mjs';
 
 const ID = '11111111-2222-4333-8444-555555555555';
 const line = (type, uuid, parentUuid, content, cwd) => JSON.stringify({
@@ -29,7 +29,7 @@ function record(space, fail = () => false) {
   const calls = [];
   const run = space.registry.runTurn;
   space.registry.runTurn = async (engine, opts) => {
-    if (engine !== 'claude-code') return run(engine, opts);
+    if (engine !== 'claude-code' || isMemoryCall(opts)) return run(engine, opts);
     calls.push({ sessionId: opts.sessionId, fork: opts.fork, resumeAt: opts.resumeAt });
     if (fail(opts)) throw Object.assign(new Error('No message found with message.uuid of: a1'), { resumeFailed: true });
     const r = await run(engine, opts);

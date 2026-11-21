@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import * as G from '../src/git.mjs';
-import { tempDir, makeSpace, until, settleSpace, beginTask } from './helpers.mjs';
+import { tempDir, makeSpace, until, settleSpace, beginTask, isMemoryCall, MEMORY_IDLE } from './helpers.mjs';
 
 test('all task stages receive shared imports and subsequent approved updates', async (t) => {
   const space = makeSpace(tempDir(t));
@@ -16,6 +16,7 @@ test('all task stages receive shared imports and subsequent approved updates', a
     { ...imported, id: 'writing-a', status: 'writing', entries: [{ role: 'user', text: '尚未整理完成的内容', acts: [] }] });
   const calls = [];
   space.registry.runTurn = async (_engine, opts) => {
+    if (isMemoryCall(opts)) return MEMORY_IDLE;
     calls.push(opts);
     if (opts.system.includes('这次任务协作的协调者')) return { text: JSON.stringify({ tasks: [{ id: 'T1', title: '整理', assignee: 'Alice', deps: [], spec: '整理要求' }] }) };
     if (opts.system.includes('请你审阅计划')) return { text: '补充验证步骤' };

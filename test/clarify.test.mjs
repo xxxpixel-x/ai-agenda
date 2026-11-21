@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { testInChinese as test, makeSpace, tempDir, settleSpace, until, beginTask } from './helpers.mjs';
+import { testInChinese as test, makeSpace, tempDir, settleSpace, until, beginTask, isMemoryCall, MEMORY_IDLE } from './helpers.mjs';
 import { parseClarify, parsePlan, extractPlan } from '../src/task-prompts.mjs';
 import { runNeedsUser } from '../src/space.mjs';
 import { CLARIFY_WAIT, TaskRun, clock } from '../src/taskrun.mjs';
@@ -38,6 +38,7 @@ function setup(t, { input, plan } = {}) {
   });
   const calls = [];
   space.registry.runTurn = async (_engine, opts) => {
+    if (isMemoryCall(opts)) return MEMORY_IDLE;
     calls.push(opts);
     if (isPlanner(opts)) {
       if (opts.system.includes(heading) && opts.prompt.includes('含糊')) return { text: block({ questions }) };

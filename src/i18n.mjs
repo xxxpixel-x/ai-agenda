@@ -2,6 +2,106 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 // Short keys use the original Chinese copy. Long prompts have named keys.
 export const en = {
+  '决定': 'Decision',
+  '约束': 'Constraint',
+  '项目事实': 'Project fact',
+  '偏好': 'Preference',
+  '问题': 'Question',
+  '提议': 'Proposal',
+  '分歧': 'Disagreement',
+  '否决过': 'Rejected',
+  '任务结果': 'Task result',
+  '你定的': 'yours',
+  '默认通过的': 'accepted by default',
+  '问你': 'ask you',
+  '、': ', ',
+  '；': '; ',
+  '消息 {0}': 'message {0}',
+  '任务 {0} 第 {1} 次执行': 'task {0} attempt {1}',
+  '任务 {0}': 'task {0}',
+  '文件 {0}': 'file {0}',
+  '出处：{0}': 'source: {0}',
+  '；导入于 {0}': '; imported on {0}',
+  '；相关：{0}': '; related: {0}',
+  '#{0} [{1}] {2}（{3}）': '#{0} [{1}] {2} ({3})',
+  '——{0}': ' — {0}',
+  '已被 #{0} 取代': 'replaced by #{0}',
+  '已解决：#{0}': 'resolved by #{0}',
+  '有效': 'active',
+  '#{0} 取代 #{1}：{2}': '#{0} replaces #{1}: {2}',
+  '#{0} 解决 #{1}：{2}': '#{0} resolves #{1}: {2}',
+  '全员都要遵守': 'For everyone',
+  '你的子任务 {0}': 'Your subtask {0}',
+  '前置任务的结果': 'Dependency results',
+  '相关': 'Related',
+  '- {0}：{1}': '- {0}: {1}',
+  '主题': 'Topics',
+  '任务': 'Tasks',
+  '状态：{0}': 'Status: {0}',
+  '取代了：{0}': 'Replaces: {0}',
+  '后来被取代：{0}': 'Later replaced by: {0}',
+  '回应：{0}': 'Response: {0}',
+  '每轮都带': 'Every turn',
+  '目录': 'Index',
+  '条目详情': 'Entry details',
+  '〔{0}〕': ' [{0}]',
+  '这是空间记忆库，可按编号查条目和原话。': 'Look up entries and original messages in this space memory by number.',
+  '全部条目': 'All entries',
+  '记录格式不对': 'Invalid record format',
+  '没有出处': 'Missing source',
+  '出处里的消息 {0} 不存在': 'Source message {0} does not exist',
+  '出处里的任务 {0} 不存在': 'Source task {0} does not exist',
+  '出处里的执行 {0} 不存在': 'Source attempt {0} does not exist',
+  '未知的整理操作': 'Unknown organizer operation',
+  '未知的条目类型': 'Unknown entry type',
+  '条目内容为空': 'Entry text is empty',
+  '没有写原因': 'Missing reason',
+  '消息编号不合法': 'Invalid message number',
+  '任务结果没有子任务编号': 'Task result has no subtask ID',
+  'AI 的建议没有依据成为决定或约束，记成提议': 'Recorded the AI suggestion as a proposal because it lacks supporting evidence',
+  'AI 没验证过的说法不算项目事实': 'Unverified AI claims do not count as project facts',
+  '否决过需要你的原话或任务出处': 'A rejection needs your words or a task source',
+  '这次执行已经记为 #{0}': 'This attempt was already recorded in #{0}',
+  '条目 #{0} 不存在': 'Entry #{0} does not exist',
+  '#{0} 已经被取代了': '#{0} has already been replaced',
+  '#{0} 已经解决了': '#{0} has already been resolved',
+  '看不出和 #{0} 是同一件事': 'No common subject with #{0}',
+  '适用范围不同': 'Scopes differ',
+  '没有回应 #{0} 的原因': 'Missing a response to the reason in #{0}',
+  '#{0} 不是有效的问题、提议或分歧': '#{0} is not an active question, proposal, or disagreement',
+  '原话更早，作为已被 #{0} 取代的历史写入': 'The source is older, so it was recorded as history replaced by #{0}',
+  '和 #{0} 不一致：{1}': 'Conflicts with #{0}: {1}',
+  '你定的 #{0} 只有你能改，记成分歧': 'Only you can change your entry #{0}. Recorded a disagreement',
+  '转成提议后不能解决其他条目': 'A downgraded proposal cannot resolve another entry',
+  '和 #{0} 重复': 'Duplicates #{0}',
+  '【{0}】{1}': '[{0}] {1}',
+  '{0}，{1}': '{0}, {1}',
+  '{0} {1}：{2}': '{0} {1}: {2}',
+  '，改了 {0}': ', changed {0}',
+  '{0} {1}（{2}）': '{0} {1} ({2})',
+  '执行 {0}：{1} {2}': 'Attempt {0}: {1} {2}',
+  '打回意见：{0}': 'Sent back for revision: {0}',
+  ' 原对话时间="{0}"': ' original-time="{0}"',
+  '改动文件：{0}': 'Changed files: {0}',
+  '# 消息 {0} · {1} · {2}': '# Message {0} · {1} · {2}',
+  '整理记忆库失败：': 'Could not organize the memory:',
+  '有工具操作记录': 'Tool activity recorded',
+  '<消息 {0} 来自="{1}" 类型="{2}" 时间="{3}"{4}>\n{5}\n</消息>': '<message {0} from="{1}" type="{2}" time="{3}"{4}>\n{5}\n</message>',
+  '整理结果不是有效的 JSON': 'The organizer did not return valid JSON',
+  '任务结果由程序按验收记录写入': 'Task results are recorded automatically from approved attempts',
+  '你是这个空间记忆库的整理者': 'You are the organizer of this space memory',
+  'memory.organizer': `{0}. Your member name is {1}. Return one JSON code block containing {"ops":[...]}. If nothing is worth recording, return {"ops":[]}.
+Keep one point per entry and avoid duplicates. Record explicit requests from members to remember something. Distinguish speakers, including in imported conversations. Only the user's own words or agreement establish a user decision, constraint (a binding rule), or preference. A decision proposed by an AI, unopposed and actually implemented, has origin "default". Cite an approved task, a successful attempt, or an AI message with changes. Other suggestions are proposals. A fact describes verified project state. Unverified AI claims do not qualify. A question is unresolved, a disagreement records a conflict, and rejected records an option the user declined or a task found unworkable. Give the reason for every decision, constraint and rejection. Approved task results are recorded automatically.
+Use add, supersede, resolve, reject, or disagree. Cite only supplied message numbers, task IDs (T1/2 means attempt 2), and evidenced files in source. Supply topics, files, related IDs, and scope where applicable. A supersede operation needs target, the same subject and scope, and answers addressing the old reason. Compare original message times for imports. If the code differs from a user decision, keep the decision and record both a verified fact about the code and a disagreement with ask set to true. Ask the user when uncertain. Resolve only open questions, proposals and disagreements. A rejection may target a proposal.
+Example: {"ops":[{"op":"supersede","target":12,"type":"decision","text":"Use SMS for login","reason":"Most users have no email","origin":"user","source":{"messages":[128]},"answers":"SMS reaches people without email","scope":"","topics":["login"],"files":[],"related":[12]}]}`,
+  'memory.organizePrompt': `## Existing memory (apply corrections in order)
+{0}
+
+## Subtasks
+{1}
+
+## New messages
+{2}`,
   '附件': 'attachments',
   '找不到这个附件': 'Attachment not found',
   '文件名不合法': 'Invalid file name',
@@ -705,6 +805,18 @@ Explain your decision and reasoning to the user in one or two paragraphs, then e
 
 export const zh = {
   ...Object.fromEntries(Object.keys(en).map((key) => [key, key])),
+  'memory.organizer': `{0}，你的成员名是「{1}」。只输出一个 JSON 代码块 {"ops":[...]}。没有可记的就输出 {"ops":[]}。
+一条只说一件事，不要重复已有条目。成员说「这条记一下」的要整理进来。分清是谁说的，包括导入对话里的发言。用户说的或同意过的才是用户定的决定（decision，origin 为 user）、约束（constraint，必须遵守的规则）或偏好（preference）。AI 提出、没人反对、已经照做的决定才是 default，出处写实际照做的任务、成功的执行或带改动的 AI 消息。其余建议记 proposal（提议）。fact 是验证过的项目事实，AI 没验证过的说法不算。question 是未解决的问题，disagreement 是分歧，rejected 是用户否掉或任务试过走不通的做法。决定、约束、否决过都要写 reason。验收通过的任务结果 result 由程序写。
+操作用 add、supersede、resolve、reject、disagree。source 必填，只能引用给你的消息编号、任务编号（T1/2 表示第 2 次执行）和有证据的文件。按需写 topics、files、related 编号和 scope。取代要写 target，必须是同一件事、同一适用范围，answers 要回应旧原因。补导按原对话时间算先后。你定的决定和代码做法不一样时，保留决定，另记一条 fact 说明代码现在什么样，再记一条 disagreement，ask 为 true。分不清时问用户一句。resolve 只解决有效的问题、提议、分歧。reject 可以用 target 否掉提议。
+示例：{"ops":[{"op":"supersede","target":12,"type":"decision","text":"登录用短信验证码","reason":"目标用户多数没有邮箱","origin":"user","source":{"messages":[128]},"answers":"没有邮箱的用户也能收到短信","scope":"","topics":["登录"],"files":[],"related":[12]}]}`,
+  'memory.organizePrompt': `## 现有记忆（按顺序应用更正）
+{0}
+
+## 子任务
+{1}
+
+## 新消息
+{2}`,
   'files.rules': '## 修改共享文件的方法\n你不能直接操作文件，但可以在回复末尾附上文件块，软件会替你写入（每个文件一个块，块里必须是该文件改完后的【完整内容】）：\n\n<<<文件: 相对路径.md\n文件的完整新内容……\n>>>\n\n- 只在确实需要修改时才附文件块；聊天正文里用一句话说明你改了什么。\n- 新建文件同样用文件块。不支持删除文件。',
   'imports.summary': '把这段对话写成摘要，给接下来加入讨论的其他 AI 看：讨论了什么、定下了什么、做了哪些改动（涉及哪些文件）、还有什么没解决。不超过 1500 字，用对话使用的语言，只输出摘要本身。',
   'imports.handoff': '为这段对话写一份 Markdown 交接文档，让接手的人不看原对话也能继续。分这几节：## 讨论到哪、## 已经定下的、## 还没解决的、## 下一步、## 涉及的文件。用对话使用的语言，只输出文档本身。',

@@ -8,7 +8,7 @@ import { Store } from '../src/store.mjs';
 import { Space } from '../src/space.mjs';
 import { createSettings } from '../src/settings.mjs';
 import { createRegistry } from '../src/engines/index.mjs';
-import { withLanguage } from '../src/i18n.mjs';
+import { withLanguage, t as tr } from '../src/i18n.mjs';
 
 // Existing fixtures assert Chinese copy. Bilingual tests choose their own context.
 export function testInChinese(name, options, fn) {
@@ -16,6 +16,10 @@ export function testInChinese(name, options, fn) {
   return nodeTest(name, options, (t) => withLanguage('zh', () => fn(t)));
 }
 testInChinese.skip = nodeTest.skip;
+
+/** 后台整理记忆库的调用（记录调用次数的假 AI 用它跳过，回一个空的整理结果）。 */
+export const isMemoryCall = (opts) => ['zh', 'en'].some((lang) => opts?.system?.startsWith(tr('你是这个空间记忆库的整理者', {}, lang)));
+export const MEMORY_IDLE = { text: '{"ops":[]}' };
 
 export function tempDir(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenda-test-'));
@@ -70,4 +74,6 @@ export async function settleSpace(space) {
   if (space.run?.controllers.size) await space.run.cancel();
   await until(() => ({ chat: space.running, calls: space.run?.controllers.size || 0 }), (s) => !s.chat && !s.calls);
   if (space.run) clearTimeout(space.run.timer);
+  // 后台整理记忆库：停掉并等它收尾（含排队的下一次）
+  while (space.memoryRun) { space.memoryAgain = false; space.memoryController?.abort(); await space.memoryRun; }
 }

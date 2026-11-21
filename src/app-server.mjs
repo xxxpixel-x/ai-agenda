@@ -438,6 +438,7 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
         return sendJson(res, 200, await space.run.fileDiff(arg, url.searchParams.get('path')));
       }
       if (sub === '/events' && method === 'GET') return openSse(req, res, space);
+      if (sub === '/memory' && method === 'GET' && !arg) return sendJson(res, 200, space.memoryView()); // 记忆库（只读）
       if (sub === '/imports' && method === 'POST' && !arg) return sendJson(res, 201, importSession(space.importHost, await readJson(req)));
       if (sub === '/imports' && method === 'GET' && arg && tail === '/check') return sendJson(res, 200, checkImport(space.importHost, arg));
       if (sub === '/imports' && method === 'POST' && arg && tail === '/refresh') return sendJson(res, 200, refreshImport(space.importHost, arg));

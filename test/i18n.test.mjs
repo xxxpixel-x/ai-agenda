@@ -13,7 +13,7 @@ import { importsBackground, resumeNote, importSession, refreshImport } from '../
 import { configureImporters, stagePasted } from '../src/importers/index.mjs';
 import { parseImport } from '../src/importers/parse.mjs';
 import { startServer } from '../src/app-server.mjs';
-import { tempDir, makeSpace, settleSpace, until, beginTask } from './helpers.mjs';
+import { tempDir, makeSpace, settleSpace, until, beginTask, isMemoryCall, MEMORY_IDLE } from './helpers.mjs';
 
 test('locale resolution agrees in the browser and backend', () => {
   for (const resolve of [resolveLanguage, browserLanguage]) {
@@ -185,6 +185,7 @@ test('HTTP settings switch the next queued prompt without restarting the server'
   t.after(release);
   const calls = [];
   server.registry.runTurn = async (_engine, opts) => {
+    if (isMemoryCall(opts)) return MEMORY_IDLE;
     calls.push(opts);
     if (calls.length === 1) await gate;
     return { text: calls.length === 1 ? '[结束]' : '[Done]' };
