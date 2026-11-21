@@ -1,0 +1,391 @@
+{
+  "version": "1",
+  "catalogUrl": "https://raw.githubusercontent.com/xxxpixel-x/ai-agenda/main/src/catalog/marketplace.json",
+  "skills": [
+    {
+      "id": "frontend-design",
+      "name": "frontend-design",
+      "summary": {
+        "zh": "交付可访问、响应迅速的用户界面。",
+        "en": "Build accessible interfaces that respond to user actions."
+      },
+      "sourceUrl": "https://github.com/xxxpixel-x/ai-agenda/blob/main/src/catalog/marketplace.json",
+      "repo": "xxxpixel-x/ai-agenda",
+      "installType": "template",
+      "supportedEngines": [
+        "claude-code",
+        "codex",
+        "pi"
+      ],
+      "template": "---\nname: frontend-design\ndescription: Build accessible interfaces that respond to user actions.\n---\n\n# frontend-design\n\nMap loading, empty, error and success states. Trace keyboard focus through each interaction and reuse the existing components and design tokens.\n\nExercise the primary flow with a keyboard. Check text contrast and overflow on narrow screens and in both themes.\n"
+    },
+    {
+      "id": "api-design",
+      "name": "api-design",
+      "summary": {
+        "zh": "设计可靠的数据模型与服务接口。",
+        "en": "Design durable data models and reliable service contracts."
+      },
+      "sourceUrl": "https://github.com/xxxpixel-x/ai-agenda/blob/main/src/catalog/marketplace.json",
+      "repo": "xxxpixel-x/ai-agenda",
+      "installType": "template",
+      "supportedEngines": [
+        "claude-code",
+        "codex",
+        "pi"
+      ],
+      "template": "---\nname: api-design\ndescription: Design durable data models and reliable service contracts.\n---\n\n# api-design\n\nWrite the request, response and failure contract from the caller’s perspective. Validate at the boundary and define retry and concurrency behavior.\n\nDocument migration and rollback steps for storage changes. Give frontend and QA concrete success and failure examples.\n"
+    },
+    {
+      "id": "test-strategy",
+      "name": "test-strategy",
+      "summary": {
+        "zh": "用可复现的测试验证关键用户流程。",
+        "en": "Verify critical user journeys with reproducible tests."
+      },
+      "sourceUrl": "https://github.com/xxxpixel-x/ai-agenda/blob/main/src/catalog/marketplace.json",
+      "repo": "xxxpixel-x/ai-agenda",
+      "installType": "template",
+      "supportedEngines": [
+        "claude-code",
+        "codex",
+        "pi"
+      ],
+      "template": "---\nname: test-strategy\ndescription: Verify critical user journeys with reproducible tests.\n---\n\n# test-strategy\n\nDerive risks from acceptance criteria. Prioritize data loss, permission boundaries and repeated submissions. Specify setup, actions and expected results.\n\nReproduce each issue with isolated fixtures. Hand off the smallest failing steps, observed output, environment and assertion.\n"
+    },
+    {
+      "id": "prd-writing",
+      "name": "prd-writing",
+      "summary": {
+        "zh": "把用户目标转化为可验收的需求。",
+        "en": "Turn user goals into verifiable requirements."
+      },
+      "sourceUrl": "https://github.com/xxxpixel-x/ai-agenda/blob/main/src/catalog/marketplace.json",
+      "repo": "xxxpixel-x/ai-agenda",
+      "installType": "template",
+      "supportedEngines": [
+        "claude-code",
+        "codex",
+        "pi"
+      ],
+      "template": "---\nname: prd-writing\ndescription: Turn user goals into verifiable requirements.\n---\n\n# prd-writing\n\nIdentify the user, trigger and desired action. Rank constraints and priorities. Replace ambiguous acceptance criteria with worked examples.\n\nRecord scope, dependencies and open decisions. Review each acceptance scenario with engineering and QA before implementation.\n"
+    },
+    {
+      "id": "code-review",
+      "name": "code-review",
+      "summary": {
+        "zh": "检查论证、实现和交付物中的缺陷。",
+        "en": "Identify defects in reasoning, implementation and deliverables."
+      },
+      "sourceUrl": "https://github.com/xxxpixel-x/ai-agenda/blob/main/src/catalog/marketplace.json",
+      "repo": "xxxpixel-x/ai-agenda",
+      "installType": "template",
+      "supportedEngines": [
+        "claude-code",
+        "codex",
+        "pi"
+      ],
+      "template": "---\nname: code-review\ndescription: Identify defects in reasoning, implementation and deliverables.\n---\n\n# code-review\n\nRead the goal and acceptance criteria first. Check evidence for every claim and distinguish behavioral defects from preferences.\n\nOrder findings by impact. Include the location, triggering conditions and a way to verify each finding. Return unresolved questions to the author.\n"
+    },
+    {
+      "id": "copy-editing",
+      "name": "copy-editing",
+      "summary": {
+        "zh": "整理文稿结构并保持作者的原意。",
+        "en": "Shape a coherent manuscript while preserving the author’s intent."
+      },
+      "sourceUrl": "https://github.com/xxxpixel-x/ai-agenda/blob/main/src/catalog/marketplace.json",
+      "repo": "xxxpixel-x/ai-agenda",
+      "installType": "template",
+      "supportedEngines": [
+        "claude-code",
+        "codex",
+        "pi"
+      ],
+      "template": "---\nname: copy-editing\ndescription: Shape a coherent manuscript while preserving the author’s intent.\n---\n\n# copy-editing\n\nIdentify the audience and purpose. Review paragraph order, transitions and terminology while retaining source attribution and the author’s voice.\n\nDeliver a publication-ready draft with a short list of factual questions and edits that need author approval.\n"
+    },
+    {
+      "id": "deep-research",
+      "name": "deep-research",
+      "summary": {
+        "zh": "查证资料并整理带出处的研究笔记。",
+        "en": "Verify sources and prepare research notes with attribution."
+      },
+      "sourceUrl": "https://github.com/xxxpixel-x/ai-agenda/blob/main/src/catalog/marketplace.json",
+      "repo": "xxxpixel-x/ai-agenda",
+      "installType": "template",
+      "supportedEngines": [
+        "claude-code",
+        "codex",
+        "pi"
+      ],
+      "template": "---\nname: deep-research\ndescription: Verify sources and prepare research notes with attribution.\n---\n\n# deep-research\n\nSplit the question into verifiable claims and start with primary sources. Record authorship, date, location and the limits of each source.\n\nDeliver an evidence table, flag contradictions and uncertainty, and give editors traceable links and quotations.\n"
+    }
+  ],
+  "mcp": [
+    {
+      "id": "context7",
+      "name": "Context7",
+      "summary": {
+        "zh": "查询最新的库文档。",
+        "en": "Look up library documentation."
+      },
+      "sourceUrl": "https://github.com/upstash/context7",
+      "mode": "readonly",
+      "transport": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@upstash/context7-mcp"
+      ],
+      "envKeys": [],
+      "supportedEngines": [
+        "claude-code",
+        "codex",
+        "pi"
+      ]
+    },
+    {
+      "id": "fetch",
+      "name": "Fetch",
+      "summary": {
+        "zh": "读取网页内容。",
+        "en": "Read web pages."
+      },
+      "sourceUrl": "https://github.com/modelcontextprotocol/servers",
+      "mode": "readonly",
+      "transport": "stdio",
+      "command": "uvx",
+      "args": [
+        "mcp-server-fetch"
+      ],
+      "envKeys": [],
+      "supportedEngines": [
+        "claude-code",
+        "codex",
+        "pi"
+      ]
+    },
+    {
+      "id": "github",
+      "name": "GitHub",
+      "summary": {
+        "zh": "管理仓库、议题与拉取请求。",
+        "en": "Manage repositories, issues and pull requests."
+      },
+      "sourceUrl": "https://github.com/modelcontextprotocol/servers-archived",
+      "mode": "mutating",
+      "transport": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-github"
+      ],
+      "envKeys": [
+        {
+          "key": "GITHUB_PERSONAL_ACCESS_TOKEN",
+          "label": {
+            "zh": "GITHUB_PERSONAL_ACCESS_TOKEN",
+            "en": "GITHUB_PERSONAL_ACCESS_TOKEN"
+          },
+          "secret": true,
+          "required": true
+        }
+      ],
+      "supportedEngines": [
+        "claude-code",
+        "codex",
+        "pi"
+      ]
+    },
+    {
+      "id": "playwright",
+      "name": "Playwright",
+      "summary": {
+        "zh": "操作浏览器并检查页面。",
+        "en": "Operate a browser and inspect pages."
+      },
+      "sourceUrl": "https://github.com/microsoft/playwright-mcp",
+      "mode": "mutating",
+      "transport": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp"
+      ],
+      "envKeys": [],
+      "supportedEngines": [
+        "claude-code",
+        "codex",
+        "pi"
+      ]
+    },
+    {
+      "id": "postgres-readonly",
+      "name": "PostgreSQL",
+      "summary": {
+        "zh": "查询数据库架构与只读数据。",
+        "en": "Inspect PostgreSQL schemas and query data in read-only transactions."
+      },
+      "sourceUrl": "https://github.com/modelcontextprotocol/servers-archived",
+      "mode": "readonly",
+      "transport": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-postgres",
+        "${DATABASE_URL}"
+      ],
+      "envKeys": [
+        {
+          "key": "DATABASE_URL",
+          "label": {
+            "zh": "DATABASE_URL",
+            "en": "DATABASE_URL"
+          },
+          "secret": true,
+          "required": true
+        }
+      ],
+      "supportedEngines": [
+        "claude-code",
+        "codex",
+        "pi"
+      ]
+    },
+    {
+      "id": "linear",
+      "name": "Linear",
+      "summary": {
+        "zh": "查看和更新项目议题。",
+        "en": "Read and update project issues."
+      },
+      "sourceUrl": "https://linear.app/docs/mcp",
+      "mode": "mutating",
+      "transport": "http",
+      "command": "",
+      "args": [],
+      "url": "https://mcp.linear.app/mcp",
+      "headers": {
+        "Authorization": "Bearer ${LINEAR_API_KEY}"
+      },
+      "envKeys": [
+        {
+          "key": "LINEAR_API_KEY",
+          "label": {
+            "zh": "LINEAR_API_KEY",
+            "en": "LINEAR_API_KEY"
+          },
+          "secret": true,
+          "required": true
+        }
+      ],
+      "supportedEngines": [
+        "claude-code",
+        "codex",
+        "pi"
+      ]
+    }
+  ],
+  "roles": [
+    {
+      "id": "architect",
+      "name": {
+        "zh": "架构师",
+        "en": "Architect"
+      },
+      "summary": {
+        "zh": "审视系统边界与架构取舍。",
+        "en": "Evaluate system boundaries and architectural tradeoffs."
+      },
+      "suggestedEngine": "codex",
+      "recommendedSkills": [
+        {
+          "id": "api-design",
+          "name": "api-design",
+          "source": "https://github.com/xxxpixel-x/ai-agenda/blob/main/src/catalog/marketplace.json"
+        }
+      ],
+      "recommendedMcp": [
+        {
+          "id": "context7",
+          "name": "Context7",
+          "source": "https://github.com/upstash/context7",
+          "mode": "readonly"
+        }
+      ],
+      "instructions": {
+        "zh": "## 职责\n\n审视系统边界与架构取舍。\n\n## 工作方法\n\n梳理调用关系、数据所有权和失效模式，比较两种可行方案。\n\n## 交付与协作\n\n记录决策、约束和迁移步骤，与模块负责人核对。",
+        "en": "## Responsibilities\n\nEvaluate system boundaries and architectural tradeoffs.\n\n## Working principles\n\nMap call paths, data ownership and failure modes. Compare two viable designs.\n\n## Delivery and collaboration\n\nRecord the decision, constraints and migration steps with module owners."
+      },
+      "sourceUrl": "https://github.com/xxxpixel-x/ai-agenda/blob/main/src/catalog/marketplace.json",
+      "supportedEngines": [
+        "claude-code",
+        "codex",
+        "pi"
+      ]
+    },
+    {
+      "id": "devops",
+      "name": {
+        "zh": "运维工程师",
+        "en": "Operations Engineer"
+      },
+      "summary": {
+        "zh": "设计可观察、可回滚的交付流程。",
+        "en": "Design observable and reversible releases."
+      },
+      "suggestedEngine": "codex",
+      "recommendedSkills": [
+        {
+          "id": "test-strategy",
+          "name": "test-strategy",
+          "source": "https://github.com/xxxpixel-x/ai-agenda/blob/main/src/catalog/marketplace.json"
+        }
+      ],
+      "recommendedMcp": [
+        {
+          "id": "github",
+          "name": "GitHub",
+          "source": "https://github.com/modelcontextprotocol/servers-archived",
+          "mode": "mutating"
+        }
+      ],
+      "instructions": {
+        "zh": "## 职责\n\n设计可观察、可回滚的交付流程。\n\n## 工作方法\n\n列出发布前提、健康信号与故障边界，在隔离环境验证。\n\n## 交付与协作\n\n交付操作记录、回滚步骤与负责人，明确何时中止发布。",
+        "en": "## Responsibilities\n\nDesign observable and reversible releases.\n\n## Working principles\n\nList release prerequisites, health signals and failure boundaries. Verify them in isolation.\n\n## Delivery and collaboration\n\nDeliver the runbook, rollback steps and owners, including when to halt rollout."
+      },
+      "sourceUrl": "https://github.com/xxxpixel-x/ai-agenda/blob/main/src/catalog/marketplace.json",
+      "supportedEngines": [
+        "claude-code",
+        "codex",
+        "pi"
+      ]
+    }
+  ],
+  "teams": [
+    {
+      "id": "fullstack-ops",
+      "name": {
+        "zh": "全栈架构组",
+        "en": "Full-stack Operations"
+      },
+      "roleIds": [
+        "architect",
+        "backend",
+        "devops"
+      ],
+      "coordinatorRoleId": "architect",
+      "summary": {
+        "zh": "设计、实现与运维共同交付。",
+        "en": "Design, implement and operate a release together."
+      },
+      "sourceUrl": "https://github.com/xxxpixel-x/ai-agenda/blob/main/src/catalog/marketplace.json",
+      "supportedEngines": [
+        "claude-code",
+        "codex",
+        "pi"
+      ]
+    }
+  ]
+}

@@ -15,6 +15,7 @@
 // 注册表只看 meta，不按具体 id 做判断。
 // 以后要接新的 AI：在 engines/ 下加一个模块，再在下面 ENGINES 里加一行。
 import path from 'node:path';
+import { hasSkill } from '../extension-scan.mjs';
 import { t as tr, getLanguage } from '../i18n.mjs';
 import * as claudeCode from './claude-code.mjs';
 import * as codex from './codex.mjs';
@@ -101,7 +102,7 @@ export const CLI_ENGINE_IDS = ENGINES.filter((e) => e.module.meta.kind === 'cli'
 
 export const supportsPrivateSessions = (id) => !!ENGINES.find((e) => e.owns(id))?.module.meta.privateSessions;
 
-export function createRegistry(settings, { mock: mockMode = false } = {}) {
+export function createRegistry(settings, { mock: mockMode = false, extensions = null } = {}) {
   const cache = new Map(); // engineId -> { at, status }
 
   const entryOf = (engineId) => ENGINES.find((e) => e.owns(engineId)) || null;
@@ -129,6 +130,7 @@ export function createRegistry(settings, { mock: mockMode = false } = {}) {
         ...mock.meta, id: m.id, label: tr('演示 · {0}', [m.defaultName]), defaultName: m.defaultName, color: m.color, logo: m.logo, kind: m.kind, models: m.models, efforts: m.efforts,
         privateSessions: m.privateSessions, continuesImports: m.continuesImports, hideWhenMissing: m.hideWhenMissing,
         sources: m.sources, sourceRequired: m.sourceRequired, sourceChoices: m.sourceChoices,
+        skills: !!m.skills, mcp: !!m.mcp,
       }));
     }
     return ENGINES.flatMap((e) => e.instances(settings.get()).map((m) => withSources(e, { ...m })));
@@ -156,10 +158,25 @@ export function createRegistry(settings, { mock: mockMode = false } = {}) {
     return engines.map((e, i) => ({ ...e, status: statuses[i] }));
   }
 
-  function runTurn(engineId, { source, ...opts }) {
+  const supportsExtensions = id => !!(entryOf(id)?.module.meta.skills || entryOf(id)?.module.meta.mcp);
+  function extensionOptionsFor(engineId, { skills = [], mcp, access }) {
+    if (!supportsExtensions(engineId) || (!skills.length && !mcp)) return {};
+    const meta = entryOf(engineId).module.meta;
+    const dirs = skills.filter(v => path.isAbsolute(v) && hasSkill(v));
+    const ids = skills.filter(v => !path.isAbsolute(v));
+    const resolved = (ids.length || Array.isArray(mcp)) && extensions?.resolveForMember({
+      skills: ids, mcp: Array.isArray(mcp) ? mcp : [],
+    }, { access });
+    return {
+      ...(meta.skills && { skills: [...dirs, ...(resolved?.skills || [])] }),
+      ...(meta.mcp && { mcp: Array.isArray(mcp) ? resolved?.mcp || {} : mcp || {} }),
+    };
+  }
+  function runTurn(engineId, { source, skills, mcp, ...opts }) {
     const mod = moduleOf(engineId);
     if (!mod) throw new Error(tr('未知的 AI 类型：{0}', [engineId]));
     const options = optionsFor(engineId, source);
+    Object.assign(opts, extensionOptionsFor(engineId, { skills, mcp, access: opts.access }));
     // 选的接口删了、或者不再给 Claude Code 用：不要悄悄换回自己的账号
     if (!mockMode && source && !options.source && !options.conn) throw new Error(tr('这个成员的模型来源已经不能用了，在空间设置里换一个'));
     if (!opts.images?.length) return mod.runTurn({ ...options, ...opts });
@@ -186,5 +203,5 @@ export function createRegistry(settings, { mock: mockMode = false } = {}) {
 
   const supportsPrivateSessions = (engineId) => !!entryOf(engineId)?.module.meta.privateSessions;
 
-  return { settings, list, detect, supportsPrivateSessions, detectAll, runTurn, isApi, supportsImages, supportsResume, supportsApproval, continuesImports, invalidate: () => cache.clear() };
+  return { settings, list, detect, supportsPrivateSessions, detectAll, runTurn, isApi, supportsImages, supportsResume, supportsApproval, supportsExtensions, extensionOptionsFor, continuesImports, invalidate: () => cache.clear() };
 }

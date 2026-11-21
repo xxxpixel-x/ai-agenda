@@ -56,6 +56,37 @@ export function makeSpace(root, input = {}) {
   return space;
 }
 
+export function libraryFixture(t, extra = {}) {
+  const root = tempDir(t);
+  return {
+    dataDir: path.join(root, 'data'), agentsSkillsDir: path.join(root, 'agents', 'skills'),
+    claudeSkillsDir: path.join(root, 'claude', 'skills'), claudeConfigDir: path.join(root, 'claude'),
+    claudeJsonPath: path.join(root, 'claude.json'), codexHome: path.join(root, 'codex'),
+    fetchFn: async () => { throw new Error('offline fixture'); }, ...extra,
+  };
+}
+
+export async function libraryHttp(t, options = {}) {
+  const { startServer } = await import('../src/app-server.mjs');
+  let server;
+  t.after(() => server?.close());
+  const libraryOpts = libraryFixture(t,options);
+  server = await startServer({ port: 0, dataDir: libraryOpts.dataDir, mock: true, libraryOpts, hooks: { locales: () => ['zh-CN'] } });
+  return async (route, method = 'GET', body, expected = null) => {
+    const res = await fetch('http://127.0.0.1:' + server.port + '/api/' + route, {
+      method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    if (res.headers.get('content-type')?.includes('text/markdown')) {
+      assert.match(res.headers.get('content-disposition'), /attachment; filename="/);
+      return res.text();
+    }
+    const data = await res.json();
+    if (expected !== null) assert.equal(res.status, expected, JSON.stringify(data));
+    else assert.ok(res.ok, JSON.stringify(data));
+    return data;
+  };
+}
+
 /**
  * 把 makeSpace 建的空间变成任务空间并开始规划（等同于新建任务空间时填的目标和选项）。
  * 需要先往空间里放东西（比如导入的对话）再开始的测试用它。

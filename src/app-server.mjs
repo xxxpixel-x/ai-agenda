@@ -9,6 +9,9 @@ import { Store } from './store.mjs';
 import { Space, KINDS, folderKey, removeSpaceFiles } from './space.mjs';
 import { createSettings } from './settings.mjs';
 import { createRegistry, CLI_ENGINE_IDS } from './engines/index.mjs';
+import { createRoleLibrary } from './roles.mjs';
+import { createExtensionsManager } from './extensions.mjs';
+import { handleLibraryRoute } from './library-routes.mjs';
 import { listSessions, configureImporters, stagePasted } from './importers/index.mjs';
 import { createScheduler } from './scheduler.mjs';
 import { summarize, latest } from './usage.mjs';
@@ -41,14 +44,16 @@ const TYPES = {
  *                       scheduleActive：有没有启用的定时任务变了（桌面版据此决定关窗口是缩到托盘还是退出）
  * @param opts.clock     { now, setTimer, clearTimer }：测试用假时钟换掉定时任务的时钟
  */
-export async function startServer({ port = 3210, dataDir, mock = false, hooks = {}, clock = {} } = {}) {
+export async function startServer({ port = 3210, dataDir, mock = false, hooks = {}, clock = {}, libraryOpts = {} } = {}) {
   fs.mkdirSync(path.join(dataDir, 'spaces'), { recursive: true });
   const settings = createSettings(path.join(dataDir, 'settings.json'), { pathKeys: CLI_ENGINE_IDS, protect: hooks.protect, unprotect: hooks.unprotect });
   let browserLocales = [];
   const locales = () => hooks.locales?.() || browserLocales;
   const language = () => resolveLanguage(settings.get().language, locales());
   hooks.onLanguage?.(language);
-  const registry = createRegistry(settings, { mock });
+  const roleLibrary = createRoleLibrary(dataDir);
+  const extensions = createExtensionsManager({ dataDir, roleLibrary, protect: hooks.protect, unprotect: hooks.unprotect, ...libraryOpts });
+  const registry = createRegistry(settings, { mock, extensions });
   const store = new Store(path.join(dataDir, 'spaces'));
   const spaces = new Map();
   // 跨空间的事都经过这里：空间之间不直接互相引用
@@ -325,6 +330,7 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
       if (!(req.headers['content-type'] || '').includes('application/json')) return sendJson(res, 415, { error: tr('需要 application/json') });
     }
 
+    if (p.startsWith('/api/library/') && await handleLibraryRoute({ req, res, url, p, method, readJson, sendJson, roleLibrary, extensions, registry, language })) return;
     if (p === '/api/app' && method === 'GET') {
       browserLocales = String(req.headers['x-agenda-languages'] || req.headers['accept-language'] || '')
         .split(',').map((s) => s.split(';')[0].trim()).filter(Boolean);
@@ -335,7 +341,9 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
     }
     if (p === '/api/settings' && method === 'GET') return sendJson(res, 200, settings.publicView());
     if (p === '/api/settings' && method === 'PUT') {
+      const previous = language();
       const view = settings.update(await readJson(req));
+      if (language() !== previous) for (const space of spaces.values()) space.syncRoleLanguage(roleLibrary, language());
       registry.invalidate();
       refreshAwake();
       return sendJson(res, 200, view);

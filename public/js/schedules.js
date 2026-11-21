@@ -115,8 +115,8 @@ function spaceTemplate(space) {
   const run = space.run;
   return {
     title: space.title,
-    members: space.members.map(({ engine, name, model, effort, persona, color, id }) =>
-      ({ engine, name, model, effort, persona, color, id })),
+    members: space.members.map(({ engine, source, name, model, effort, persona, color, id, roleId, roleCustomized, skills, mcp }) =>
+      ({ engine, source, name, model, effort, persona, color, id, roleId, roleCustomized, skills, mcp })),
     coordinatorId: run ? run.coordinatorId : space.members[0]?.id,
     workspace: { type: 'folder', path: space.workspacePath },
     access: space.access,

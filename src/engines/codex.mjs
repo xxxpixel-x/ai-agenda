@@ -4,10 +4,13 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { findOnPath, isFile, isWin, capture, runJsonl, brief } from './proc.mjs';
+import { dirs, hasSkill, parseCodexServers } from '../extension-scan.mjs';
+import { mountedSkills, skillPrompt } from './mounted-skills.mjs';
+import { findOnPath, isFile, isWin, capture, runJsonl, resolveNodeShim, nodeRunner, brief } from './proc.mjs';
 import { usageOf, quotaOf, uncached } from './usage-fields.mjs';
 
 export const meta = {
+  skills: true, mcp: true,
   images: true,
   id: 'codex',
   label: 'Codex',
@@ -101,24 +104,55 @@ const shortCommand = (cmd) => brief(unwrapCommand(cmd).replace(/\s+/g, ' '), 70)
 
 // 除了「全部权限」，不让 Codex 用上你账号和个人配置里的外部连接：
 // 应用连接器（Gmail、Slack、GitHub…）、插件、hooks、MCP 服务。型号、登录等其余设置照旧。
-export function isolationArgs(home = process.env.CODEX_HOME || path.join(os.homedir(), '.codex')) {
+export function isolationArgs(home, {
+  skills = [], mcp = {}, agentsSkillsDir = process.env.AGENDA_AGENTS_SKILLS_DIR || path.join(home ? path.dirname(home) : os.homedir(), '.agents', 'skills'),
+} = {}) {
+  home ??= process.env.AGENDA_CODEX_HOME || process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
   const args = ['--disable', 'apps', '--disable', 'plugins', '--disable', 'hooks', '-c', 'notify=[]'];
   let config = '';
   try { config = fs.readFileSync(path.join(home, 'config.toml'), 'utf8'); } catch { /* 没有个人配置 */ }
-  const names = new Set([...config.matchAll(/^\s*\[mcp_servers\.("[^"\n]+"|'[^'\n]+'|[\w-]+)\]/gm)].map((m) => m[1]));
-  for (const name of names) args.push('-c', `mcp_servers.${name}.enabled=false`);
+  for (const name of Object.keys(parseCodexServers(config))) {
+    if (!Object.hasOwn(mcp, name)) args.push('-c', `mcp_servers.${tomlKey(name)}.enabled=false`);
+  }
+  args.push(...mountedServerArgs(mcp));
+  const selected = new Set(mountedSkills(skills).map(dir => fs.realpathSync(dir)));
+  const disabled = [];
+  for (const root of [agentsSkillsDir, path.join(home, 'skills')]) for (const name of dirs(root)) {
+    const dir = path.join(root, name);
+    if (hasSkill(dir) && !selected.has(fs.realpathSync(dir))) disabled.push(`{path=${JSON.stringify(path.join(dir, 'SKILL.md'))},enabled=false}`);
+  }
+  if (disabled.length) args.push('-c', `skills.config=[${disabled.join(',')}]`);
   return args;
 }
 
-export async function runTurn({ system, prompt, images = [], model, effort, cwd, access = 'edit', signal, onDelta, onActivity, onRaw, onApproval, binOverride }) {
+const tomlKey = key => /^[\w-]+$/.test(key) ? key : JSON.stringify(key);
+function mountedServerArgs(mcp) {
+  const args = [];
+  for (const [id, config] of Object.entries(mcp)) {
+    const set = (key, value) => args.push('-c', `mcp_servers.${tomlKey(id)}.${key}=${JSON.stringify(value)}`);
+    set('enabled', true);
+    for (const key of ['command','args','url']) if (config[key] !== undefined) set(key, config[key]);
+    for (const [key, value] of Object.entries(config.env || {})) set('env.' + tomlKey(key), value);
+    for (const [key, value] of Object.entries(config.headers || {})) set('http_headers.' + tomlKey(key), value);
+  }
+  return args;
+}
+export { skillPrompt };
+// Preserve literal TOML values (including quotes and environment variables) through npm's Windows shim.
+function runCodex(opts) {
+  const entry = resolveNodeShim(opts.cmd);
+  return runJsonl(entry ? { ...opts, ...nodeRunner(), args: [entry, ...opts.args] } : opts);
+}
+export async function runTurn({ system, prompt, images = [], skills = [], mcp = {}, model, effort, cwd, access = 'edit', signal, onDelta, onActivity, onRaw, onApproval, binOverride }) {
   const bin = await findBin(binOverride);
   if (!bin) throw new Error(tr('没有找到 Codex'));
-  if (access === 'run' && onApproval) return runAsking({ bin, images, input: `${system}\n\n${prompt}`, model, effort, cwd, signal, onDelta, onActivity, onRaw, onApproval });
+  system += skillPrompt(skills);
+  if (access === 'run' && onApproval) return runAsking({ bin, images, skills, mcp, input: `${system}\n\n${prompt}`, model, effort, cwd, signal, onDelta, onActivity, onRaw, onApproval });
 
   // Codex 的沙箱：只读档 = read-only；全部权限 = 不设沙箱；其余 = 只能写共享文件夹（它运行命令也被限制在这个沙箱里）
   const sandbox = access === 'read' ? 'read-only' : access === 'full' ? 'danger-full-access' : 'workspace-write';
   const args = ['--search', 'exec', '--json', '--skip-git-repo-check', '--ephemeral', '-s', sandbox, '-C', cwd];
-  if (access !== 'full') args.push(...isolationArgs());
+  args.push(...(access === 'full' ? mountedServerArgs(mcp) : isolationArgs(undefined, { skills, mcp })));
   if (model) args.push('-m', model);
   if (effort) args.push('-c', `model_reasoning_effort="${effort}"`);
   // 图片由 Codex 自己读取，不需要给沙箱内的命令开放数据目录。等号避免吞掉 stdin 的「-」。
@@ -135,7 +169,7 @@ export async function runTurn({ system, prompt, images = [], model, effort, cwd,
     onDelta?.(piece);
   };
 
-  const r = await runJsonl({
+  const r = await runCodex({
     cmd: bin,
     args,
     cwd,
@@ -199,7 +233,7 @@ export function appServerUsage(tokens, limits) {
   });
 }
 
-async function runAsking({ bin, images, input, model, effort, cwd, signal, onDelta, onActivity, onRaw, onApproval }) {
+async function runAsking({ bin, images, skills, mcp, input, model, effort, cwd, signal, onDelta, onActivity, onRaw, onApproval }) {
   let tokens = null;
   let limits = null;
   let text = '';
@@ -231,9 +265,9 @@ async function runAsking({ bin, images, input, model, effort, cwd, signal, onDel
     }
   }
 
-  const r = await runJsonl({
+  const r = await runCodex({
     cmd: bin,
-    args: ['app-server', ...isolationArgs(), '-c', 'web_search="live"'],
+    args: ['app-server', ...isolationArgs(undefined, { skills, mcp }), '-c', 'web_search="live"'],
     cwd,
     keepInput: true,
     signal,
