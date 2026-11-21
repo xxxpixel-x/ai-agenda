@@ -13,6 +13,9 @@ import './js/settings/general.js';
 import './js/settings/connections.js';
 // 空间设置的标签
 import './js/space-tabs.js';
+import './js/schedules.js';
+// 成员标签上的用量小圈
+import './js/usage-meter.js';
 
 // ---------------- 路由与启动 ----------------
 function route() {

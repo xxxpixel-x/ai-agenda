@@ -21,6 +21,8 @@ const plain = (s) => String(s)
   .replace(/^\s*(#{1,6}|>|[-*•]|\d+[.)、])\s*/gm, '')
   .replace(/\s+/g, ' ')
   .trim();
+const expandedSchedules = new Set();
+let revealedSpaceId = null;
 export function renderSpaceList() {
   const list = $('#spaceList');
   if (!state.spaces.length) { list.innerHTML = emptyHtml(tr('还没有空间'), 'empty-list'); return; }
@@ -33,14 +35,43 @@ export function renderSpaceList() {
   // 单人聊天（只有一个成员的聊天空间）显示这个 AI 的头像
   const solo = (s) => (s.kind !== 'task' && s.members?.length === 1 && s.members[0].engine ? s.members[0] : null);
   const icon = (s) => { const m = solo(s); return m ? avatarHtml(m.engine, m.name) : ICON[s.kind === 'task' ? 'task' : 'chat']; };
-  list.innerHTML = state.spaces.map((s) => `
-    <a class="space-item ${s.id === state.space?.id ? 'active' : ''} ${s.finished ? 'finished' : ''}" href="#/space/${s.id}" data-space-id="${s.id}">
+  const item = (s) => `
+    <a class="space-item ${s.id === state.space?.id ? 'active' : ''} ${s.finished ? 'finished' : ''}" href="#/space/${esc(s.id)}" data-space-id="${esc(s.id)}">
       <span class="si-icon ${s.running ? 'live' : ''}" title="${solo(s) ? esc(solo(s).name) : kindTitle(s)}">${icon(s)}</span>
       <span class="si-body">
         <span class="t"><span class="title">${esc(s.title)}</span>${side(s)}</span>
         <span class="p">${s.finished ? tr('已结束 · ') : ''}${s.preview ? esc(plain(s.preview)) : tr('还没有消息')}</span>
       </span>
-    </a>`).join('');
+    </a>`;
+  const groups = new Map();
+  for (const s of state.spaces) {
+    if (s.scheduleId == null) continue;
+    if (!groups.has(s.scheduleId)) groups.set(s.scheduleId, []);
+    groups.get(s.scheduleId).push(s);
+  }
+  const active = state.space;
+  const older = groups.get(active?.scheduleId)?.slice(1).some((s) => s.id === active.id);
+  if (older && revealedSpaceId !== active.id) expandedSchedules.add(active.scheduleId);
+  revealedSpaceId = older ? active.id : null;
+  list.innerHTML = state.spaces.map((s) => {
+    const group = groups.get(s.scheduleId);
+    if (!group || group.length === 1) return item(s);
+    if (s !== group[0]) return '';
+    const open = expandedSchedules.has(s.scheduleId);
+    return `${item(s)}<button type="button" class="schedule-earlier" data-schedule-group="${esc(s.scheduleId)}"
+      aria-expanded="${esc(open)}">${ICON.chevron}${esc(tr('更早的 {0} 个', [group.length - 1]))}</button>
+      <div class="schedule-older-spaces"${open ? '' : ' hidden'}>${group.slice(1).map(item).join('')}</div>`;
+  }).join('');
+  list.onclick = (event) => {
+    const button = event.target.closest('[data-schedule-group]');
+    if (!button) return;
+    event.stopPropagation();
+    const id = button.dataset.scheduleGroup;
+    const open = !expandedSchedules.has(id);
+    if (open) expandedSchedules.add(id); else expandedSchedules.delete(id);
+    button.setAttribute('aria-expanded', String(open));
+    button.nextElementSibling.hidden = !open;
+  };
 }
 function hideSpaceMenu() { $('#spaceMenu').hidden = true; }
 function openSpaceMenu(item, x, y) {
