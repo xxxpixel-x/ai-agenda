@@ -4,6 +4,7 @@ import { t as tr } from './i18n.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { splitArgs, meta as acpMeta } from './engines/acp.mjs';
 
 // paths 里有哪些键由调用方传入（命令行引擎的 id），这里不写死
 const defaults = (pathKeys) => ({
@@ -15,11 +16,23 @@ const defaults = (pathKeys) => ({
   paths: Object.fromEntries(pathKeys.map((k) => [k, ''])),
   gemini: { apiKey: '', baseUrl: '' },
   providers: [], // [{ id, name, baseUrl, apiKey, model, anthropicUrl, claudeCode }]
+  customAcp: [],
 });
 
 const validPct = (n) => Number.isInteger(n) && (n === 0 || (n >= 10 && n <= 95));
 const validWindow = (n) => Number.isSafeInteger(n) && n >= 1024 && n <= 4000000;
 const str = (v, max = 500) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+
+export function acpLaunch(c) {
+  const command = str(c.command, 1000);
+  if (!command) throw new Error(c.name ? tr('「{0}」需要填写启动命令', [c.name]) : tr('请填写启动命令'));
+  if (/[\r\n\0]/.test(c.command)) throw new Error(tr('启动命令不能包含换行或空字符'));
+  const args = splitArgs(c.args).slice(0, 50).map((arg) => {
+    if (arg.includes('\0')) throw new Error(tr('启动参数不能包含空字符'));
+    return arg.slice(0, 1000);
+  });
+  return { command, args };
+}
 
 /**
  * @param opts.pathKeys   需要“程序位置”的引擎 id 列表
@@ -48,6 +61,7 @@ export function createSettings(file, { pathKeys = [], protect = (s) => ({ plain:
       gemini: { baseUrl: raw.gemini?.baseUrl || '', apiKey: decodeKey(raw.gemini?.apiKey) },
       providers: (raw.providers || []).map(({ contextWindow, ...p }) => ({ ...p, apiKey: decodeKey(p.apiKey),
         ...(validWindow(contextWindow) ? { contextWindow } : {}) })),
+      customAcp: Array.isArray(raw.customAcp) ? raw.customAcp : [],
     };
   } catch { /* 第一次运行 */ }
 
@@ -61,6 +75,7 @@ export function createSettings(file, { pathKeys = [], protect = (s) => ({ plain:
       paths: data.paths,
       gemini: { baseUrl: data.gemini.baseUrl, apiKey: encodeKey(data.gemini.apiKey) },
       providers: data.providers.map((p) => ({ ...p, apiKey: encodeKey(p.apiKey) })),
+      customAcp: data.customAcp,
     };
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(`${file}.tmp`, JSON.stringify(out, null, 2), 'utf8');
@@ -88,6 +103,7 @@ export function createSettings(file, { pathKeys = [], protect = (s) => ({ plain:
     publicView: () => ({
       autoHandoffPct: data.autoHandoffPct,
       contextLimits: { ...data.contextLimits },
+      customAcp: structuredClone(data.customAcp),
       language: data.language,
       notify: data.notify,
       keepAwake: data.keepAwake,
@@ -141,6 +157,20 @@ export function createSettings(file, { pathKeys = [], protect = (s) => ({ plain:
               ...(claudeCode ? { claudeCode } : {}),
               apiKey: typeof p.apiKey === 'string' ? str(p.apiKey) : prev.apiKey || '',
             };
+          });
+        }
+        if (Array.isArray(patch.customAcp)) {
+          const old = new Map(data.customAcp.map((c) => [c.id, c]));
+          data.customAcp = patch.customAcp.slice(0, 20).map((c) => {
+            const name = str(c?.name, 30).replace(/[@\s]/g, '');
+            if (!name) throw new Error(tr('每个自定义 AI 都需要一个名字'));
+            const id = old.get(c.id)?.id || randomUUID().slice(0, 8);
+            old.delete(id);
+            let color = typeof c.color === 'string' ? c.color.trim() : c.color;
+            if (color == null || color === '') color = acpMeta.color;
+            if (typeof color !== 'string' || !/^#(?:[\da-f]{3}|[\da-f]{6})$/i.test(color)) throw new Error(tr('「{0}」的颜色格式不对', [name]));
+            if (color.length === 4) color = '#' + color.slice(1).replace(/./g, '$&$&');
+            return { id, name, ...acpLaunch({ ...c, name }), color };
           });
         }
         save();

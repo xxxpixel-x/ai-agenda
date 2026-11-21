@@ -5,9 +5,11 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import { Store } from './store.mjs';
 import { Space, KINDS, folderKey, removeSpaceFiles } from './space.mjs';
-import { createSettings } from './settings.mjs';
+import { acpLaunch, createSettings } from './settings.mjs';
+import { detect as detectAcp } from './engines/acp.mjs';
 import { createRegistry, CLI_ENGINE_IDS } from './engines/index.mjs';
 import { createRoleLibrary } from './roles.mjs';
 import { createExtensionsManager } from './extensions.mjs';
@@ -53,9 +55,35 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
   hooks.onLanguage?.(language);
   const roleLibrary = createRoleLibrary(dataDir);
   const extensions = createExtensionsManager({ dataDir, roleLibrary, protect: hooks.protect, unprotect: hooks.unprotect, ...libraryOpts });
-  const registry = createRegistry(settings, { mock, extensions });
-  const store = new Store(path.join(dataDir, 'spaces'));
   const spaces = new Map();
+  const registry = createRegistry(settings, {
+    mock,
+    extensions,
+    acpChatApproval(signal, commandApproval) {
+      // Only interactive chat turns own approval cards. Task and background
+      // calls may share the very same cwd and engine, but have other signals.
+      if (!signal) return;
+      const space = [...spaces.values()].find((s) => s.chat.current?.controller.signal === signal);
+      if (!space) return;
+      const { msg } = space.chat.current;
+      return (request) => {
+        if (signal.aborted) return { allow: false };
+        if (commandApproval && request.kind === 'command') return commandApproval(request);
+        // One-off approval, including file edits. Chat owns settlement, notes
+        // and cancellation for these cards through the normal approvals map.
+        const ap = { ...request, id: randomUUID().slice(0, 8), programs: [], status: 'pending', ts: Date.now() };
+        (msg.approvals ||= []).push(ap);
+        return new Promise((resolve) => {
+          space.approvals.set(ap.id, { ap, msg, resolve });
+          space.emitEvent({ type: 'approval', id: msg.id, approval: ap });
+        });
+      };
+    },
+    onAcpWarning(engineId) {
+      for (const s of spaces.values()) s.emitEvent({ type: 'acp_warning', engineId });
+    },
+  });
+  const store = new Store(path.join(dataDir, 'spaces'));
   // 跨空间的事都经过这里：空间之间不直接互相引用
   const hooks2 = {
     /** 同一个文件夹有任务空间在“依次直接改”：聊天空间暂时只读。 */
@@ -129,7 +157,7 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
       if (ev.type === 'approval' && ev.approval.status === 'pending') {
         hooks.attention?.();
         const who = space.data.messages.find((m) => m.id === ev.id)?.name;
-        notify(space, tr('{0} 想运行命令，等你确认', [who || 'AI']));
+        notify(space, ev.approval.kind === 'edit' ? tr('{0} 想修改文件，等你确认', [who || 'AI']) : tr('{0} 想运行命令，等你确认', [who || 'AI']));
       }
       if (ev.type === 'round_end' && !space.isTask && !ev.stopped) {
         notify(space, ev.failed ? tr('{0} 出错了，讨论已停下', [ev.failed]) : tr('讨论告一段落，轮到你了'));
@@ -342,11 +370,29 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
     if (p === '/api/settings' && method === 'GET') return sendJson(res, 200, settings.publicView());
     if (p === '/api/settings' && method === 'PUT') {
       const previous = language();
-      const view = settings.update(await readJson(req));
+      const patch = await readJson(req);
+      const view = settings.update(patch);
       if (language() !== previous) for (const space of spaces.values()) space.syncRoleLanguage(roleLibrary, language());
       registry.invalidate();
       refreshAwake();
+      if (Array.isArray(patch.customAcp)) {
+        const statuses = await Promise.all(view.customAcp.map(async (c) => {
+          const key = 'acp:' + c.id;
+          return [key, await registry.detect(key, { refresh: true })];
+        }));
+        return sendJson(res, 200, { ...view, acpStatuses: Object.fromEntries(statuses) });
+      }
       return sendJson(res, 200, view);
+    }
+    if (p === '/api/acp/test' && method === 'POST') {
+      const body = await readJson(req);
+      let acp = body;
+      if (body.id && !Object.hasOwn(body, 'command')) {
+        const saved = settings.get().customAcp.find((c) => c.id === body.id);
+        if (!saved) return sendJson(res, 404, { error: tr('找不到这个自定义 AI') });
+        acp = { ...saved, ...body };
+      }
+      return sendJson(res, 200, await detectAcp({ acp: { ...acp, ...acpLaunch(acp) } }));
     }
     if ((p === '/api/open-path' || p === '/api/reveal-path') && method === 'POST') {
       const { path: target } = await readJson(req);

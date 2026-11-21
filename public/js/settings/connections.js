@@ -38,6 +38,9 @@ function keyField(connection, placeholder) {
 
 const providerKey = (id) => `openai:${id}`;
 const isDraft = (key) => key.startsWith('draft:');
+const acpKey = (id) => `acp:${id}`;
+const isAcpDraft = (key) => key.startsWith('acp-draft:');
+const formatArgs = (args = []) => args.map((s) => s && !/[\s'"]/.test(s) ? s : '"' + s.replace(/"/g, '\\"').replace(/(\\*)$/, '"$1')).join(' ');
 
 async function render(el) {
   let settings;
@@ -46,6 +49,7 @@ async function render(el) {
 
   const expanded = new Set();
   const drafts = new Map();
+  const acpDrafts = new Map();
   let draftNumber = 0;
   let busy = false;
 
@@ -81,6 +85,23 @@ async function render(el) {
     return connection(key, p.name || tr('新接口'), fields, button('delete', tr('删除接口'), 'danger'), `${p.name} ${p.baseUrl}`);
   }
 
+  function acpItem(key, c) {
+    const status = engineOf(key)?.status || settings.acpStatuses?.[key] || {};
+    const style = isAcpDraft(key) ? 'off' : status.ready ? 'ok' : status.available ? 'warn' : 'off';
+    const label = isAcpDraft(key) ? tr('未保存') : status.ready ? tr('可用') : tr('不可用');
+    const badge = `<span class="conn-state ${style}">${esc(label)}</span>`;
+    const color = esc(c.color || '#6366f1');
+    const note = [status.note, status.version].filter(Boolean).join(' · ');
+    return item(key, markHtml(key, color, c.name), c.name || tr('自定义 AI'), badge, `
+      ${note ? `<div class="conn-note">${esc(note)}</div>` : ''}
+      <div class="conn-fields">${field('name', tr('名字'), c.name, '')}
+        <label class="conn-field"><span>${tr('图标颜色')}</span><input name="color" type="color" value="${color}"></label>
+        ${field('command', tr('启动命令'), c.command, 'npx / node / agent-cli', true)}
+        ${field('args', tr('启动参数'), formatArgs(c.args), '--acp', true)}</div>
+      <div class="conn-actions">${button('delete', tr('删除'), 'danger')}<span class="grow"></span>
+        ${button('test-acp', tr('测试握手'))}${button('save', tr('保存'), 'primary')}</div>`);
+  }
+
   function draw(savedKey, savedField) {
     // 只恢复仍在编辑的字段；其余字段显示服务端刚返回的值。
     const edits = new Map();
@@ -107,7 +128,12 @@ async function render(el) {
       <div class="set-list">${cli.join('')}</div></section>
       <section class="set-group"><h3 class="set-group-title"><span>API</span></h3>
       <div class="set-list">${gemini}${settings.providers.map((p) => provider(providerKey(p.id), p)).join('')}
-        ${[...drafts].map(([key, p]) => provider(key, p)).join('')}${add}</div></section>`;
+        ${[...drafts].map(([key, p]) => provider(key, p)).join('')}${add}</div></section>
+      <section class="set-group"><h3 class="set-group-title">${esc(tr('自定义 AI（ACP）'))}</h3><div class="set-list">
+        ${settings.customAcp.map((c) => acpItem(acpKey(c.id), c)).join('')}
+        ${[...acpDrafts].map(([key, c]) => acpItem(key, c)).join('')}
+        <div class="conn-item"><button class="conn-row" type="button" data-act="add-acp">${ICON.plus}<span class="conn-name">${tr('自定义 AI')}</span></button></div>
+      </div></section>`;
     for (const row of $$('.conn-item', el)) {
       const values = edits.get(row.dataset.conn);
       for (const input of $$('input', row)) {
@@ -133,6 +159,10 @@ async function render(el) {
     const key = `draft:${++draftNumber}`;
     drafts.set(key, { name, baseUrl, model, anthropicUrl });
     expanded.delete('add');
+    focusDraft(key);
+  }
+
+  function focusDraft(key) {
     expanded.add(key);
     draw();
     const row = $(`[data-conn="${key}"]`, el);
@@ -142,6 +172,7 @@ async function render(el) {
 
   async function saveRow(key, action, values) {
     let body;
+    let savedAcpKey;
     if (key === 'gemini') {
       body = { gemini: action === 'clear-key' ? { apiKey: '' } : values };
     } else if (isDraft(key) || key.startsWith('openai:')) {
@@ -158,6 +189,18 @@ async function render(el) {
         else Object.assign(providers[i], values);
       }
       body = { providers };
+    } else if (isAcpDraft(key) || key.startsWith('acp:')) {
+      const { customAcp } = await api('/api/settings');
+      if (isAcpDraft(key)) {
+        if (customAcp.length >= 20) throw new Error(tr('最多可添加 20 个自定义 AI'));
+        customAcp.push(values);
+      } else {
+        const i = customAcp.findIndex((c) => acpKey(c.id) === key);
+        if (i < 0) throw new Error(tr('找不到这个自定义 AI'));
+        if (action === 'delete') customAcp.splice(i, 1);
+        else Object.assign(customAcp[i], values);
+      }
+      body = { customAcp };
     } else {
       body = { paths: { [key]: values.path } };
     }
@@ -166,12 +209,18 @@ async function render(el) {
       drafts.delete(key);
       expanded.delete(key);
       expanded.add(providerKey(settings.providers.at(-1).id));
+    } else if (isAcpDraft(key)) {
+      acpDrafts.delete(key);
+      expanded.delete(key);
+      savedAcpKey = acpKey(settings.customAcp.at(-1).id);
+      expanded.add(savedAcpKey);
     } else if (action === 'delete') expanded.delete(key);
-    toast(tr('已保存'));
+    const status = settings.acpStatuses?.[savedAcpKey || key];
+    toast(status?.note || tr('已保存'), status && !status.ready ? 'error' : undefined);
     // PUT 的响应也是最新配置，即便随后的重新读取失败，也不会重复创建接口。
     try {
       await refreshEngines(true);
-      settings = await api('/api/settings');
+      settings = { acpStatuses: settings.acpStatuses, ...await api('/api/settings') };
     } finally {
       draw(key, action === 'clear-key' ? 'apiKey' : undefined);
     }
@@ -186,7 +235,7 @@ async function render(el) {
     if (!target) return;
     const row = target.closest('.conn-item');
     const key = row?.dataset.conn;
-    if (target.classList.contains('conn-row')) {
+    if (target.classList.contains('conn-row') && key) {
       const open = row.classList.toggle('open');
       if (open) expanded.add(key); else expanded.delete(key);
       target.setAttribute('aria-expanded', String(open));
@@ -195,9 +244,16 @@ async function render(el) {
     }
     const action = target.dataset.act;
     if (busy || !action) return;
+    if (action === 'add-acp') {
+      const draft = `acp-draft:${++draftNumber}`;
+      acpDrafts.set(draft, { name: '', command: '', args: [] });
+      focusDraft(draft);
+      return;
+    }
     if (action === 'preset') { addDraft(PRESETS[target.dataset.preset]); return; }
-    if (action === 'delete' && isDraft(key)) {
+    if (action === 'delete' && (isDraft(key) || isAcpDraft(key))) {
       drafts.delete(key);
+      acpDrafts.delete(key);
       expanded.delete(key);
       draw(key);
       return;
@@ -216,7 +272,11 @@ async function render(el) {
           values.apiKey = values.apiKey.trim();
           if (!values.apiKey) delete values.apiKey;
         }
-        await saveRow(key, action, values);
+        if (action === 'test-acp') {
+          const id = isAcpDraft(key) ? undefined : key.slice(4);
+          const status = await api('/api/acp/test', { method: 'POST', body: { id, ...values } });
+          toast(status.note, status.ready ? undefined : 'error');
+        } else await saveRow(key, action, values);
       }
     } catch (e) { toast(e.message, 'error'); }
     finally {

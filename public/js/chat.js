@@ -152,6 +152,15 @@ function handleEvent(ev) {
       renderMembersBar();
       if (!$('#memberPop').hidden) renderMemberPop();
       break;
+    case 'acp_warning': {
+      const engine = engineOf(ev.engineId);
+      if (engine) engine.unverifiedPermissions = true;
+      if (sp) {
+        renderMembersBar();
+        if (!$('#memberPop').hidden) renderMemberPop();
+      }
+      break;
+    }
     case 'notice':
       toast(ev.text, ev.level);
       break;
@@ -257,6 +266,7 @@ export function renderHeader() {
 
 // 「可运行命令」档下，没法在运行前先问你的命令行 AI 只能改文件
 const cannotRun = (m) => { const e = engineOf(m.engine); return state.space?.access === 'run' && e?.kind === 'cli' && !e.approvals; };
+const unverifiedPerms = (m) => { const e = engineOf(m.engine); return !!(e?.status?.unverifiedPermissions || e?.unverifiedPermissions); };
 
 const noExtensions = m => (m.skills?.length || m.mcp?.length) && !engineOf(m.engine)?.skills;
 export function renderMembersBar() {
@@ -268,9 +278,10 @@ export function renderMembersBar() {
   $('#membersBar').innerHTML = sp.members.map((m) => {
     const e = engineOf(m.engine);
     const ok = !e || (m.source ? e.status?.available !== false : e.status?.ready !== false);
-    const title = `${(m.source && m.engineLabel) || e?.label || m.engineLabel}${m.model ? ` · ${m.model}` : ''}${ok ? '' : `\n${e.status?.note || ''}`}${noExtensions(m) ? '\n' + tr('不支持 skill/MCP') : ''}`;
+    const warning = unverifiedPerms(m) ? tr('这个 AI 的权限无法保证') : '';
+    const title = `${(m.source && m.engineLabel) || e?.label || m.engineLabel}${m.model ? ` · ${m.model}` : ''}${ok ? '' : `\n${e.status?.note || ''}`}${noExtensions(m) ? '\n' + tr('不支持 skill/MCP') : ''}${warning ? `\n${warning}` : ''}`;
     return `<button type="button" class="person ${speaking?.memberId === m.id || busy.has(m.id) ? 'speaking' : ''} ${ok ? '' : 'off'}" style="--c:${m.color}" data-id="${m.id}" data-title="${esc(title)}" title="${esc(title)}">
-      <span class="pa">${avatarHtml(m.engine, m.name, m.model)}</span>${esc(m.name)}${m.id === coord ? `<small>${tr('协调者')}</small>` : ''}${cannotRun(m) ? `<small>${tr('不能运行命令')}</small>` : ''}${noExtensions(m) ? `<small>${tr('不支持 skill/MCP')}</small>` : ''}</button>`;
+      <span class="pa">${avatarHtml(m.engine, m.name, m.model)}</span>${esc(m.name)}${m.id === coord ? `<small>${tr('协调者')}</small>` : ''}${cannotRun(m) ? `<small>${tr('不能运行命令')}</small>` : ''}${noExtensions(m) ? `<small>${tr('不支持 skill/MCP')}</small>` : ''}${warning ? `<small class="warn-tag">${esc(warning)}</small>` : ''}</button>`;
   }).join('');
   for (const id of meters.keys()) paintMeter(id);
   renderOnlyTag();
@@ -323,6 +334,7 @@ function renderMemberPop() {
   $('#memberPop').innerHTML = `
     <div class="mp-head">${avatarHtml(m.engine, m.name, m.model)}<b>${esc(m.name)}</b><span>${esc((m.source && m.engineLabel) || e.label || m.engineLabel)}</span></div>
     ${(m.source ? st.available : st.ready) === false ? `<div class="member-status warn">${esc(st.note || tr('还不能用'))}</div>` : ''}
+    ${unverifiedPerms(m) ? `<div class="member-status warn">${tr('这个 AI 的权限无法保证')}</div>` : ''}
     ${cannotRun(m) ? `<div class="hint">${tr('它没法在运行命令前先问你，所以这一档只能读写文件。')}</div>` : ''}
     ${noExtensions(m) ? `<div class="hint">${tr('这个 AI 暂不支持 skill 和 MCP，卡上配置的工具不会生效。')}</div>` : ''}
     ${['skills','mcp'].filter(k => m[k]?.length).map(k => `<div class="hint" data-tool-names="${k}">${k === 'skills' ? 'Skills' : 'MCP'} · ${esc(m[k].join(', '))}</div>`).join('')}
@@ -369,11 +381,11 @@ function approvalHtml(a) {
     return `<div class="ap-done ${a.status}"><span>${AP_DONE[a.status] || a.status}</span><code title="${esc(a.command)}">${esc(one)}</code>${note ? `<span class="why" title="${esc(note)}">${esc(note)}</span>` : ''}</div>`;
   }
   return `<div class="approval" data-ap="${a.id}">
-    <div class="ap-q">${tr('想运行')}</div>
+    <div class="ap-q">${a.kind === 'edit' ? tr('想修改文件') : tr('想运行')}</div>
     <pre class="ap-cmd">${esc(a.command)}</pre>
     <input class="ap-note" data-apr maxlength="500" placeholder="${tr('附一句话（可不填）')}" value="${esc(noteDrafts.get(a.id) || '')}">
     <div class="ap-actions"><button class="btn sm primary" type="button" data-apd="allow">${tr('允许')}</button>
-      ${a.programs?.length ? `<button class="btn sm" type="button" data-apd="always">${tr('一直允许 {0}', [esc(a.programs.join('、'))])}</button>` : ''}
+      ${a.kind !== 'edit' && a.programs?.length ? `<button class="btn sm" type="button" data-apd="always">${tr('一直允许 {0}', [esc(a.programs.join('、'))])}</button>` : ''}
       <button class="btn sm" type="button" data-apd="deny">${tr('拒绝')}</button></div>
   </div>`;
 }
