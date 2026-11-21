@@ -1,4 +1,6 @@
 import { register } from './slots.js';
+import { saveTeam } from './library/member-tools.js';
+import { report } from './library/shared.js';
 import { accessChoices, memberEditor, readTaskOptions, taskOptionsHtml } from './space-form.js';
 import { $, ICON, esc, tr } from './util.js';
 
@@ -41,12 +43,19 @@ register('spaceTabs', {
   when: ({ space }) => !ended(space),
   render(el, { space, members, onSave }) {
     const run = space.kind === 'task' && space.run;
-    const busy = run && ['planning', 'plan_review', 'executing', 'summarizing'].includes(run.status);
+    const busy = run && ['planning', 'clarifying', 'plan_review', 'executing', 'summarizing'].includes(run.status);
     el.innerHTML = `<div class="field"><div class="label">${tr('成员')}</div>
       ${busy ? `<div class="hint">${tr('任务进行中，不能修改成员；换型号可以点顶部的成员标签')}</div>` : '<div id="ssMembers"></div>'}</div>
       ${run ? `<div class="field"><label for="ssCoord">${tr('协调者')}</label><select id="ssCoord" class="w-auto">
         ${space.members.map((m) => `<option value="${esc(m.id)}" ${m.id === run.coordinatorId ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select></div>` : ''}`;
-    if (!busy) memberEditor($('#ssMembers', el), members);
+    const coord = $('#ssCoord',el);
+    if (!busy) memberEditor($('#ssMembers', el), members, () => {
+      if (!coord) return;
+      const previous = coord.value;
+      coord.innerHTML = members.map(m => `<option value="${esc(m.id)}" ${m.id === previous ? 'selected' : ''}>${esc(m.name)}</option>`).join('');
+    }, { editing: true });
+    el.insertAdjacentHTML('beforeend', `<button type="button" class="btn sm" data-save-team>${tr('存为团队')}</button>`);
+    $('[data-save-team]',el).onclick = () => saveTeam(members,members.findIndex(m => m.id === coord?.value)).catch(report);
     onSave((body) => {
       if (!busy) body.members = members;
       if (run) {

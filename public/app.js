@@ -10,6 +10,10 @@ import './js/tasks.js';
 import './js/imports.js';
 // 整页的分类：各自注册到 slots，新增一个分类就在这里加一行
 import './js/settings/general.js';
+import './js/library/roles.js';
+import './js/library/teams.js';
+import './js/library/extensions.js';
+import './js/library/marketplace.js';
 import './js/settings/connections.js';
 // 空间设置的标签
 import './js/space-tabs.js';

@@ -305,7 +305,8 @@ export class Space extends EventEmitter {
       for (const m of next) {
         const old = this.data.members.find((o) => o.id === m.id);
         const imported = !!this.data.memberState[m.id]?.importId;
-        if (!old || old.engine !== m.engine || (old.persona !== m.persona && !imported)) delete this.data.memberState[m.id];
+        if (!old || old.engine !== m.engine || (old.persona !== m.persona && !imported)
+          || ['skills', 'mcp'].some(k => JSON.stringify(old[k] || []) !== JSON.stringify(m[k] || []))) delete this.data.memberState[m.id];
       }
       this.data.members = next;
     }
@@ -612,11 +613,35 @@ export class Space extends EventEmitter {
     for (const m of msg ? [msg] : d.messages) if (!Number.isInteger(m.seq)) m.seq = d.nextSeq++;
   }
 
+  syncRoleLanguage(roleLibrary, lang) {
+    const members = this.data.members.filter(m => m.roleId && !m.roleCustomized);
+    if (!members.length || this.finished) return { updated: 0, deferred: false };
+    if (this.running || this.run?.active) {
+      this.pendingRoleSync = { roleLibrary, lang };
+      return { updated: 0, deferred: true };
+    }
+    let updated = 0;
+    for (const m of members) {
+      const persona = roleLibrary.getRoleInstructions(m.roleId, lang);
+      if (persona == null || persona === m.persona) continue;
+      m.persona = persona;
+      delete this.data.memberState[m.id];
+      updated++;
+    }
+    if (updated) { this.save(); this.emitEvent({ type: 'members', members: this.data.members }); }
+    return { updated, deferred: false };
+  }
+
   emitEvent(ev) {
     if (ev.type === 'message' && ev.message) this.numberMessages(ev.message);
     else if (ev.type === 'snapshot') this.numberMessages();
     if (this.deleted || this.closing) return;
     this.emit('event', ev);
+    if (this.pendingRoleSync && (ev.type === 'round_end' || (ev.type === 'run' && this.isTask && !this.run?.active))) {
+      const { roleLibrary, lang } = this.pendingRoleSync;
+      this.pendingRoleSync = null;
+      this.syncRoleLanguage(roleLibrary, lang);
+    }
     if (ev.type === 'files_changed' && ev.changes?.length) syncBriefs(this.importHost, ev.changes); // 主题简报被改了
     if (this.memoryTrigger(ev) && Space.memoryAuto) this.organizeMemory();
   }

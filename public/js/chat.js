@@ -247,6 +247,7 @@ export function renderHeader() {
 // 「可运行命令」档下，没法在运行前先问你的命令行 AI 只能改文件
 const cannotRun = (m) => { const e = engineOf(m.engine); return state.space?.access === 'run' && e?.kind === 'cli' && !e.approvals; };
 
+const noExtensions = m => (m.skills?.length || m.mcp?.length) && !engineOf(m.engine)?.skills;
 export function renderMembersBar() {
   const sp = state.space;
   const speaking = sp.speaking && findMsg(sp.speaking);
@@ -256,9 +257,9 @@ export function renderMembersBar() {
   $('#membersBar').innerHTML = sp.members.map((m) => {
     const e = engineOf(m.engine);
     const ok = !e || (m.source ? e.status?.available !== false : e.status?.ready !== false);
-    const title = `${(m.source && m.engineLabel) || e?.label || m.engineLabel}${m.model ? ` · ${m.model}` : ''}${ok ? '' : `\n${e.status?.note || ''}`}`;
+    const title = `${(m.source && m.engineLabel) || e?.label || m.engineLabel}${m.model ? ` · ${m.model}` : ''}${ok ? '' : `\n${e.status?.note || ''}`}${noExtensions(m) ? '\n' + tr('不支持 skill/MCP') : ''}`;
     return `<button type="button" class="person ${speaking?.memberId === m.id || busy.has(m.id) ? 'speaking' : ''} ${ok ? '' : 'off'}" style="--c:${m.color}" data-id="${m.id}" data-title="${esc(title)}" title="${esc(title)}">
-      <span class="pa">${avatarHtml(m.engine, m.name, m.model)}</span>${esc(m.name)}${m.id === coord ? `<small>${tr('协调者')}</small>` : ''}${cannotRun(m) ? `<small>${tr('不能运行命令')}</small>` : ''}</button>`;
+      <span class="pa">${avatarHtml(m.engine, m.name, m.model)}</span>${esc(m.name)}${m.id === coord ? `<small>${tr('协调者')}</small>` : ''}${cannotRun(m) ? `<small>${tr('不能运行命令')}</small>` : ''}${noExtensions(m) ? `<small>${tr('不支持 skill/MCP')}</small>` : ''}</button>`;
   }).join('');
   for (const id of meters.keys()) paintMeter(id);
   renderOnlyTag();
@@ -312,11 +313,21 @@ function renderMemberPop() {
     <div class="mp-head">${avatarHtml(m.engine, m.name, m.model)}<b>${esc(m.name)}</b><span>${esc((m.source && m.engineLabel) || e.label || m.engineLabel)}</span></div>
     ${(m.source ? st.available : st.ready) === false ? `<div class="member-status warn">${esc(st.note || tr('还不能用'))}</div>` : ''}
     ${cannotRun(m) ? `<div class="hint">${tr('它没法在运行命令前先问你，所以这一档只能读写文件。')}</div>` : ''}
+    ${noExtensions(m) ? `<div class="hint">${tr('这个 AI 暂不支持 skill 和 MCP，卡上配置的工具不会生效。')}</div>` : ''}
+    ${['skills','mcp'].filter(k => m[k]?.length).map(k => `<div class="hint" data-tool-names="${k}">${k === 'skills' ? 'Skills' : 'MCP'} · ${esc(m[k].join(', '))}</div>`).join('')}
     <select data-k="model" title="${tr('型号')}"><option value="">${esc(st.defaultModel ? tr('默认（{0}）', [st.defaultModel]) : tr('默认型号'))}</option>
       ${models.map(([v, l]) => `<option value="${esc(v)}" ${v === m.model ? 'selected' : ''}>${esc(l || v)}</option>`).join('')}</select>
     ${effortSelect(e, m)}
     ${state.space.kind === 'task' || isSolo(state.space) ? '' : `<button class="btn sm block" type="button" data-act="only">${tr('只问 {0}', [esc(m.name)])}</button>
       <button class="btn sm block" type="button" data-act="ask">${tr('让 {0} 现在发言', [esc(m.name)])}</button>`}`;
+  const tools = $('#memberPop').querySelectorAll('[data-tool-names]');
+  if (tools.length) api('/api/library/extensions').then(list => {
+    for (const el of tools) {
+      const k = el.dataset.toolNames;
+      const names = m[k].map(id => list[k].find(tool => tool.id === id)?.name || id);
+      el.textContent = (k === 'mcp' ? 'MCP' : 'Skills') + ' · ' + names.join(', ');
+    }
+  }).catch(() => {}); // The IDs remain readable if the local scan fails.
 }
 $('#memberPop').addEventListener('change', async (e) => {
   const k = e.target.dataset.k;

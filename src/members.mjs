@@ -3,6 +3,9 @@ import { t as tr } from './i18n.mjs';
 import { randomUUID } from 'node:crypto';
 
 const MAX_MEMBERS = 8;
+export const MAX_PERSONA = 16000;
+const validId = v => typeof v === 'string' && /^[a-z0-9._-]{1,80}$/i.test(v) && !v.includes('..');
+const toolIds = v => Array.isArray(v) ? [...new Set(v.filter(validId))].slice(0, 20) : [];
 const MODEL_RE = /^[a-z0-9._:\-/[\]]{0,100}$/i;
 const EFFORTS = ['', 'none', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 const str = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
@@ -39,6 +42,7 @@ export function normalizeMembers(input, engines) {
     const model = str(m.model, 100);
     if (!MODEL_RE.test(model)) throw new Error(tr('成员「{0}」的模型名不合法', [name]));
     const source = sourceOf(m, engine, name);
+    const skills = toolIds(m.skills), mcp = toolIds(m.mcp);
     return {
       id: typeof m.id === 'string' && /^[a-z0-9-]{4,40}$/i.test(m.id) ? m.id : randomUUID().slice(0, 8),
       name,
@@ -47,7 +51,9 @@ export function normalizeMembers(input, engines) {
       ...(source ? { source: source.id } : {}),
       model,
       effort: EFFORTS.includes(m.effort) ? m.effort : '',
-      persona: str(m.persona, 2000),
+      persona: str(m.persona, MAX_PERSONA),
+      ...(validId(m.roleId) && { roleId: m.roleId, roleCustomized: m.roleCustomized === true }),
+      ...(skills.length > 0 && { skills }), ...(mcp.length > 0 && { mcp }),
       color: /^#[0-9a-f]{6}$/i.test(m.color) ? m.color : engine.color,
     };
   });

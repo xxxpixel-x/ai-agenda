@@ -27,6 +27,8 @@ export async function runAgentTurn(registry, member, {
   const canSee = images.length && registry.supportsImages(member.engine);
   if (images.length && !canSee) markNoImages();
   const r = await registry.runTurn(member.engine, {
+    ...(member.skills?.length ? { skills: member.skills } : {}),
+    ...(member.mcp?.length ? { mcp: member.mcp } : {}),
     ...(canSee ? { images, onNoImages: markNoImages } : {}),
     system,
     prompt,

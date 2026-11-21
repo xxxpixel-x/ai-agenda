@@ -2,12 +2,14 @@
 // 成员选了模型来源（设置里「也给 Claude Code 用」的接口）时改连那个接口，用独立的配置目录，不需要登录 Claude 账号。
 import { t as tr } from '../i18n.mjs';
 import fs from 'node:fs';
+import { mountedSkills, skillPrompt } from './mounted-skills.mjs';
 import os from 'node:os';
 import path from 'node:path';
 import { findOnPath, isFile, capture, runJsonl, brief, relPath } from './proc.mjs';
 import { usageOf, quotaOf, contextOf } from './usage-fields.mjs';
 
 export const meta = {
+  skills: true, mcp: true,
   images: true,
   id: 'claude-code',
   label: 'Claude Code',
@@ -137,13 +139,13 @@ const TOOLS = {
 const COMMAND_TOOLS = new Set(['Bash', 'PowerShell']);
 
 // ask：运行命令要先问你。命令工具照常提供，但不预先放行，由软件回答 Claude 的权限请求
-function accessArgs(access, ask = false) {
+function accessArgs(access, ask = false, mcpTools = []) {
   if (access === 'full') return ['--dangerously-skip-permissions'];
   const tools = TOOLS[access] || TOOLS.edit;
   const allowed = ask ? tools.split(',').filter((t) => !COMMAND_TOOLS.has(t)).join(',') : tools;
   return [
     '--tools', tools,
-    '--allowedTools', allowed,
+    '--allowedTools', [allowed, ...mcpTools].join(','),
     '--permission-mode', access === 'read' ? 'default' : 'acceptEdits',
     ...(ask
       ? ['--permission-prompts', 'host', '--permission-prompt-tool', 'stdio']
@@ -153,6 +155,14 @@ function accessArgs(access, ask = false) {
 
 const refusal = (note) => tr('「我」没有同意运行这条命令{0}。按这个调整做法，不要换一种写法绕过。', [note ? tr('，理由：{0}', [note]) : '']);
 const approvalNote = (note) => tr('「我」同意了刚才那条命令，并补充：{0}', [note]);
+
+export function extensionOptions({ skills = [], mcp = {}, access = 'edit', ask = false, mcpConfigFile = '' } = {}) {
+  const names = mcpConfigFile ? Object.keys(mcp) : [];
+  const args = [...accessArgs(access, ask, names.map(name => `mcp__${name}__*`)), '--safe-mode', '--strict-mcp-config'];
+  if (names.length) args.push('--mcp-config', mcpConfigFile);
+  for (const dir of mountedSkills(skills)) args.push('--add-dir', dir);
+  return { args, skillPrompt: skillPrompt(skills) };
+}
 
 function activityOf(block, cwd) {
   const i = block.input || {};
@@ -213,12 +223,13 @@ function friendly(text, bin, source) {
  * 接续时用 --system-prompt-snapshot off，否则会一直沿用原会话第一次记下的系统提示，Agenda 的规则传不进去。
  */
 /** source / configDir：成员的模型来源（接口）和它独立的配置目录，由注册表给。 */
-export async function runTurn({ system, prompt, images = [], model, effort, cwd, access = 'edit', signal, onDelta, onActivity, onRaw, onApproval, binOverride, sessionId, fork = false, resumeAt, source, configDir }) {
+export async function runTurn({ system, prompt, images = [], skills = [], mcp = {}, model, effort, cwd, access = 'edit', signal, onDelta, onActivity, onRaw, onApproval, binOverride, sessionId, fork = false, resumeAt, source, configDir }) {
   const ask = access === 'run' && !!onApproval;
   const bin = findBin(binOverride);
   if (!bin) throw new Error(tr('没有找到 Claude Code'));
   const sysFile = path.join(os.tmpdir(), `rt-sys-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`);
-  fs.writeFileSync(sysFile, system, 'utf8');
+  const mcpConfigFile = sysFile + '.json';
+  const ext = extensionOptions({ skills, mcp, access, ask, mcpConfigFile });
 
   const args = [
     '-p',
@@ -227,9 +238,7 @@ export async function runTurn({ system, prompt, images = [], model, effort, cwd,
     '--include-partial-messages',
     '--append-system-prompt-file', sysFile,
     ...(ask || images.length ? ['--input-format', 'stream-json'] : []),
-    ...accessArgs(access, ask),
-    '--safe-mode',            // 不加载个人的 CLAUDE.md / 插件 / hooks / MCP
-    '--strict-mcp-config',
+    ...ext.args,
   ];
   if (sessionId) {
     args.push('--resume', sessionId, '--system-prompt-snapshot', 'off');
@@ -266,6 +275,8 @@ export async function runTurn({ system, prompt, images = [], model, effort, cwd,
   }
 
   try {
+    fs.writeFileSync(sysFile, system + ext.skillPrompt, { mode: 0o600, flag: 'wx' });
+    if (Object.keys(mcp).length) fs.writeFileSync(mcpConfigFile, JSON.stringify({ mcpServers: mcp }), { mode: 0o600, flag: 'wx' });
     const r = await runJsonl({
       cmd: bin,
       args,
@@ -320,6 +331,7 @@ export async function runTurn({ system, prompt, images = [], model, effort, cwd,
     if (source && usage) delete usage.contextWindow;
     return { text, sessionId: sessionId ? result?.session_id || null : undefined, ...(usage ? { usage } : {}) };
   } finally {
-    fs.rm(sysFile, { force: true }, () => {});
+    fs.rmSync(sysFile, { force: true });
+    fs.rmSync(mcpConfigFile, { force: true });
   }
 }

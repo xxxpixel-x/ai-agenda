@@ -4,6 +4,8 @@ import { refreshEngines, showModal } from './engines.js';
 import { bindImportOptions, importOptionsHtml, openSessionPicker, readImportOptions, safeName, samePath, wan } from './imports.js';
 import { refreshSpaces, renderSpaceList } from './sidebar.js';
 import { list } from './slots.js';
+import { chooseMembers, mountControls, permissions } from './library/member-tools.js';
+import { lib, report } from './library/shared.js';
 import { $, $$, ACCESS, ICON, api, engineOf, esc, load, shownEngines, state, store, toast, tr } from './util.js';
 
 // ---------------- 成员编辑器（新建空间 / 空间设置共用） ----------------
@@ -46,7 +48,9 @@ function engineOptions(m) {
   }
   return options;
 }
-export function memberEditor(container, members, onChange) {
+export function memberEditor(container, members, onChange, { editing = false } = {}) {
+  let installed = {};
+  const refreshMounts = () => lib('extensions').then(tools => { installed = tools; mountControls(container,members,tools); }).catch(report);
   const render = () => {
     container.innerHTML = `<div class="member-rows">${members.map((m, i) => {
       const e = engineOf(m.engine) || {};
@@ -68,10 +72,15 @@ export function memberEditor(container, members, onChange) {
         </div>
         ${!ready ? `<div class="member-status warn">${esc(st.note || tr('还不能用'))}</div>` : ''}
         <details ${m.persona ? 'open' : ''}><summary>${tr('设定')}</summary>
-          <textarea data-k="persona" rows="2" placeholder="${tr('例如：你负责挑毛病；或者：你是这份论文的审稿人')}">${esc(m.persona || '')}</textarea></details>
+          <textarea data-k="persona" maxlength="16000" rows="2" placeholder="${tr('例如：你负责挑毛病；或者：你是这份论文的审稿人')}">${esc(m.persona || '')}</textarea>
+          ${editing ? `<div class="hint">${tr('修改设定后，这个 AI 会重开会话')}</div>` : ''}
+          <div data-mounts></div>${(m.skills?.length && !e.skills || m.mcp?.length && !e.mcp) ? `<div class="hint">${tr('这个 AI 暂不支持 skill 和 MCP')}</div>` : ''}
+          <button class="btn sm ghost" type="button" data-act="save-role">${tr('存为角色卡')}</button></details>
       </div>`;
     }).join('')}</div>
-    <button class="btn sm ghost" type="button" data-act="add-member" ${members.length >= 8 ? 'disabled' : ''}>${ICON.plus}${tr('添加成员')}</button>`;
+    <button class="btn sm ghost" type="button" data-act="add-member" ${members.length >= 8 ? 'disabled' : ''}>${ICON.plus}${tr('添加成员')}</button>
+    <button class="btn sm" type="button" data-act="add-role" ${members.length >= 8 ? 'disabled' : ''}>${tr('从角色卡添加')}</button>`;
+    mountControls(container,members,installed);
     onChange?.();
   };
   container.addEventListener('input', (ev) => {
@@ -81,6 +90,7 @@ export function memberEditor(container, members, onChange) {
     const m = members[+row.dataset.i];
     if (k === 'engine') [m.engine, m.source] = ev.target.value.split(SEP);
     else m[k] = ev.target.value;
+    if (k === 'persona' && m.roleId) m.roleCustomized = true;
     if (k === 'name') onChange?.();
     if (k === 'engine') {
       const e = engineOf(m.engine);
@@ -95,19 +105,39 @@ export function memberEditor(container, members, onChange) {
       row.querySelector('[data-k="effort"]').outerHTML = effortSelect(e, m);
     }
   });
-  container.addEventListener('click', (ev) => {
+  container.addEventListener('change', ev => {
+    const k = ev.target.name;
+    if (!['skills','mcp'].includes(k)) return;
+    const row = ev.target.closest('.member-row');
+    members[+row.dataset.i][k] = $$(`[name="${k}"]:checked`,row).map(x => x.value);
+    render();
+    container.querySelector(`[data-i="${row.dataset.i}"] details`)?.setAttribute('open','');
+  });
+  container.addEventListener('click', async (ev) => {
     const b = ev.target.closest('[data-act]');
     if (!b) return;
+    try {
+      if (b.dataset.act === 'save-role') {
+        const { roleEditor } = await import('./library/roles.js');
+        await roleEditor({},members[+b.closest('.member-row').dataset.i]);
+      }
+      if (b.dataset.act === 'add-role') {
+        const picked = await chooseMembers(false,members.map(m => m.name));
+        if (picked && members.length < 8) { members.push(...picked.members); render(); refreshMounts(); }
+      }
+    } catch (e) { report(e); }
     if (b.dataset.act === 'del-member') { members.splice(+b.closest('.member-row').dataset.i, 1); render(); }
     if (b.dataset.act === 'add-member') {
       const used = new Set(members.map((m) => m.engine));
       const list = shownEngines();
       const e = list.find((x) => x.status?.ready && !used.has(x.id)) || list.find((x) => x.status?.ready) || list[0];
-      members.push({ engine: e.id, name: uniqueName(members, e.defaultName), model: '', effort: '', persona: '' });
+      members.push({ id: crypto.randomUUID(), engine: e.id, name: uniqueName(members, e.defaultName), model: '', effort: '', persona: '' });
       render();
     }
   });
   render();
+  refreshMounts();
+  return () => { render(); refreshMounts(); };
 }
 function uniqueName(members, base, self) {
   let name = base;
@@ -150,7 +180,8 @@ export function readTaskOptions(root) {
     maxParallel: $('[data-opt=maxParallel]', root).value,
   };
 }
-const copyMembers = (list) => list.map((m) => ({ engine: m.engine, source: m.source || '', name: m.name, model: m.model || '', effort: m.effort || '', persona: m.persona || '' }));
+const copyMembers = (list) => list.map(({ engine,source,name,model,effort,persona,roleId,roleCustomized,skills,mcp }) =>
+  ({ engine,source,name,model,effort,persona,roleId,roleCustomized,skills: [...(skills || [])],mcp: [...(mcp || [])] }));
 
 /**
  * 新建空间。opts：
@@ -191,7 +222,7 @@ export async function openNewSpaceModal(opts = {}) {
         <textarea id="nsGoal" rows="6" placeholder="${tr('要完成什么？例如：给这个项目加上导出 PDF 的功能')}">${esc(opts.objective || '')}</textarea>
         <div class="hint" id="nsGoalHint">${opts.source ? esc(tr('从聊天空间「{0}」选了 {1} 条消息', [opts.from?.title || '', opts.source.messages])) : ''}</div></div>
       <div class="field"><label for="nsTitle">${tr('名字')}</label><input id="nsTitle" maxlength="60"></div>
-      <div class="field"><div class="label">${tr('成员')}</div><div id="nsMembers"></div></div>
+      <div class="field"><div class="lib-toolbar"><b>${tr('成员')}</b><button class="btn sm" type="button" data-act="team">${tr('选择团队')}</button></div><div id="nsMembers"></div></div>
       <div class="field" data-for="task"><label for="nsCoord">${tr('协调者')}</label><select id="nsCoord" class="w-auto"></select>
         <div class="hint">${tr('拆分计划、分配子任务、处理你中途发来的消息、写总结')}</div></div>
       <div class="field"><div class="label">${tr('共享文件夹')}</div>
@@ -229,7 +260,11 @@ export async function openNewSpaceModal(opts = {}) {
     $('#nsTitle', dlg).placeholder = kind === 'task' ? tr('留空就用目标的第一句') : tr('例如：毕业论文第三章');
     if (kind === 'task' && imp) { imp = null; $('#nsImport', dlg).innerHTML = ''; }
   };
-  memberEditor($('#nsMembers', dlg), members, renderCoord);
+  const redraw = memberEditor($('#nsMembers', dlg), members, renderCoord);
+  const loadTeam = async id => {
+    const team = await chooseMembers(true,[],id);
+    if (team) { members.splice(0,members.length,...team.members); coordIndex = team.coordinatorIndex; redraw(); }
+  };
   renderCoord();
   applyKind();
   ($(kind === 'task' ? '#nsGoal' : '#nsTitle', dlg)).focus();
@@ -254,6 +289,7 @@ export async function openNewSpaceModal(opts = {}) {
   dlg.addEventListener('click', async (ev) => {
     const b = ev.target.closest('[data-act]');
     if (!b) return;
+    if (b.dataset.act === 'team') { try { await loadTeam(); } catch (e) { report(e); } }
     if (b.dataset.act === 'close') dlg.close();
     if (b.dataset.act === 'pick') {
       const p = await window.desktop?.pickFolder?.();
@@ -272,11 +308,7 @@ export async function openNewSpaceModal(opts = {}) {
       const e = engineOf(imp.engine);
       if (e && !members.some((m) => m.engine === imp.engine)) {
         members.unshift({ engine: imp.engine, name: uniqueName(members, e.defaultName), model: '', effort: '', persona: '' });
-        const box = $('#nsMembers', dlg);
-        const fresh = box.cloneNode(false); // 成员编辑器重新绑定
-        box.replaceWith(fresh);
-        memberEditor(fresh, members, renderCoord);
-        renderCoord();
+        redraw();
       }
       $('#nsImport', dlg).innerHTML = `<div class="field"><div class="imp-pick"><b>${esc(imp.title)}</b><span class="hint">${esc(tr('{0} · {1} 条 · {2}', [imp.sourceLabel, imp.count, wan(imp.chars)]))}</span>
         <button class="icon-btn" type="button" data-act="drop-import" title="${tr('不导入')}">${ICON.close}</button></div>${importOptionsHtml(imp)}</div>`;
@@ -316,6 +348,7 @@ export async function openNewSpaceModal(opts = {}) {
       }
       b.disabled = true;
       try {
+        if (!await permissions(body)) { b.disabled = false; return; }
         const sp = await api('/api/spaces', { method: 'POST', body });
         store('lastAccess', body.access); // 下次新建默认用这一档
         if (sp.importError) toast(tr('空间建好了，但对话没导入：{0}', [sp.importError]), 'error');
@@ -326,6 +359,7 @@ export async function openNewSpaceModal(opts = {}) {
     }
   });
   dlg.addEventListener('input', (ev) => { if (ev.target.id === 'nsFolder') $('input[name=ws][value=folder]', dlg).checked = true; });
+  if (opts.teamId) await loadTeam(opts.teamId);
 }
 
 /** 结束了的任务空间：再开一个类似的任务。成员和设置照搬，目标重新写。 */
@@ -413,6 +447,7 @@ export async function openSpaceSettings() {
     try {
       const body = {};
       for (const collect of collectors) collect(body);
+      if (body.access && !await permissions(body,sp.members)) { save.disabled = false; return; }
       await api(`/api/spaces/${sp.id}`, { method: 'PATCH', body });
       dlg.close();
       refreshSpaces();

@@ -13,6 +13,7 @@ process.env.PI_SKIP_VERSION_CHECK = '1';
 process.env.PI_TELEMETRY = '0';
 
 export const meta = {
+  skills: true, mcp: true,
   id: 'pi', label: 'Pi', kind: 'embedded', vendor: 'pi.dev', defaultName: 'Pi', color: '#0f766e',
   images: true, approvals: true, resume: true, sources: true, sourceRequired: true,
   get models() { return [['', tr('接口默认模型')]]; }, freeModel: true,

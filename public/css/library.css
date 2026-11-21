@@ -1,0 +1,26 @@
+.lib-toolbar, .lib-tags, .lib-actions, .lib-chips { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2); }
+.lib-toolbar { margin-bottom: var(--sp-5); }
+.lib-card, .lib-row { padding: var(--sp-4); border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--panel); min-width: 0; }
+.lib-card { display: flex; flex-direction: column; align-items: flex-start; gap: var(--sp-3); }
+.lib-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr)); gap: var(--sp-3); }
+.lib-card h3, .lib-row h3 { margin: 0; font-size: var(--fs-lg); line-height: 1.4; overflow-wrap: anywhere; }
+.lib-card p, .lib-row p { margin: 0; color: var(--text-2); line-height: 1.55; font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.lib-card .lib-actions { margin-top: auto; }
+.lib-chip, .lib-check { display: inline-flex; align-items: center; gap: var(--sp-1); font-size: var(--fs-xs); padding: var(--sp-1) var(--sp-2); border-radius: var(--r-sm); background: var(--panel-2); color: var(--text-2); }
+.lib-chip.warn { color: var(--warn); }
+.lib-chip.selected, .lib-check:has(:checked) { color: var(--accent); background: var(--accent-weak); }
+.lib-check input, .sub-modal [type=checkbox] { width: auto; }
+.lib-list { display: grid; gap: var(--sp-2); margin-bottom: var(--sp-6); }
+.lib-row { display: flex; flex-wrap: wrap; gap: var(--sp-3); align-items: center; }
+.lib-row > div:first-child { flex: 1 1 14rem; }
+.lib-row .lib-tags { margin-top: var(--sp-2); }
+.lib-choices { display: grid; gap: var(--sp-2); }
+.lib-choices button { justify-content: flex-start; white-space: normal; text-align: start; }
+.sub-modal { width: min(40rem, calc(100vw - var(--sp-8))); }
+.sub-modal .field, .lib-mounts { margin-top: var(--sp-3); }
+.sub-modal fieldset { min-width: 0; border: 1px solid var(--border); border-radius: var(--r-md); margin: var(--sp-3) 0; padding: var(--sp-3); }
+.sub-modal select, .sub-modal textarea { max-width: 100%; }
+.sub-modal .modal-foot { flex-wrap: wrap; }
+.lib-preview { padding: var(--sp-3); background: var(--panel-2); border-radius: var(--r-md); overflow-wrap: anywhere; }
+.lib-toolbar [aria-pressed=true] { color: var(--accent); background: var(--accent-weak); }
+.lib-source { color: var(--brand-text); }
