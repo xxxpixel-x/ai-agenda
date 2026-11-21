@@ -73,6 +73,8 @@ export const en = {
   '接口地址': 'Base URL',
   '自动查找': 'Auto-detect',
   '程序位置': 'Program path',
+  '也给 Claude Code 用': 'Also use with Claude Code',
+  'Anthropic 兼容地址': 'Anthropic-compatible URL',
   '在 aistudio.google.com 创建': 'Create at aistudio.google.com',
   '清除 key': 'Clear key',
   '本机 AI 应用': 'Local AI apps',

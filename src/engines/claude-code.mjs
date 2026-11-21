@@ -1,4 +1,5 @@
-// Claude Code（本机命令行，headless 模式）。使用 Claude Code 自己的登录，不需要 API key。
+// Claude Code（本机命令行，headless 模式）。默认用 Claude Code 自己的登录；
+// 成员选了模型来源（设置里「也给 Claude Code 用」的接口）时改连那个接口，用独立的配置目录，不需要登录 Claude 账号。
 import { t as tr } from '../i18n.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -28,7 +29,32 @@ export const meta = {
   approvals: true, // 运行命令前可以先问你
   continuesImports: true, // 导入它自己的对话时，对应成员复制一份原会话接着聊（runTurn 的 sessionId + fork）
   usage: { tokens: true, context: true, quota: true }, // 结果里的 token 和上下文窗口、rate_limit_event 里的账号额度（2.1.325 实测）
+  sources: true, // 能换模型来源（Anthropic 兼容接口）
+  get accountLabel() { return tr('你的 Claude 账号'); }, // 不选接口时用的是什么
 };
+
+// 你本机环境里可能有的 Claude 设置：用别家接口时一律清空，免得盖过这个成员的接口
+const INHERITED = /^(ANTHROPIC_|CLAUDE_CODE_USE_|CLAUDE_CODE_OAUTH|CLAUDE_CONFIG_DIR$)/i;
+const MODEL_VARS = ['ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_DEFAULT_FABLE_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL'];
+
+/**
+ * 配别家模型时的环境变量（2.1.326 实测：独立的 CLAUDE_CONFIG_DIR + ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN，不登录也能用）。
+ * 各档型号（含后台用的 haiku、子代理）都指向同一个型号，Kimi 文档说缺了 haiku / 子代理会让后台任务失败。
+ */
+export function sourceEnv(source, { configDir, model, base = process.env } = {}) {
+  const env = {};
+  for (const k of Object.keys(base)) if (INHERITED.test(k)) env[k] = '';
+  Object.assign(env, {
+    CLAUDE_CONFIG_DIR: configDir,
+    ANTHROPIC_BASE_URL: source.anthropicUrl,
+    ANTHROPIC_AUTH_TOKEN: source.apiKey || '',
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+    API_TIMEOUT_MS: '3000000',
+  });
+  const name = model || source.model;
+  if (name) for (const k of MODEL_VARS) env[k] = name;
+  return env;
+}
 
 function compareVersions(a, b) {
   const pa = a.split('.').map((n) => parseInt(n, 10) || 0);
@@ -166,8 +192,12 @@ export function usageFrom(result, rateLimit) {
   });
 }
 
-function friendly(text, bin) {
+function friendly(text, bin, source) {
   const t = brief(text, 300);
+  if (source) {
+    if (/invalid api key|authentication|unauthorized|401/i.test(t)) return tr('{0} 的 API key 不对或没有填（{1}）', [source.name, t]);
+    return t ? `${source.name}：${t}` : tr('{0} 没有返回内容', [source.name]);
+  }
   if (/not logged in|\/login|invalid api key|authentication/i.test(t)) {
     return tr('Claude Code 还没有登录（{0}）。请在终端运行 {1}，登录后再试。', [t, loginCmd(bin)]);
   }
@@ -182,7 +212,8 @@ function friendly(text, bin) {
  *   用的是帮助里没列出的 --resume-session-at（Claude Code 2.1.325 实测），找不到这条消息时按接续失败处理。
  * 接续时用 --system-prompt-snapshot off，否则会一直沿用原会话第一次记下的系统提示，Agenda 的规则传不进去。
  */
-export async function runTurn({ system, prompt, images = [], model, effort, cwd, access = 'edit', signal, onDelta, onActivity, onRaw, onApproval, binOverride, sessionId, fork = false, resumeAt }) {
+/** source / configDir：成员的模型来源（接口）和它独立的配置目录，由注册表给。 */
+export async function runTurn({ system, prompt, images = [], model, effort, cwd, access = 'edit', signal, onDelta, onActivity, onRaw, onApproval, binOverride, sessionId, fork = false, resumeAt, source, configDir }) {
   const ask = access === 'run' && !!onApproval;
   const bin = findBin(binOverride);
   if (!bin) throw new Error(tr('没有找到 Claude Code'));
@@ -207,8 +238,9 @@ export async function runTurn({ system, prompt, images = [], model, effort, cwd,
   } else {
     args.push('--no-session-persistence');
   }
-  if (model) args.push('--model', model);
+  if (model && !source) args.push('--model', model); // 用接口时型号走环境变量
   if (effort) args.push('--effort', effort);
+  if (source) fs.mkdirSync(configDir, { recursive: true });
 
   let text = '';
   let result = null;
@@ -238,6 +270,7 @@ export async function runTurn({ system, prompt, images = [], model, effort, cwd,
       cmd: bin,
       args,
       cwd,
+      ...(source ? { env: sourceEnv(source, { configDir, model }) } : {}),
       // 双向通信时先握手（不握手 Claude 不会把权限请求发过来），再发这次的输入
       input: ask || images.length ? [
         ...(ask ? [{ type: 'control_request', request_id: 'init', request: { subtype: 'initialize' } }] : []),
@@ -273,7 +306,7 @@ export async function runTurn({ system, prompt, images = [], model, effort, cwd,
       },
     });
     const fail = (why) => {
-      const err = new Error(friendly(why, bin));
+      const err = new Error(friendly(why, bin, source));
       // 接不上原会话：原因有时只写在 stderr 里（比如 --resume-session-at 找不到消息，结果里只有 error_during_execution）
       if (sessionId && /no conversation found|session.*not found|no message found with message\.uuid|unknown option.*resume-session-at/i.test(`${why}\n${r.stderr || ''}`)) err.resumeFailed = true;
       return err;
@@ -283,6 +316,8 @@ export async function runTurn({ system, prompt, images = [], model, effort, cwd,
     if (!text && result?.result) emit(result.result);
     if (!text.trim()) throw fail(r.stderr);
     const usage = usageFrom(result, rateLimit);
+    // 别家型号 Claude Code 不认识，报的上下文窗口是它猜的，不显示
+    if (source && usage) delete usage.contextWindow;
     return { text, sessionId: sessionId ? result?.session_id || null : undefined, ...(usage ? { usage } : {}) };
   } finally {
     fs.rm(sysFile, { force: true }, () => {});

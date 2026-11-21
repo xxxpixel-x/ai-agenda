@@ -228,8 +228,8 @@ export function renderMembersBar() {
   const busy = new Set(sp.kind === 'task' && sp.run ? [...sp.run.tasks.filter((t) => t.status === 'running').map((t) => t.assigneeId), ...(sp.run.thinking || ['planning', 'summarizing'].includes(sp.run.status) ? [coord] : [])] : []);
   $('#membersBar').innerHTML = sp.members.map((m) => {
     const e = engineOf(m.engine);
-    const ok = !e || e.status?.ready !== false;
-    const title = `${e?.label || m.engineLabel}${m.model ? ` · ${m.model}` : ''}${ok ? '' : `\n${e.status?.note || ''}`}`;
+    const ok = !e || (m.source ? e.status?.available !== false : e.status?.ready !== false);
+    const title = `${(m.source && m.engineLabel) || e?.label || m.engineLabel}${m.model ? ` · ${m.model}` : ''}${ok ? '' : `\n${e.status?.note || ''}`}`;
     return `<button type="button" class="person ${speaking?.memberId === m.id || busy.has(m.id) ? 'speaking' : ''} ${ok ? '' : 'off'}" style="--c:${m.color}" data-id="${m.id}" data-title="${esc(title)}" title="${esc(title)}">
       <span class="pa">${avatarHtml(m.engine, m.name, m.model)}</span>${esc(m.name)}${m.id === coord ? `<small>${tr('协调者')}</small>` : ''}${cannotRun(m) ? `<small>${tr('不能运行命令')}</small>` : ''}</button>`;
   }).join('');
@@ -281,8 +281,8 @@ function renderMemberPop() {
   const models = modelChoices(e);
   if (m.model && !models.some(([v]) => v === m.model)) models.unshift([m.model, '']);
   $('#memberPop').innerHTML = `
-    <div class="mp-head">${avatarHtml(m.engine, m.name, m.model)}<b>${esc(m.name)}</b><span>${esc(e.label || m.engineLabel)}</span></div>
-    ${st.ready === false ? `<div class="member-status warn">${esc(st.note || tr('还不能用'))}</div>` : ''}
+    <div class="mp-head">${avatarHtml(m.engine, m.name, m.model)}<b>${esc(m.name)}</b><span>${esc((m.source && m.engineLabel) || e.label || m.engineLabel)}</span></div>
+    ${(m.source ? st.available : st.ready) === false ? `<div class="member-status warn">${esc(st.note || tr('还不能用'))}</div>` : ''}
     ${cannotRun(m) ? `<div class="hint">${tr('它没法在运行命令前先问你，所以这一档只能读写文件。')}</div>` : ''}
     <select data-k="model" title="${tr('型号')}"><option value="">${esc(st.defaultModel ? tr('默认（{0}）', [st.defaultModel]) : tr('默认型号'))}</option>
       ${models.map(([v, l]) => `<option value="${esc(v)}" ${v === m.model ? 'selected' : ''}>${esc(l || v)}</option>`).join('')}</select>

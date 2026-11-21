@@ -8,10 +8,13 @@
 //     （context 指能算出上下文百分比，即同时有 contextUsed 和 contextWindow）
 //     meta.approvals 为 true 的引擎：opts.onApproval({ command }) 存在时，运行命令前先 await 它，
 //     得到 { allow, reason } 再决定运行还是拒绝（reason 转告 AI）
-// 引擎的能力写在它自己模块的 meta 里：kind（'cli' | 'api'）、resume（能否续接会话）、
+//     meta.sources 为 true 的引擎能换模型来源：成员的 source 是设置里某个接口的 id，runTurn 时换成 opts.source（接口本身）；
+//     list() 里带上 sourceChoices（可选的接口），sourceRequired 为 true 表示没有「自己的账号」这一项
+// 引擎的能力写在它自己模块的 meta 里：kind（'cli' | 'api' | 'embedded'）、resume（能否续接会话）、
 // continuesImports（能接着导入的原会话聊）、logo（界面图标）等，
 // 注册表只看 meta，不按具体 id 做判断。
 // 以后要接新的 AI：在 engines/ 下加一个模块，再在下面 ENGINES 里加一行。
+import path from 'node:path';
 import { t as tr, getLanguage } from '../i18n.mjs';
 import * as claudeCode from './claude-code.mjs';
 import * as codex from './codex.mjs';
@@ -19,6 +22,7 @@ import * as dsh from './dsh.mjs';
 import * as geminiCli from './gemini-cli.mjs';
 import * as gemini from './gemini.mjs';
 import * as openai from './openai-compat.mjs';
+import * as pi from './pi.mjs';
 import * as mock from './mock.mjs';
 
 /**
@@ -26,7 +30,8 @@ import * as mock from './mock.mjs';
  *   module               引擎模块（meta / detect / runTurn）
  *   owns(engineId)       这个 id 归不归它管
  *   instances(settings)  在成员列表里显示成哪些 AI（一个接入方式可以有多个，比如多个 OpenAI 兼容接口）
- *   options(settings, engineId)  调用 detect / runTurn 时额外带上的连接参数
+ *   options(settings, engineId, { source, dataDir })  调用 detect / runTurn 时额外带上的连接参数
+ *   sources(settings)    能当模型来源的接口（meta.sources 的引擎才有）
  *   builtin              固定内置的（演示模式只模拟这些）
  */
 const cli = (module) => ({
@@ -39,8 +44,18 @@ const cli = (module) => ({
 
 const OPENAI_PREFIX = 'openai:';
 
+const providerOf = (s, id) => s.providers.find((p) => p.id === id) || null;
+
 const ENGINES = [
-  cli(claudeCode),
+  {
+    ...cli(claudeCode),
+    // 也给 Claude Code 用的接口；每个接口一个独立的配置目录，不动你本机的 Claude Code 设置
+    sources: (s) => s.providers.filter((p) => p.claudeCode && p.anthropicUrl),
+    options: (s, id, { source, dataDir }) => ({
+      binOverride: s.paths?.[claudeCode.meta.id] || '',
+      ...(source ? { source: claudeCodeSource(s, source), configDir: path.join(dataDir, 'claude-code', source) } : {}),
+    }),
+  },
   cli(codex),
   cli(dsh),
   cli(geminiCli),
@@ -62,9 +77,23 @@ const ENGINES = [
       defaultName: p.name || 'AI',
       models: [['', p.model ? tr('默认（{0}）', [p.model]) : tr('接口默认模型')]],
     })),
-    options: (s, id) => ({ conn: s.providers.find((p) => p.id === id.slice(OPENAI_PREFIX.length)) || null }),
+    options: (s, id) => ({ conn: providerOf(s, id.slice(OPENAI_PREFIX.length)) }),
+  },
+  {
+    // 内嵌的 pi：打包在 Agenda 里，模型来源是设置里的某个 API 接口
+    module: pi,
+    builtin: true,
+    owns: (id) => id === pi.meta.id,
+    instances: () => [pi.meta],
+    sources: (s) => s.providers,
+    options: (s, id, { source, dataDir }) => ({ sources: s.providers, conn: source ? providerOf(s, source) : null, agentDir: path.join(dataDir, 'pi') }),
   },
 ];
+
+function claudeCodeSource(s, id) {
+  const p = providerOf(s, id);
+  return p?.claudeCode && p.anthropicUrl ? p : null;
+}
 
 /** 需要在设置里填“程序位置”的引擎 id（给 settings 用，避免它自己写死一份）。 */
 export const CLI_ENGINE_IDS = ENGINES.filter((e) => e.module.meta.kind === 'cli').map((e) => e.module.meta.id);
@@ -79,20 +108,27 @@ export function createRegistry(settings, { mock: mockMode = false } = {}) {
     return entryOf(engineId)?.module || null;
   }
 
-  function optionsFor(engineId) {
+  function optionsFor(engineId, source) {
     if (mockMode) return {};
-    return entryOf(engineId)?.options(settings.get(), engineId) || {};
+    return entryOf(engineId)?.options(settings.get(), engineId, { source, dataDir: settings.dir || '.' }) || {};
+  }
+
+  // 可选的模型来源（只给界面和成员校验看名字，不带 key）
+  function withSources(entry, m) {
+    if (!m.sources || !entry.sources) return m;
+    return { ...m, sourceChoices: entry.sources(settings.get()).map((p) => ({ id: p.id, name: p.name, model: p.model || '' })) };
   }
 
   function list() {
     if (mockMode) {
       // 演示模式：外观照搬内置的几种 AI，实际都由演示引擎回答
-      return ENGINES.filter((e) => e.builtin).flatMap((e) => e.instances(settings.get())).map((m) => ({
+      return ENGINES.filter((e) => e.builtin).flatMap((e) => e.instances(settings.get()).map((m) => withSources(e, m))).map((m) => ({
         ...mock.meta, id: m.id, label: tr('演示 · {0}', [m.defaultName]), defaultName: m.defaultName, color: m.color, logo: m.logo, kind: m.kind, models: m.models, efforts: m.efforts,
         continuesImports: m.continuesImports, hideWhenMissing: m.hideWhenMissing,
+        sources: m.sources, sourceRequired: m.sourceRequired, sourceChoices: m.sourceChoices,
       }));
     }
-    return ENGINES.flatMap((e) => e.instances(settings.get())).map((m) => ({ ...m }));
+    return ENGINES.flatMap((e) => e.instances(settings.get()).map((m) => withSources(e, { ...m })));
   }
 
   async function detect(engineId, { refresh = false } = {}) {
@@ -117,10 +153,12 @@ export function createRegistry(settings, { mock: mockMode = false } = {}) {
     return engines.map((e, i) => ({ ...e, status: statuses[i] }));
   }
 
-  function runTurn(engineId, opts) {
+  function runTurn(engineId, { source, ...opts }) {
     const mod = moduleOf(engineId);
     if (!mod) throw new Error(tr('未知的 AI 类型：{0}', [engineId]));
-    const options = optionsFor(engineId);
+    const options = optionsFor(engineId, source);
+    // 选的接口删了、或者不再给 Claude Code 用：不要悄悄换回自己的账号
+    if (!mockMode && source && !options.source && !options.conn) throw new Error(tr('这个成员的模型来源已经不能用了，在空间设置里换一个'));
     if (!opts.images?.length) return mod.runTurn({ ...options, ...opts });
     const { images, onNoImages, ...rest } = opts;
     if (!supportsImages(engineId)) {
@@ -129,7 +167,8 @@ export function createRegistry(settings, { mock: mockMode = false } = {}) {
     }
     return mod.runTurn({ ...options, ...rest, images, onNoImages: () => {
       onNoImages?.();
-      if (options.conn?.id) settings.disableProviderImages(options.conn);
+      const conn = options.conn || options.source;
+      if (conn?.id) settings.disableProviderImages(conn);
     } });
   }
 
