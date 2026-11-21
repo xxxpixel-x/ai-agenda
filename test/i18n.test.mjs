@@ -232,6 +232,7 @@ test('English imports retain original text and accept old Chinese topic protocol
   t.after(() => settleSpace(space));
   const prompts = [];
   space.registry.runTurn = async (_engine, opts) => {
+    if (isMemoryCall(opts)) return MEMORY_IDLE;
     prompts.push(opts);
     return { text: '# Scene\nA fictional blue door.\n相关原文：1, 2' };
   };
@@ -252,6 +253,7 @@ test('English imports retain original text and accept old Chinese topic protocol
   stored.entries.push({ key: 'fixture-new', role: 'user', text: 'An unrelated fictional note', acts: [], ts: Date.now() });
   fs.writeFileSync(pastedFile, JSON.stringify(stored));
   space.registry.runTurn = async (_engine, opts) => {
+    if (isMemoryCall(opts)) return MEMORY_IDLE;
     assert.match(opts.prompt, /\[No changes\]/);
     return { text: '[无需修改]' };
   };

@@ -1,3 +1,4 @@
+import { isMemoryCall, MEMORY_IDLE } from './helpers.mjs';
 import { testInChinese as test } from './helpers.mjs';
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -36,6 +37,7 @@ test('quitting stops task workers without recording them as cancelled by the use
   t.after(() => settleSpace(space));
   let aborted = 0;
   space.registry.runTurn = (_engine, opts) => {
+    if (isMemoryCall(opts)) return MEMORY_IDLE;
     if (opts.system.includes('这次任务协作的协调者')) return Promise.resolve({ text: JSON.stringify({ tasks: [{ id: 'T1', title: '慢活', assignee: 'Alice', deps: [], spec: '一直做' }] }) });
     return new Promise((_resolve, reject) => {
       opts.signal.addEventListener('abort', () => { aborted++; reject(new AbortedError()); }, { once: true });

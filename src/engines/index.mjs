@@ -53,6 +53,7 @@ const ENGINES = [
     sources: (s) => s.providers.filter((p) => p.claudeCode && p.anthropicUrl),
     options: (s, id, { source, dataDir }) => ({
       binOverride: s.paths?.[claudeCode.meta.id] || '',
+      sessionHome: path.join(dataDir, 'sessions', 'claude-code'),
       ...(source ? { source: claudeCodeSource(s, source), configDir: path.join(dataDir, 'claude-code', source) } : {}),
     }),
   },
@@ -98,6 +99,8 @@ function claudeCodeSource(s, id) {
 /** 需要在设置里填“程序位置”的引擎 id（给 settings 用，避免它自己写死一份）。 */
 export const CLI_ENGINE_IDS = ENGINES.filter((e) => e.module.meta.kind === 'cli').map((e) => e.module.meta.id);
 
+export const supportsPrivateSessions = (id) => !!ENGINES.find((e) => e.owns(id))?.module.meta.privateSessions;
+
 export function createRegistry(settings, { mock: mockMode = false } = {}) {
   const cache = new Map(); // engineId -> { at, status }
 
@@ -124,7 +127,7 @@ export function createRegistry(settings, { mock: mockMode = false } = {}) {
       // 演示模式：外观照搬内置的几种 AI，实际都由演示引擎回答
       return ENGINES.filter((e) => e.builtin).flatMap((e) => e.instances(settings.get()).map((m) => withSources(e, m))).map((m) => ({
         ...mock.meta, id: m.id, label: tr('演示 · {0}', [m.defaultName]), defaultName: m.defaultName, color: m.color, logo: m.logo, kind: m.kind, models: m.models, efforts: m.efforts,
-        continuesImports: m.continuesImports, hideWhenMissing: m.hideWhenMissing,
+        privateSessions: m.privateSessions, continuesImports: m.continuesImports, hideWhenMissing: m.hideWhenMissing,
         sources: m.sources, sourceRequired: m.sourceRequired, sourceChoices: m.sourceChoices,
       }));
     }
@@ -181,5 +184,7 @@ export function createRegistry(settings, { mock: mockMode = false } = {}) {
   // 演示模式也按真实引擎判断，导入流程和正式版一致（演示引擎会忽略会话 ID）
   const continuesImports = (engineId) => !!entryOf(engineId)?.module.meta.continuesImports;
 
-  return { list, detect, detectAll, runTurn, isApi, supportsImages, supportsResume, supportsApproval, continuesImports, invalidate: () => cache.clear() };
+  const supportsPrivateSessions = (engineId) => !!entryOf(engineId)?.module.meta.privateSessions;
+
+  return { settings, list, detect, supportsPrivateSessions, detectAll, runTurn, isApi, supportsImages, supportsResume, supportsApproval, continuesImports, invalidate: () => cache.clear() };
 }

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { isMemoryCall, MEMORY_IDLE } from './helpers.mjs';
 import { testInChinese as test, tempDir, makeSpace, until } from './helpers.mjs';
 import { startServer } from '../src/app-server.mjs';
 import { createSettings } from '../src/settings.mjs';
@@ -73,7 +74,8 @@ test('attachment limits and unsupported member', async (t) => {
   await assert.rejects(space.userMessage('', staged.map((a) => a.id)), /10 张/);
   space.registry.supportsImages = () => false;
   const calls = [];
-  space.registry.runTurn = async (_id, opts) => { calls.push(opts); return { text: '照常回答' }; };
+  space.registry.runTurn = async (_id, opts) => {
+    if (isMemoryCall(opts)) return MEMORY_IDLE; calls.push(opts); return { text: '照常回答' }; };
   await space.userMessage('', [staged[0].id]);
   await idle(space);
   assert.equal(space.data.messages.at(-1).noImages, true);
@@ -90,6 +92,7 @@ test('file copies use unique names, anchored git excludes and a user baseline du
   const calls = [];
   let release;
   space.registry.runTurn = async (_id, opts) => {
+    if (isMemoryCall(opts)) return MEMORY_IDLE;
     calls.push(opts);
     if (calls.length === 1) await new Promise((resolve) => { release = resolve; });
     return { text: '收到' };

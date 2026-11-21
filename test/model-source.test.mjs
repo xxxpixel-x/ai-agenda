@@ -8,7 +8,8 @@ import { createSettings } from '../src/settings.mjs';
 import { createRegistry, CLI_ENGINE_IDS } from '../src/engines/index.mjs';
 import { normalizeMembers } from '../src/members.mjs';
 import { runAgentTurn } from '../src/turn-runner.mjs';
-import { sourceEnv } from '../src/engines/claude-code.mjs';
+import { supportsPrivateSessions } from '../src/engines/index.mjs';
+import { sourceEnv, meta as claudeMeta } from '../src/engines/claude-code.mjs';
 
 const KIMI = { name: 'Kimi', baseUrl: 'https://api.example.test/v1', model: 'kimi-fake', anthropicUrl: 'https://api.example.test/anthropic', claudeCode: true, apiKey: 'sk-fake-123' };
 const LOCAL = { name: '本地', baseUrl: 'http://127.0.0.1:9/v1', model: 'local-fake' };
@@ -27,7 +28,7 @@ import fs from 'node:fs';
 const pick = (re) => Object.fromEntries(Object.entries(process.env).filter(([k]) => re.test(k)));
 fs.writeFileSync(process.env.FAKE_CLAUDE_OUT, JSON.stringify({ args: process.argv.slice(2), env: pick(/^(ANTHROPIC_|CLAUDE_|API_TIMEOUT_MS$)/i) }));
 const usage = { input_tokens: 3, output_tokens: 2, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, iterations: [{ input_tokens: 3, output_tokens: 2 }] };
-console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: '收到', usage, modelUsage: { m: { inputTokens: 3, contextWindow: 200000 } } }));
+console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, session_id: 'fake-session', result: '收到', usage, modelUsage: { m: { inputTokens: 3, contextWindow: 200000 } } }));
 `);
   if (process.platform === 'win32') {
     const cmd = path.join(root, 'fake-claude.cmd');
@@ -158,4 +159,43 @@ test('Claude Code 成员用接口时走独立的配置目录，没选接口时�
   // 接口不再给 Claude Code 用：报错，不悄悄换回自己的账号
   settings.update({ providers: [{ ...KIMI, id: kimiId, claudeCode: false }] });
   await assert.rejects(turn(withSource), /模型来源已经不能用了/);
+});
+
+test('Claude 的私有会话隔离配置，导入与一次性发言沿用原目录', async (t) => {
+  const { root, settings } = setup(t);
+  assert.equal(claudeMeta.privateSessions, true);
+  for (const capability of [supportsPrivateSessions, createRegistry(settings).supportsPrivateSessions,
+    createRegistry(settings, { mock: true }).supportsPrivateSessions]) {
+    assert.equal(capability('claude-code'), true);
+    assert.equal(capability('codex'), false);
+  }
+  assert.equal(createRegistry(settings, { mock: true }).list().find((m) => m.id === 'claude-code').privateSessions, true);
+  const out = path.join(root, 'out.json');
+  const original = path.join(root, 'claude');
+  withEnv(t, { FAKE_CLAUDE_OUT: out, CLAUDE_CONFIG_DIR: original, CLAUDE_SECURESTORAGE_CONFIG_DIR: 'keychain' });
+  settings.update({ paths: { 'claude-code': fakeClaude(root) } });
+  const registry = createRegistry(settings), home = path.join(settings.dir, 'sessions', 'claude-code');
+  for (const opts of [{ keepSession: true }, { sessionId: 'private' }, { sessionId: 'import', imported: true },
+    { sessionId: 'forked', fork: true, resumeAt: 'leaf' }, {}]) {
+    const result = await runAgentTurn(registry, { engine: 'claude-code' }, { ...opts, system: 's', prompt: 'p', cwd: root, sink: {} });
+    const { args, env } = JSON.parse(fs.readFileSync(out, 'utf8'));
+    const persist = !!(opts.keepSession || opts.sessionId);
+    assert.equal(args.includes('--no-session-persistence'), !persist);
+    assert.equal(env.CLAUDE_CONFIG_DIR, persist && !opts.imported && !opts.fork ? home : original);
+    assert.equal(env.CLAUDE_SECURESTORAGE_CONFIG_DIR, 'keychain');
+    assert.equal(result.sessionId, persist ? 'fake-session' : undefined);
+    if (opts.sessionId) {
+      assert.equal(args[args.indexOf('--resume') + 1], opts.sessionId);
+      assert.equal(args[args.indexOf('--system-prompt-snapshot') + 1], 'off');
+    }
+    assert.equal(args.includes('--fork-session'), !!opts.fork);
+    if (opts.resumeAt) assert.equal(args[args.indexOf('--resume-session-at') + 1], opts.resumeAt);
+  }
+  delete process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
+  await registry.runTurn('claude-code', { system: 's', prompt: 'p', cwd: root, keepSession: true });
+  assert.equal(JSON.parse(fs.readFileSync(out, 'utf8')).env.CLAUDE_SECURESTORAGE_CONFIG_DIR, original);
+  delete process.env.CLAUDE_CONFIG_DIR;
+  await registry.runTurn('claude-code', { system: 's', prompt: 'p', cwd: root, keepSession: true });
+  assert.equal(JSON.parse(fs.readFileSync(out, 'utf8')).env.CLAUDE_SECURESTORAGE_CONFIG_DIR, '');
+  assert.ok(fs.statSync(home).isDirectory());
 });

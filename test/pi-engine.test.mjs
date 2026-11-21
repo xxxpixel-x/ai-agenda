@@ -8,7 +8,7 @@ import { fauxAssistantMessage as reply, fauxProvider, fauxText, fauxToolCall } f
 import { detect, findShell, insideDir, meta, runTurn, toolsFor, usageFrom } from '../src/engines/pi.mjs';
 import { Space } from '../src/space.mjs';
 import { Store } from '../src/store.mjs';
-import { settleSpace, tempDir, testInChinese as test, until } from './helpers.mjs';
+import { isMemoryCall, MEMORY_IDLE, settleSpace, tempDir, testInChinese as test, until } from './helpers.mjs';
 
 const fixture = (name) => fileURLToPath(new URL('./fixtures/pi-' + name + '.mjs', import.meta.url));
 const call = (name, args) => reply(fauxToolCall(name, args), { stopReason: 'toolUse' });
@@ -166,7 +166,7 @@ test('空间把 pi 的文件改动记在发言成员名下', async (t) => {
     list: () => [{ ...meta, sourceChoices: [{ id: 'mock', name: '本地模拟' }] }], detect,
     isApi: () => false, supportsImages: () => true, supportsResume: () => true,
     supportsApproval: () => true, continuesImports: () => false,
-    runTurn: (id, opts) => { assert.equal(id, 'pi'); return runTurn({ ...opts, provider: faux.provider, agentDir }); },
+    runTurn: (id, opts) => { if (isMemoryCall(opts)) return MEMORY_IDLE; assert.equal(id, 'pi'); return runTurn({ ...opts, provider: faux.provider, agentDir }); },
   };
   const space = Space.create({ title: '测试', members: [{ id: 'member-a', engine: 'pi', name: '小林' }], access: 'edit', maxTurns: 1 },
     { registry, dataDir, store: new Store(path.join(dataDir, 'spaces')) });
@@ -345,4 +345,34 @@ test('流式输出期间中止', async (t) => {
     signal: controller.signal, onDelta: () => { streamed = true; controller.abort(); },
   }), { aborted: true });
   assert.ok(streamed);
+});
+
+test('任务副本可读取空间记忆库，写入、编辑以及跨界联接被拒绝', async (t) => {
+  const { root, turn } = setup(t);
+  const memory = path.join(root, 'memory');
+  fs.mkdirSync(memory);
+  const file = path.join(memory, 'memory.md');
+  fs.writeFileSync(file, 'original');
+  fs.symlinkSync(root, path.join(memory, 'link'), process.platform === 'win32' ? 'junction' : 'dir');
+  let actual;
+  await turn([call('read', { path: file }), call('ls', { path: memory }),
+    call('write', { path: file, content: 'modified' }),
+    call('edit', { path: file, edits: [{ oldText: 'original', newText: 'modified' }] }),
+    call('ls', { path: path.join(memory, 'link') }),
+    (ctx) => { actual = results(ctx); return reply('done'); }], { access: 'edit', readOnlyDirs: [memory] });
+  assert.deepEqual(actual.map((r) => !!r.isError), [false, false, true, true, true]);
+  assert.match(contents(actual[0]), /original/);
+  assert.equal(fs.readFileSync(file, 'utf8'), 'original');
+});
+
+test('工作区内的只读目录经另一条目录联接访问仍然只读', async (t) => {
+  const { cwd, turn } = setup(t);
+  const memory = path.join(cwd, 'memory');
+  fs.mkdirSync(memory);
+  fs.symlinkSync(memory, path.join(cwd, 'alias'), process.platform === 'win32' ? 'junction' : 'dir');
+  let actual;
+  await turn([call('write', { path: 'alias/messages/new.md', content: 'unexpected' }),
+    (ctx) => { actual = results(ctx); return reply('done'); }], { access: 'edit', readOnlyDirs: [memory] });
+  assert.ok(actual[0].isError);
+  assert.equal(fs.existsSync(path.join(memory, 'messages/new.md')), false);
 });

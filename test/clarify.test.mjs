@@ -120,7 +120,8 @@ test('部分回答带进下一轮规划，默认项和用户回答也交给工�
   await space.runAction('approve-plan');
   await until(() => space.run.task('T1').status, (s) => s === 'review');
   const worker = calls.find((o) => o.system.includes('子任务 T1'));
-  assert.match(worker.prompt, /# 已经定下的[\s\S]*<消息 [^>]+>\n短信验证码\n<\/消息>[\s\S]*按默认处理（蓝色）[\s\S]*# 整体计划/);
+  assert.match(worker.prompt, /# 整体计划[\s\S]*标记[\s\S]*# 总目标/);
+  assert.match(worker.prompt, /# 已经定下的[\s\S]*<消息 [^>]+>\n短信验证码\n<\/消息>[\s\S]*按默认处理（蓝色）/);
 });
 
 test('选择全部默认，重新规划保留协调者假设且不重复默认项', async (t) => {
@@ -167,6 +168,7 @@ test('新建任务默认允许问，从聊天转来或显式关闭则直接规�
     if (expected) continue;
     let system;
     space.registry.runTurn = async (_engine, opts) => {
+    if (isMemoryCall(opts)) return MEMORY_IDLE;
       system = opts.system;
       return { text: block(opts.system.includes(heading) ? { questions } : { tasks }) };
     };
@@ -226,7 +228,7 @@ test('澄清时的输入排队，计划出来后按中途消息处理', async (t
   assert.equal(calls.length, 3);
   assert.ok(isPlanner(calls[1]));
   assert.ok(isTriage(calls[2]));
-  assert.match(calls[2].prompt, /# 已经定下的[\s\S]*短信验证码[\s\S]*按默认处理（蓝色）[\s\S]*# 计划和进展[\s\S]*方案要能打印/);
+  assert.match(calls[2].prompt, /# 计划和进展[\s\S]*# 已经定下的[\s\S]*短信验证码[\s\S]*按默认处理（蓝色）[\s\S]*方案要能打印/);
 });
 
 test('先商量时审阅和定稿都看到澄清，定稿可以替换草案假设', async (t) => {

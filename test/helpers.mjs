@@ -19,15 +19,23 @@ testInChinese.skip = nodeTest.skip;
 
 /** 后台整理记忆库的调用（记录调用次数的假 AI 用它跳过，回一个空的整理结果）。 */
 export const isMemoryCall = (opts) => ['zh', 'en'].some((lang) => opts?.system?.startsWith(tr('你是这个空间记忆库的整理者', {}, lang)));
+export const isHandoffCall = (opts) => ['zh', 'en'].some((lang) => opts?.system === tr('你正在为自己的下一个会话写交接说明。', {}, lang));
+export const HANDOFF_IDLE = { text: '[None]' };
 export const MEMORY_IDLE = { text: '{"ops":[]}' };
 
-export function tempDir(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenda-test-'));
-  t.after(() => {
+// 文件级清理晚于每个测试的 server.close()/settleSpace()。
+const tempRoots = [];
+nodeTest.after(() => {
+  for (const root of tempRoots) {
     assert.equal(path.dirname(root), path.resolve(os.tmpdir()));
     assert.ok(path.basename(root).startsWith('agenda-test-'));
     fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-  });
+  }
+});
+
+export function tempDir() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenda-test-'));
+  tempRoots.push(root);
   return root;
 }
 

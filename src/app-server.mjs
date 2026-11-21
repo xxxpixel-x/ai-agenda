@@ -409,7 +409,7 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
       return sendJson(res, 201, { ...space.toJSON(), importError });
     }
 
-    const m = p.match(/^\/api\/spaces\/([a-f0-9-]{36})(\/[a-z]+)?(?:\/([a-z0-9-]+))?(\/[a-z]+)?$/i);
+    const m = p.match(/^\/api\/spaces\/([a-f0-9-]{36})(\/[a-z]+)?(?:\/([a-z0-9_-]+))?(\/[a-z]+)?$/i);
     if (m) {
       const space = getSpace(m[1]);
       const sub = m[2] || '';
@@ -448,6 +448,18 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
           members[id] = { latest: latest(space.data, id), total, today: today[id] ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, turns: 0 } };
         }
         return sendJson(res, 200, { members });
+      }
+      if (sub === '/context' && method === 'GET' && !arg) return sendJson(res, 200, space.contextView());
+      try {
+        if (sub === '/recap' && method === 'PUT' && !arg) {
+          const { text, version } = await readJson(req);
+          return sendJson(res, 200, { recap: space.updateRecap(text, version) });
+        }
+        if (sub === '/members' && method === 'POST' && tail === '/handoff') {
+          return sendJson(res, 200, { ok: true, handoff: await space.handoffMember(arg) });
+        }
+      } catch (e) {
+        return sendJson(res, e.status || 400, { error: e.message, ...(e.recap ? { recap: e.recap } : {}) });
       }
       if (sub === '/memory' && method === 'GET' && !arg) return sendJson(res, 200, space.memoryView()); // 记忆库（只读）
       if (sub === '/imports' && method === 'POST' && !arg) return sendJson(res, 201, importSession(space.importHost, await readJson(req)));

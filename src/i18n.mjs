@@ -2,6 +2,40 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 // Short keys use the original Chinese copy. Long prompts have named keys.
 export const en = {
+  '在同一 JSON 对象中另加 recap 字段，总结本次移出的消息。': 'Include a recap field in the same JSON object summarizing the newly rolled-out messages.',
+  '当前预算装不下必需的指令，请缩短输入或调大模型上下文窗口。': 'The required instructions exceed the input budget. Shorten the input or increase the model context window.',
+  "自动交接阈值必须是 0（关闭）或 10 到 95 之间的整数": "Auto-handoff must be 0 (off) or an integer between 10 and 95",
+  "上下文窗口必须是 1024 到 4000000 之间的整数": "The context window must be an integer between 1024 and 4000000",
+  "只读记忆库：{0}（memory.md 和 messages/<seq>.md）": "Read-only memory directory: {0} (memory.md and messages/<seq>.md)",
+  "# 空间记忆库": "# Space memory",
+  "# 相关原文": "# Referenced originals",
+  "# 前情提要": "# Recap",
+  "# 上个会话的交接说明": "# Handoff from your previous session",
+  "你正在为自己的下一个会话写交接说明。": "Write a short handoff for your next session.",
+  "只简短记录新会话从代码、记忆库和最近几轮看不到的内容：试过但走不通的做法及原因、未完成的工作、下一步要回查的消息或任务执行编号。不要重复记忆库。没有就回复 [无]。\n{0}": "Briefly record only what the next session cannot see in code, memory, or the last few turns. Include failed approaches and why they failed, unfinished work, and message or task attempt numbers to check next. Avoid repeating memory. Reply [None] if there is nothing to hand off.\n{0}",
+  "[无]": "[None]",
+  "## 交接说明": "## Handoff notes",
+  "将交接中试过但走不通的做法记为 rejected，引用该说明的消息编号并写明原因。": "Record failed approaches from handoff notes as rejected. Cite the anchor message and explain the failure.",
+  "<交接说明 来自=\"{0}\" 截至消息=\"{1}\">\n{2}\n</交接说明>": "<handoff from=\"{0}\" upto=\"{1}\">\n{2}\n</handoff>",
+  "已有前情提要：{0}": "Existing recap: {0}",
+  "## 移出聊天记录的消息": "## Messages rolled out of history",
+  "返回 {\"ops\":[...],\"recap\":\"...\"}。recap 只概括本批移出的消息，引用消息编号，勿复述已有提要。": "Return {\"ops\":[...],\"recap\":\"...\"}. Summarize only this batch of rolled-out messages, citing message numbers. Do not repeat the existing recap.",
+  "规划前澄清中你的回答": "Your answer during planning clarification",
+  "规划前澄清按默认通过": "Default accepted during planning clarification",
+  "规划时的默认假设": "Default assumption made during planning",
+  "{0}：{1}": "{0}: {1}",
+  "前情提要必须是文本": "Recap text must be a string",
+  "前情提要已经更新": "The recap was updated",
+  "会话交接失败：{0}": "Session handoff failed: {0}",
+  "这个成员正在发言，稍后再重开会话": "This member is busy. Reopen the session after the turn finishes.",
+  "（运行了：{0}）": "(Ran: {0})",
+  "> 运行了：{0}": "> Ran: {0}",
+  "# 计划\n{0}": "# Plan\n{0}",
+  "请提意见，没有意见只回复 [同意]。": "Review the plan. If you agree, reply only [Agree].",
+  "# 子任务\n{0}": "# Tasks\n{0}",
+  "请写总结。": "Write the summary.",
+  "……（完整记录见任务 {0} 第 {1} 次执行）": "… (See task {0}, attempt {1} for the full report.)",
+  "（最新验收通过的第 {0} 版；更早的 {1} 个版本已被取代，如需回查原因见记忆库或任务记录）": "(Accepted version {0}. The preceding {1} versions are superseded. See memory or the task record for the reasons.)",
   '决定': 'Decision',
   '约束': 'Constraint',
   '项目事实': 'Project fact',
@@ -533,6 +567,7 @@ Read the latest content before editing because others may have just changed it. 
 ], "assumptions": ["…"]}
 \`\`\`
 
+- Split subtasks small enough that an assignee can finish each one in a single session.
 - In assumptions, list the choices you made where the goal left room for interpretation. Use one sentence per choice, or an empty array if there are none.
 - Each spec must stand alone. The assignee sees the overall goal, decisions, full plan, their spec and dependency results. Include the goal, changes, constraints, permitted files and completion criteria.
 - Usually use two to six tasks. Add dependencies only when a task truly requires another to finish first.
@@ -651,7 +686,7 @@ Use this Markdown structure
 
 Write in English.`,
   'tasks.commit': 'You are “{0}”, the task coordinator. Draft the commit message for merging this task. Base it on the objective, latest summary, and changed files. Match the language, subject style, prefixes, use of a body, and length of the recent commits. Use those commits only as style examples. If there are none, write a short subject in the language of the objective. Output only the commit message, without code fences or explanation.',
-  'tasks.commitPrompt': '{0}\n\n{1}\n\n# Latest summary\n{2}\n\n# Changed files\n{3}\n\n# Recent commits (newest first)\n{4}',
+  'tasks.commitPrompt': '# Latest summary\n{2}\n\n# Changed files\n{3}\n\n# Recent commits (newest first)\n{4}\n\n{0}\n\n{1}',
   '\n改动：{0}': '\nChanges — {0}',
   '\n用户意见：\n{0}': '\nUser feedback\n{0}',
   '## {0} {1}（{2}，{3}，做了 {4} 次）\n{5}{6}{7}': '## {0} {1} ({2}, {3}, {4} attempts)\n{5}{6}{7}',
@@ -939,6 +974,7 @@ export const zh = {
 ], "assumptions": ["……"]}
 \`\`\`
 要求：
+- 把子任务拆得够小，让负责人一个会话就能做完。
 - assumptions 列出目标里没说清、由你按最合理的理解决定的事，每条一句话，没有就给空数组。
 - spec 必须自包含：做这件事的人看不到规划过程，只能看到总目标、已经定下的事、整体计划、自己的 spec 和前置任务的结果。写清目标、要改什么、限制、可以动哪些文件、怎样算完成。
 - 一般 2～6 个子任务；能同时做的不要设依赖（deps）；deps 只写真正需要先完成的任务 id。
@@ -972,7 +1008,7 @@ export const zh = {
 {4}{5}`,
   'tasks.summary': '你是「{0}」，一次多 AI 任务协作的协调者。所有子任务都结束了，请给用户写一份简洁的总结。不要修改任何文件。\n\n按这个结构写（Markdown）：\n### 完成了什么\n### 每个子任务的结果\n（每个一行：谁做的、结果、关键改动）\n### 需要你注意的地方\n（风险、没做完的、需要用户检查或决定的）\n\n使用用户的语言。',
   'tasks.commit': '你是「{0}」，任务协调者。请为这次任务的合并起草提交说明。根据总目标、最新总结和改动的文件写内容。最近的提交只用作风格参考：模仿它们的语言、标题写法、前缀、是否有正文以及长短。没有近期提交时，用总目标的语言写一行简短的标题。只输出提交说明，不加代码围栏或解释。',
-  'tasks.commitPrompt': '{0}\n\n{1}\n\n# 最新总结\n{2}\n\n# 改动的文件\n{3}\n\n# 最近的提交（从新到旧）\n{4}',
+  'tasks.commitPrompt': '# 最新总结\n{2}\n\n# 改动的文件\n{3}\n\n# 最近的提交（从新到旧）\n{4}\n\n{0}\n\n{1}',
 };
 
 export function resolveLanguage(setting = 'system', locales = []) {

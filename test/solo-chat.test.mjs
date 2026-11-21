@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { runTurn as demo } from '../src/engines/mock.mjs';
+import { isMemoryCall, MEMORY_IDLE, isHandoffCall, HANDOFF_IDLE } from './helpers.mjs';
 import { makeSpace, settleSpace, tempDir, testInChinese as test, until } from './helpers.mjs';
 
 const alice = { id: 'member-a', engine: 'claude-code', name: 'Alice' };
@@ -11,6 +13,8 @@ function makeChat(t, { members = [alice], maxTurns = 4, capability, reply = (n) 
   space.registry.supportsResume = (engine) => engine === alice.engine && capability === 'resume';
   space.registry.supportsPrivateSessions = (engine) => engine === alice.engine && capability === 'privateSessions';
   space.registry.runTurn = async (engine, opts) => {
+    if (isMemoryCall(opts)) return MEMORY_IDLE;
+    if (isHandoffCall(opts)) return HANDOFF_IDLE;
     calls.push({ engine, ...opts });
     const n = calls.length;
     const text = reply(n);
@@ -147,4 +151,20 @@ test('只问指定成员时双方的 @ 都不会让别人接话，其他成员�
   assert.equal(later.engine, alice.engine);
   assert.ok(later.prompt.includes(`<消息 来自="我">\n（只问 Bob）\n${question}\n</消息>`));
   assert.ok(later.prompt.includes('<消息 来自="Bob">\n建议湖蓝色。@Alice 你觉得呢？\n</消息>'));
+});
+
+test('演示引擎连续四轮单聊保留会话，只回复正文', async () => {
+  let sessionId, prompt = '';
+  const ids = [];
+  for (let n = 0; n < 4; n++) {
+    prompt += '\n<消息 来自="我">\n问题\n</消息>';
+    const result = await demo({ system: '你是「Alice」，正在一对一聊天。', prompt, access: 'read', keepSession: true, sessionId });
+    assert.ok(result.text.trim());
+    assert.doesNotMatch(result.text, /\[(?:跳过|结束|Skip|Done)\]/i);
+    sessionId = result.sessionId;
+    ids.push(sessionId);
+    prompt += '\n<消息 来自="Alice">\n' + result.text + '\n</消息>';
+  }
+  assert.match(sessionId, /^mock-session-/);
+  assert.equal(new Set(ids).size, 1);
 });

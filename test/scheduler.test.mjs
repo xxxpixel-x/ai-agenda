@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { isMemoryCall, MEMORY_IDLE } from './helpers.mjs';
 import { setImmediate as settle } from 'node:timers/promises';
 import { createScheduler, nextTime } from '../src/scheduler.mjs';
 import { tempDir, testInChinese as test } from './helpers.mjs';
@@ -410,7 +411,7 @@ test('app-server 到点发消息和建任务空间，上一次没跑完就跳过
     opts.signal?.addEventListener('abort', () => { clearInterval(tick); reject(new Error('aborted')); });
   });
   const plan = { text: '```json\n{"tasks":[{"id":"T1","title":"整理","assignee":"Alice","deps":[],"spec":"整理资料"}]}\n```' };
-  const fakeTurn = async (_engine, opts) => (opts.system.includes('这次任务协作的协调者') ? plan : holdTurn(opts));
+  const fakeTurn = async (_engine, opts) => isMemoryCall(opts) ? MEMORY_IDLE : (opts.system.includes('这次任务协作的协调者') ? plan : holdTurn(opts));
   server.registry.runTurn = fakeTurn;
   const api = async (url, method = 'GET', body) => {
     const r = await fetch(`http://127.0.0.1:${server.port}${url}`, {

@@ -1,3 +1,4 @@
+import { isMemoryCall, MEMORY_IDLE } from './helpers.mjs';
 import { testInChinese as test } from './helpers.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -15,6 +16,7 @@ for (const activity of ['chat', 'planning', 'worker', 'topic import']) {
     let started = false;
     let stopped = false;
     space.registry.runTurn = async (_engine, opts) => {
+    if (isMemoryCall(opts)) return MEMORY_IDLE;
       if (activity === 'worker' && opts.system.includes('这次任务协作的协调者')) {
         return { text: JSON.stringify({ tasks: [{ id: 'T1', title: '测试', assignee: 'Alice', deps: [], spec: '等待中止' }] }) };
       }

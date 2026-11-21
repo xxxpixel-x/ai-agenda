@@ -13,16 +13,18 @@
 //   host.track(promise) / emit(ev) / save()
 import { t as tr } from './i18n.mjs';
 import { randomUUID } from 'node:crypto';
-import { systemPrompt, turnPrompt, parseMarkers, mentionsIn, recentStart } from './prompts.mjs';
+import { systemPrompt, buildTurnContext, parseMarkers, mentionsIn, recentStart } from './prompts.mjs';
 import { runAgentTurn } from './turn-runner.mjs';
-import { importsBackground, briefVersions, resumeNote, resumeOpts } from './imports.mjs';
+import { importBlocks, briefVersions, resumeNote, resumeOpts } from './imports.mjs';
 import { isPreapproved, parseCommand, normalizeAllowed } from './approvals.mjs';
+
+import { withOverflowRetry } from './context.mjs';
 
 const str = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
 // 新开的长会话先带最近几轮原文（更早的等第三批的交接说明和记忆库）
 const RECENT_ROUNDS = 3;
 // 这些变了，之前的会话就不再适用（续接的会话不会再收到新的系统提示）
-const sessionSig = (member, solo, access, asks) => JSON.stringify([solo, member.engine, member.model || '', member.effort || '', member.persona || '', access, asks]);
+const sessionSig = (member, solo, access, asks) => JSON.stringify([solo, member.engine, member.source || '', member.model || '', member.effort || '', member.persona || '', access, asks]);
 
 export class Chat {
   constructor(host) {
@@ -148,6 +150,9 @@ export class Chat {
         const item = this.queue.shift();
         const member = this.host.members.find((m) => m.id === item.memberId);
         if (!member) continue;
+        const handoff = this.host.waitHandoff?.(member.id);
+        if (handoff) await handoff;
+        if (this.stopRequested) break;
         const r = await this.runTurn(member, item.reason);
         this.turns++;
         if (r.error) { failed = member.name; break; } // 出错就停下，等你处理
@@ -173,6 +178,27 @@ export class Chat {
     }
   }
 
+  longSession(member) {
+    return this.host.registry.supportsResume(member.engine) || (this.solo && !!this.host.registry.supportsPrivateSessions?.(member.engine));
+  }
+
+  buildContext(member, { reason, resume, tokenBudget, state = this.host.memberState[member.id] || {}, access, asks, space = this.host.promptView() } = {}) {
+    const h = this.host, api = h.registry.isApi(member.engine);
+    asks ??= h.access === 'run' && !api && h.registry.supportsApproval(member.engine);
+    access ??= h.access === 'run' && !api && !asks ? 'edit' : h.access;
+    const long = this.longSession(member);
+    resume ??= !!state.sessionId && state.seen != null && (!!state.importId || (long && state.sig === sessionSig(member, this.solo, access, asks)));
+    const system = systemPrompt(space, member, { api, access, approvals: asks, solo: this.solo }) + (resume && state.importId
+      ? `\n${resumeNote(space.messages.find((m) => m.id === state.importId) || { sourceLabel: member.engineLabel }, h.workspacePath)}\n` : '');
+    return buildTurnContext(space, member, {
+      system, reason: this.solo ? 'solo' : reason, api, files: api ? h.ws.snapshot() : null,
+      since: resume ? state.seen : null, recent: !resume && long && !state.importId ? recentStart(space.messages, RECENT_ROUNDS) : null,
+      importBlocks: importBlocks(space.messages, { from: resume ? state.seen : 0, excludeId: resume ? state.importId : null, briefs: resume ? state.briefs || {} : null }),
+      memory: h.memory, memoryDir: h.memoryDir, recap: h.recap?.text, lastMemoryId: state.lastMemoryId,
+      handoffNote: !resume && long ? state.pendingHandoff : '', tokenBudget,
+    });
+  }
+
   async runTurn(member, reason) {
     const h = this.host;
     const api = h.registry.isApi(member.engine);
@@ -180,7 +206,7 @@ export class Chat {
     const imported = state.importId ? state : null; // 接续导入对话的成员
     const solo = h.members.length === 1;
     // 长会话：引擎本来就续接（meta.resume），或者单人聊天里会话能放在 Agenda 自己的地方（meta.privateSessions）
-    const longSession = h.registry.supportsResume(member.engine) || (solo && !!h.registry.supportsPrivateSessions?.(member.engine));
+    const longSession = this.longSession(member);
     const canResume = longSession || !!imported;
     const outside = h.ws.begin();
     if (outside.length) h.emit({ type: 'files_changed', changes: outside });
@@ -190,22 +216,12 @@ export class Chat {
     const sig = sessionSig(member, solo, access, asks);
     const stale = !imported && state.sig !== sig; // 设定变了：换新会话
 
-    const build = (resume) => ({
-      system: systemPrompt(h.promptView(), member, { api, access, approvals: asks, solo }) + (resume && imported
-        ? `\n${resumeNote(h.messages.find((m) => m.id === imported.importId) || { sourceLabel: member.engineLabel }, h.workspacePath)}\n` : ''),
-      prompt: turnPrompt(h.promptView(), member, {
-        reason: solo ? 'solo' : reason, api,
-        files: api ? h.ws.snapshot() : null,
-        since: resume ? state.seen : null,
-        recent: !resume && solo && longSession && !imported ? recentStart(h.messages, RECENT_ROUNDS) : null,
-        background: importsBackground(h.messages, { from: resume ? state.seen : 0, excludeId: resume ? imported?.importId : null, briefs: resume ? state.briefs || {} : null }),
-      }),
-    });
-
     const msg = { id: randomUUID(), kind: 'ai', memberId: member.id, name: member.name, engine: member.engine, text: '', ts: Date.now(), streaming: true, activities: [] };
     const last = h.messages.findLastIndex((m) => m.kind === 'ai' && m.memberId === member.id);
     const images = h.images(h.messages.slice(last + 1).filter((m) => m.kind === 'user').flatMap((m) => m.attachments || []));
-    const seen = h.messages.length + 1;
+    const space = { ...h.promptView(), messages: h.messages.slice() };
+    const seen = space.messages.length + 1;
+    const retry = { used: false };
     if (member.model) msg.model = member.model;
     const controller = new AbortController();
     this.current = { msg, controller, member };
@@ -216,37 +232,36 @@ export class Chat {
     const started = Date.now();
     const result = { passed: false, done: false, mentions: [], error: false };
     const call = (resume) => {
-      const { system, prompt } = build(resume);
-      return runAgentTurn(h.registry, member, {
-        system,
-        prompt,
-        cwd: h.workspacePath,
-        access,
-        ...resumeOpts(resume, state),
-        keepSession: longSession && !imported, // 新开的会话要留着下次续接
-        signal: controller.signal,
-        sink: msg,
-        images,
+      const build = (budget) => {
+        const ctx = this.buildContext(member, { reason, resume, tokenBudget: budget, state, access, asks, space });
+        if (!resume && ctx.meta.omittedSeq) h.rollover?.(ctx.meta.omittedSeq);
+        return ctx;
+      };
+      return withOverflowRetry(h, member, msg, build, ({ system, prompt }) => runAgentTurn(h.registry, member, {
+        system, prompt, cwd: h.workspacePath, access, ...resumeOpts(resume, state),
+        keepSession: longSession && !imported, imported: !!imported, readOnlyDirs: h.memoryDir ? [h.memoryDir] : [],
+        signal: controller.signal, sink: msg, images,
         onNoImages: () => h.emit({ type: 'no_images', id: msg.id }),
         ws: h.ws,
         onDelta: (t) => h.emit({ type: 'delta', id: msg.id, text: t }),
         onActivity: (a) => h.emit({ type: 'activity', id: msg.id, activity: a }),
         onApproval: asks ? (req) => this.requestApproval(msg, req, controller.signal) : undefined,
-      });
+      }), controller.signal, retry);
     };
 
     try {
       const resume = canResume && !!state.sessionId && state.seen != null && !stale;
-      let r;
+      let outcome;
       let fellBack = false;
       try {
-        r = await call(resume);
+        outcome = await call(resume);
       } catch (e) {
         if (!resume || !e.resumeFailed) throw e;
         msg.text = '';
         fellBack = true;
-        r = await call(false); // 旧会话失效：开新会话重来
+        outcome = await call(false);
       }
+      const { result: r, meta: { lastMemoryId } } = outcome;
       const mk = parseMarkers(r.text, { markers: !solo });
       msg.text = mk.text;
       msg.passed = mk.passed;
@@ -259,9 +274,9 @@ export class Chat {
         delete h.memberState[member.id];
         h.emit({ type: 'notice', level: 'error', text: tr('{0} 接不上导入的原会话了，之后按普通成员发言。', [member.name]) });
       } else if (imported) {
-        h.memberState[member.id] = { ...imported, sessionId: r.sessionId || imported.sessionId, fork: false, seen, briefs: briefVersions(h.messages) };
+        h.memberState[member.id] = { ...imported, sessionId: r.sessionId || imported.sessionId, fork: false, seen, lastMemoryId, briefs: briefVersions(space.messages) };
       } else if (canResume) {
-        h.memberState[member.id] = { sessionId: r.sessionId, seen, briefs: briefVersions(h.messages), sig };
+        h.memberState[member.id] = { sessionId: r.sessionId, seen, lastMemoryId, briefs: briefVersions(space.messages), sig };
       } else {
         delete h.memberState[member.id]; // 切回一次性对话（比如单人聊天加了成员）：之前的长会话不再用
       }
@@ -274,7 +289,10 @@ export class Chat {
         result.error = true;
         h.emit({ type: 'notice', level: 'error', text: `${member.name}：${e.message}` });
       }
-      if (!imported) delete h.memberState[member.id]; // 下次开新会话（接续导入对话的保留，下次接着试）
+      if (!imported) {
+        if (state.pendingHandoff) h.memberState[member.id] = { pendingHandoff: state.pendingHandoff };
+        else delete h.memberState[member.id];
+      } // 下次开新会话（接续导入对话的保留，下次接着试）
     } finally {
       this.expireApprovals(msg);
       // 就算出错或被打断，它已经改了的文件也要记下来

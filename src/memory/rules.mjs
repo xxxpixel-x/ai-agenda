@@ -46,6 +46,7 @@ function evidence(entry, op, ctx) {
       at = Number.isFinite(op.at) && op.at >= 0 && op.at <= at ? op.at : number(m.originalTs);
     }
     entry.at = Math.max(entry.at, at);
+    proof.handoff ||= !!ctx.handoffSeqs?.has(seq);
     proof.user ||= m.kind === 'user' || m.kind === 'import';
     proof.acted ||= m.kind === 'ai' && m.changes === true;
     proof.observed ||= m.activities === true || m.changes === true;
@@ -110,7 +111,7 @@ function classify(entry, proof, op, notes) {
     notes.push(tr('AI 的建议没有依据成为决定或约束，记成提议'));
   }
   if (type === 'fact' && !(proof.user || proof.observed || source.tasks.length || source.files.length)) return fail('AI 没验证过的说法不算项目事实');
-  if (type === 'rejected' && !(proof.user || source.tasks.length)) return fail('否决过需要你的原话或任务出处');
+  if (type === 'rejected' && !(proof.user || proof.handoff || source.tasks.length)) return fail('否决过需要你的原话或任务出处');
 }
 
 function linkTargets(op, entry, type, byId, proof, notes) {
@@ -188,12 +189,14 @@ export function check(op, entries = [], ctx) {
   return { ok: true, entry, ...(notes.length ? { note: notes.join(tr('；')) } : {}) };
 }
 
-export function normalizeOps(raw) {
+export function normalizeOrganizerResult(raw) {
   if (typeof raw !== 'string') return null;
   try {
     const fenced = !/^[\s]*[\[{]/.test(raw) && raw.match(/```(?:json)?\s*\n?([\s\S]*?)```/i);
     const data = JSON.parse(fenced ? fenced[1] : raw);
     const ops = Array.isArray(data) ? data : data?.ops;
-    return Array.isArray(ops) ? ops : null;
+    return Array.isArray(ops) ? { ops, ...(typeof data.recap === 'string' ? { recap: data.recap.trim() } : {}) } : null;
   } catch { return null; }
 }
+
+export const normalizeOps = (raw) => normalizeOrganizerResult(raw)?.ops ?? null;
