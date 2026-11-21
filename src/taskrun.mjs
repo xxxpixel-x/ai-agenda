@@ -8,7 +8,7 @@
 //
 // 依赖的是一个很窄的“宿主”接口（见 space.mjs 的 runHost），不直接碰 Space：
 //   host.members / access / workspacePath / workspaceType / dir
-//   host.registry / ws / importBackground / deleting / messages / track(promise) / emit(ev) / save()
+//   host.registry / ws / memory / deleting / messages / track(promise) / emit(ev) / save()
 //   host.addMessage(msg) / messageDone(msg)：往任务空间的对话里加一条、一条写完了
 //   澄清结束后用 host.track 接着规划；等回答期间，输入框发来的消息先排队
 import { t as tr } from './i18n.mjs';
@@ -19,9 +19,12 @@ import os from 'node:os';
 import path from 'node:path';
 import * as G from './git.mjs';
 import { Workspace } from './workspace.mjs';
+import { withOverflowRetry, assembleContext, memoryForTurn } from './context.mjs';
+import { importBlocks } from './imports.mjs';
+import { clarificationDecision } from './memory/organize.mjs';
 import { runAgentTurn } from './turn-runner.mjs';
 import { AbortedError } from './engines/proc.mjs';
-import { parseMarkers, attachmentText } from './prompts.mjs';
+import { newKey, parseMarkers, attachmentText } from './prompts.mjs';
 import {
   plannerSystem, plannerPrompt, reviewerSystem, reviewerPrompt, workerSystem, workerPrompt,
   summarySystem, summaryPrompt, commitSystem, commitPrompt, parsePlan, parseClarify, normalizePlan, parseReport,
@@ -186,16 +189,36 @@ export class TaskRun extends EventEmitter {
   }
 
   // ---------- 调用 AI（统一处理流式、日志、文件块） ----------
-  async call(member, { system, prompt, cwd, access, key, sink, wsForApi, onDelta, images, onNoImages }) {
+  buildContext(member, { system, prompt, task, files, tokenBudget }) {
+    const h = this.host, api = h.registry.isApi(member.engine);
+    const taskFiles = [...(task?.files || []), ...(task?.changes || []).map((c) => c.path)];
+    const focus = task ? { id: task.id, deps: task.deps, files: taskFiles, text: task.title + '\n' + task.spec } : { coordinator: true };
+    const base = typeof prompt === 'function' ? prompt('') : prompt;
+    return assembleContext({ system, tokenBudget, imports: importBlocks(h.messages || []), files,
+      lines: [{ text: base }], memory: (limits) => memoryForTurn({ memory: h.memory, memoryDir: h.memoryDir, api,
+        task: focus, query: focus.text || this.data.objective, references: base, messages: h.messages }, limits),
+      compose: (s) => [s.memory.prefix, s.memory.extras, s.imports, typeof prompt === 'function' ? prompt(s.files) : base].filter(Boolean).join('\n\n'),
+    });
+  }
+
+  previewContext(member, tokenBudget) {
+    const d = this.data, h = this.host;
+    const task = d.tasks.find((t) => t.assigneeId === member.id && !SETTLED.has(t.status));
+    const api = h.registry.isApi(member.engine), cwd = task?.git?.path || h.workspacePath;
+    if (task) return this.buildContext(member, { system: workerSystem(h, d, task, member, { api, cwd }), task,
+      files: api ? h.ws.snapshot() : null, prompt: (fileText) => workerPrompt(h, d, task, { key: 'preview0', fileText }), tokenBudget });
+    return this.buildContext(member, { system: plannerSystem(h, d, member), prompt: plannerPrompt(d, { clarify: d.clarify }), tokenBudget });
+  }
+
+  async call(member, { system, prompt, cwd, access, key, sink, wsForApi, onDelta, images, onNoImages, task, files }) {
     if (this.host.deleting) throw new AbortedError();
     const controller = new AbortController();
     this.controllers.set(key, controller);
     try {
-      // 任务会开启独立会话：每次调用都附带当前导入背景，包括补导和已采用的简报版本。
-      const background = this.host.importBackground;
-      const r = await runAgentTurn(this.host.registry, member, {
-        system,
-        prompt: background ? `${background}\n\n${prompt}` : prompt,
+      controller.memberId = member.id;
+      const build = (tokenBudget) => this.buildContext(member, { system, prompt, task, files, tokenBudget });
+      const { result } = await withOverflowRetry(this.host, member, sink, build, (ctx) => runAgentTurn(this.host.registry, member, {
+        system: ctx.system, prompt: ctx.prompt, readOnlyDirs: this.host.memoryDir ? [this.host.memoryDir] : [],
         cwd,
         access,
         signal: controller.signal,
@@ -205,8 +228,8 @@ export class TaskRun extends EventEmitter {
         maxLog: MAX_LOG,
         onDelta: (t) => { onDelta?.(t); this.changed(); },
         onActivity: () => this.changed(),
-      });
-      return r.text;
+      }), controller.signal);
+      return result.text;
     } finally {
       this.controllers.delete(key);
     }
@@ -277,11 +300,11 @@ export class TaskRun extends EventEmitter {
       d.tasks = tasks.map((t) => this.blankTask(t));
       const defaults = (d.clarify?.resolvedAt != null ? d.clarify.questions : [])
         .filter((q) => !Object.hasOwn(d.clarify.answers, q.id))
-        .map((q) => [q.text.replace(/[?？:：\s]+$/, ''), q.default])
-        .map(([q, def]) => (def ? tr('{0}：按默认处理（{1}）', [q, def]) : tr('{0}：按默认处理', [q])));
+        .map((q) => clarificationDecision(q, d.clarify.answers));
       // 默认条目始终排在前面；重新规划时只沿用后面的协调者假设。
       if (!assumptions.length && d.assumptions) assumptions = d.assumptions.slice(defaults.length);
       d.assumptions = [...defaults, ...assumptions];
+      this.host.recordPlanDecisions?.(d);
       d.status = 'plan_review';
     } catch (e) {
       d.status = d.tasks.length ? 'plan_review' : 'failed';
@@ -333,6 +356,7 @@ export class TaskRun extends EventEmitter {
     c.resolvedAt = clock.now();
     c.defaulted = c.questions.filter((q) => !Object.hasOwn(c.answers, q.id)).map((q) => q.id);
     if (timedOut) c.timedOut = true;
+    this.host.recordPlanDecisions?.(this.data);
     this.changed();
     this.host.track(this.plan());
   }
@@ -445,9 +469,10 @@ export class TaskRun extends EventEmitter {
 
       const api = this.host.registry.isApi(member.engine);
       const access = this.host.access === 'read' ? 'edit' : this.host.access;
+      const key = newKey();
       const text = await this.call(member, {
         system: workerSystem(this.host, d, task, member, { api, cwd }),
-        prompt: workerPrompt(this.host, d, task, { files: ws ? ws.snapshot() : null, conflict }),
+        task, files: ws?.snapshot(), prompt: (fileText) => workerPrompt(this.host, d, task, { key, fileText, conflict }),
         cwd,
         access,
         key: task.id,
@@ -525,6 +550,7 @@ export class TaskRun extends EventEmitter {
     }
     t.status = 'approved';
     t.approvedAt = Date.now();
+    this.host.recordApprovedTask?.(t);
     this.changed();
     this.tick();
     return { ok: true };

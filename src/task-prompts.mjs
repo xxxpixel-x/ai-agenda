@@ -26,35 +26,43 @@ export function plannerSystem(space, run, me, { clarify = false } = {}) {
 /** 总目标是用户写的，带上发言人标记（见 prompts.mjs）。 */
 const objective = (run, key) => tr('# 总目标\n{0}', [said(key, '', run.objective, true)]);
 
+export function placeKeyRule(parts, key) {
+  const items = parts.filter(Boolean);
+  const first = items.findIndex((p) => /<(?:消息|message) /.test(p));
+  items.splice(first < 0 ? items.length : first, 0, keyRule(key));
+  return items.join('\n\n');
+}
+
 function clarifyText(clarify, key) {
   if (clarify?.resolvedAt == null) return '';
   const lines = clarify.questions.map((q) => {
     const answer = Object.hasOwn(clarify.answers, q.id)
       ? tr('用户的回答：{0}', [said(key, '', clarify.answers[q.id], true)])
-      : q.default ? tr('没回答，按默认：{0}', [q.default]) : tr('没回答，按你认为最合理的处理');
-    return `- ${q.id} ${q.text}\n  ${answer}`;
+      : q.default ? tr('没回答，按默认：{0}', [escapeTags(q.default)]) : tr('没回答，按你认为最合理的处理');
+    return `- ${q.id} ${escapeTags(q.text)}\n  ${answer}`;
   });
   return tr('# 规划前的澄清\n{0}', [lines.join('\n')]);
 }
 
-export function plannerPrompt(run, { feedback = [], previous = null, key = newKey(), clarify } = {}) {
-  const parts = [keyRule(key), objective(run, key)];
+export function plannerPrompt(run, { feedback = [], previous = null, key = newKey(), clarify, memory = '' } = {}) {
+  const parts = [escapeTags(memory)];
+  if (previous) parts.push(tr('# 你之前给出的计划\n```json\n{0}\n```', [escapeTags(JSON.stringify({ tasks: previous }, null, 1))]));
+  parts.push(objective(run, key));
   const clarification = clarifyText(clarify, key);
   if (clarification) parts.push(clarification);
-  if (previous) parts.push(tr('# 你之前给出的计划\n```json\n{0}\n```', [JSON.stringify({ tasks: previous }, null, 1)]));
   if (feedback.length) parts.push(tr('# 意见\n{0}', [feedback.map((f) => said(key, f.name, f.text)).join('\n\n')]));
   parts.push(previous ? tr('根据意见修改计划，重新给出完整计划。') : tr('请给出计划。'));
   if (clarification) parts.push(tr('按用户的回答规划。软件会将按默认处理的问题列进假设，assumptions 里不用重复。'));
-  return parts.join('\n\n');
+  return placeKeyRule(parts, key);
 }
 
 export function reviewerSystem(space, run, me, coordinator) {
   return tr('tasks.reviewer', [me.name, coordinator.name, roster(space), modeLine(run)]);
 }
 
-export function reviewerPrompt(run, tasks, { key = newKey(), clarify } = {}) {
-  const goal = [objective(run, key), clarifyText(clarify, key)].filter(Boolean).join('\n\n');
-  return tr('{0}\n\n{1}\n\n# 计划\n{2}\n\n请提意见，没有意见只回复 [同意]。', [keyRule(key), goal, planText(tasks, null)]);
+export function reviewerPrompt(run, tasks, { key = newKey(), clarify, memory = '' } = {}) {
+  return placeKeyRule([escapeTags(memory), tr('# 计划\n{0}', [escapeTags(planText(tasks, null))]), objective(run, key),
+    clarifyText(clarify, key), tr('请提意见，没有意见只回复 [同意]。')], key);
 }
 
 function planText(tasks, members, mine) {
@@ -97,34 +105,37 @@ export function workerSystem(space, run, task, me, { api = false, cwd } = {}) {
 function decisionsText(run, key) {
   const parts = [];
   const answers = (run.clarify?.questions || []).filter((q) => Object.hasOwn(run.clarify.answers, q.id));
-  if (answers.length) parts.push(tr('## 用户的回答\n{0}', [answers.map((q) => `- ${q.text}\n  ${said(key, '', run.clarify.answers[q.id], true)}`).join('\n')]));
-  if (run.assumptions?.length) parts.push(tr('## 假设\n{0}', [run.assumptions.map((a) => `- ${a}`).join('\n')]));
+  if (answers.length) parts.push(tr('## 用户的回答\n{0}', [answers.map((q) => `- ${escapeTags(q.text)}\n  ${said(key, '', run.clarify.answers[q.id], true)}`).join('\n')]));
+  if (run.assumptions?.length) parts.push(tr('## 假设\n{0}', [run.assumptions.map((a) => `- ${escapeTags(a)}`).join('\n')]));
   return parts.length ? tr('# 已经定下的\n{0}', [parts.join('\n\n')]) : '';
 }
 
-export function workerPrompt(space, run, task, { files = null, conflict = null, key = newKey() } = {}) {
-  const parts = [keyRule(key), objective(run, key)];
-  const decisions = decisionsText(run, key);
-  if (decisions) parts.push(decisions);
-  parts.push(tr('# 整体计划\n{0}', [planText(run.tasks, space.members, task.id)]));
-  if (files) parts.push(filesForPrompt(files));
-  parts.push(tr('# 你的子任务 {0}：{1}\n{2}', [task.id, task.title, task.spec]));
+export function workerPrompt(space, run, task, { files = null, conflict = null, key = newKey(), memory = '', maxDepReport = 1500, fileText } = {}) {
+  const fixed = [memory, tr('# 整体计划\n{0}', [planText(run.tasks, space.members, task.id)])];
+  fixed.push(tr('# 你的子任务 {0}：{1}\n{2}', [task.id, task.title, task.spec]));
   const deps = run.tasks.filter((t) => task.deps.includes(t.id));
   if (deps.length) {
-    parts.push(tr('# 前置任务的结果\n{0}{1}', [deps.map((d) => {
+    fixed.push(tr('# 前置任务的结果\n{0}{1}', [deps.map((d) => {
       const who = space.members.find((m) => m.id === d.assigneeId)?.name || '?';
-      const rep = d.attempts.at(-1)?.report || tr('（没有报告）');
+      const attempts = d.attempts || [];
+      let i = attempts.findLastIndex((a) => !a.error && !['failed', 'question', 'cancelled', 'stopped'].includes(a.outcome));
+      if (i < 0) i = attempts.length - 1;
+      let rep = attempts[i]?.report || tr('（没有报告）');
+      if (rep.length > maxDepReport) rep = rep.slice(0, Math.min(maxDepReport, 400)) + tr('……（完整记录见任务 {0} 第 {1} 次执行）', [d.id, i + 1]);
+      if (i > 0) rep += '\n' + tr('（最新验收通过的第 {0} 版；更早的 {1} 个版本已被取代，如需回查原因见记忆库或任务记录）', [i + 1, i]);
       return `## ${d.id} ${d.title}（${who}）\n${rep}${d.changes?.length ? tr('\n改动的文件：{0}', [d.changes.map((c) => c.path).join('、')]) : ''}`;
     }).join('\n\n'), run.mode === 'git' ? tr('\n（这些结果已经合并进你的副本。）') : '']));
   }
+  if (fileText || files) fixed.push(fileText || filesForPrompt(files));
+  const parts = [...fixed.map(escapeTags), objective(run, key), decisionsText(run, key)];
   const prev = task.attempts.filter((a) => a.report || a.error);
-  if (prev.length) parts.push(tr('# 你上一次的结果\n{0}\n（你上次的改动还在工作目录里，在此基础上继续。）', [prev.at(-1).report || prev.at(-1).error]));
+  if (prev.length) parts.push(tr('# 你上一次的结果\n{0}\n（你上次的改动还在工作目录里，在此基础上继续。）', [escapeTags(prev.at(-1).report || prev.at(-1).error)]));
   if (task.notes?.length) parts.push(tr('# 用户中途补充的要求（协调者转给你的，请一并照做）\n{0}', [task.notes.map((n) => said(key, '', n.text, true)).join('\n')]));
   if (task.feedbacks?.length) parts.push(tr('# 用户的意见（请按意见修改）\n{0}', [task.feedbacks.map((f) => said(key, '', f.text, true)).join('\n')]));
-  if (task.question && task.answer) parts.push(tr('# 你之前的问题\n{0}\n# 用户的回答\n{1}', [task.question, said(key, '', task.answer, true)]));
-  if (conflict) parts.push(tr('# 合并冲突\n你的改动和已经通过的其他子任务冲突了。下面这些文件里有 <<<<<<< ======= >>>>>>> 冲突标记，请解决冲突（保留双方都需要的内容），删除所有冲突标记：\n{0}', [conflict.map((f) => `- ${f}`).join('\n')]));
+  if (task.question && task.answer) parts.push(tr('# 你之前的问题\n{0}\n# 用户的回答\n{1}', [escapeTags(task.question), said(key, '', task.answer, true)]));
+  if (conflict) parts.push(tr('# 合并冲突\n你的改动和已经通过的其他子任务冲突了。下面这些文件里有 <<<<<<< ======= >>>>>>> 冲突标记，请解决冲突（保留双方都需要的内容），删除所有冲突标记：\n{0}', [conflict.map((f) => `- ${escapeTags(f)}`).join('\n')]));
   parts.push(tr('现在开始做。做完按规则报告。'));
-  return parts.join('\n\n');
+  return placeKeyRule(parts, key);
 }
 
 /** 解析报告最后的“结果：…”。 */
@@ -145,18 +156,18 @@ export function summarySystem(space, me) {
   return tr('tasks.summary', [me.name]);
 }
 
-export function summaryPrompt(space, run, { key = newKey() } = {}) {
+export function summaryPrompt(space, run, { key = newKey(), memory = '' } = {}) {
   const tasks = run.tasks.map((t) => {
     const who = space.members.find((m) => m.id === t.assigneeId)?.name || '?';
     const a = t.attempts.at(-1);
     return tr('## {0} {1}（{2}，{3}，做了 {4} 次）\n{5}{6}{7}', [
-      t.id, t.title, who, STATUS_TEXT[t.status], t.attempts.length,
-      a?.report || a?.error || tr('（没有报告）'),
-      t.changes?.length ? tr('\n改动：{0}', [t.changes.map((c) => c.path).join('、')]) : '',
+      t.id, escapeTags(t.title), escapeTags(who), STATUS_TEXT[t.status], t.attempts.length,
+      escapeTags(a?.report || a?.error || tr('（没有报告）')),
+      t.changes?.length ? tr('\n改动：{0}', [t.changes.map((c) => escapeTags(c.path)).join(tr('、'))]) : '',
       t.feedbacks?.length ? tr('\n用户意见：\n{0}', [t.feedbacks.map((f) => said(key, '', f.text, true)).join('\n')]) : '',
     ]);
   }).join('\n\n');
-  return tr('{0}\n\n{1}\n\n# 子任务\n{2}\n\n请写总结。', [keyRule(key), objective(run, key), tasks]);
+  return placeKeyRule([escapeTags(memory), objective(run, key), tr('# 子任务\n{0}', [tasks]), tr('请写总结。')], key);
 }
 
 export function commitSystem(space, me) {
@@ -270,7 +281,7 @@ function progressText(space, run) {
     } else if (a?.report || a?.error) {
       lines.push(tr('最近一次的结果：{0}', [(a.report || a.error).slice(0, 1200)]));
     }
-    if (t.changes?.length) lines.push(tr('改动的文件：{0}', [t.changes.map((c) => c.path).join('、')]));
+    if (t.changes?.length) lines.push(tr('改动的文件：{0}', [t.changes.map((c) => escapeTags(c.path)).join(tr('、'))]));
     return lines.join('\n');
   }).join('\n\n');
 }
@@ -280,16 +291,15 @@ export function triageSystem(space, run, me) {
 }
 
 /** history：这个任务空间里你和协调者最近的几轮对话（不含这一条）。 */
-export function triagePrompt(space, run, text, { history = [], key = newKey() } = {}) {
-  const parts = [keyRule(key), objective(run, key)];
+export function triagePrompt(space, run, text, { history = [], key = newKey(), memory = '' } = {}) {
+  const parts = [escapeTags(memory)];
   parts.push(tr('# 现在的阶段\n{0}', [run.status === 'done' ? tr('所有子任务都结束了，你已经写过总结；用户还没有结束这个任务。') : run.status === 'plan_review' ? tr('计划还在等用户确认，还没开始执行。') : tr('正在执行。')]));
-  const decisions = decisionsText(run, key);
-  if (decisions) parts.push(decisions);
-  parts.push(tr('# 计划和进展\n{0}', [progressText(space, run) || tr('（还没有子任务）')]));
+  parts.push(tr('# 计划和进展\n{0}', [escapeTags(progressText(space, run) || tr('（还没有子任务）'))]));
+  parts.push(objective(run, key), decisionsText(run, key));
   if (history.length) parts.push(tr('# 之前的对话\n{0}', [history.map((m) => said(key, m.name, attachmentText(m, space.workspacePath), m.kind === 'user')).join('\n\n')]));
   parts.push(tr('# 用户刚发来的消息\n{0}', [said(key, '', text, true)]));
   parts.push(tr('请判断并按格式回复。'));
-  return parts.join('\n\n');
+  return placeKeyRule(parts, key);
 }
 
 /** 取出协调者的判断：```json 块里的 { type, notes, stop, tasks }，其余文字是给用户的回复。 */

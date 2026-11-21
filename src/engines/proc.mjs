@@ -55,7 +55,8 @@ const quoteForCmd = (a) => `"${String(a).replace(/"/g, '""')}"`;
  */
 export function spawnSmart(cmd, args, opts = {}) {
   const viaShell = isWin && /\.(cmd|bat)$/i.test(cmd);
-  return spawn(viaShell ? quoteForCmd(cmd) : cmd, viaShell ? args.map(quoteForCmd) : args, {
+  const command = viaShell ? [cmd, ...args].map(quoteForCmd).join(' ') : cmd;
+  return spawn(command, viaShell ? [] : args, {
     shell: viaShell,
     windowsHide: true,
     stdio: ['pipe', 'pipe', 'pipe'],

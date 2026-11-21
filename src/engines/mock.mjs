@@ -3,6 +3,8 @@
 import { t as tr } from '../i18n.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { handoffSystem } from '../context.mjs';
 import { AbortedError } from './proc.mjs';
 
 export const meta = {
@@ -20,8 +22,10 @@ export const meta = {
 };
 
 const sleep = (ms, signal) => new Promise((resolve, reject) => {
-  const t = setTimeout(resolve, ms);
-  signal?.addEventListener('abort', () => { clearTimeout(t); reject(new AbortedError()); }, { once: true });
+  if (signal?.aborted) return reject(new AbortedError());
+  const abort = () => { clearTimeout(timer); reject(new AbortedError()); };
+  const timer = setTimeout(() => { signal?.removeEventListener('abort', abort); resolve(); }, ms);
+  signal?.addEventListener('abort', abort, { once: true });
 });
 
 export async function detect() {
@@ -72,20 +76,28 @@ function fakeUsage({ system, prompt }, text) {
 }
 
 export async function runTurn(opts) {
+  if (opts.prompt.includes('[TEST_CONTEXT_OVERFLOW]') || (opts.mockContextLimit && opts.prompt.length > opts.mockContextLimit)) {
+    throw Object.assign(new Error('context_length_exceeded: maximum context length exceeded'), { contextOverflow: true });
+  }
   const r = await reply(opts);
-  return { ...r, usage: fakeUsage(opts, r.text) };
+  return { ...r, ...(opts.keepSession || opts.sessionId ? { sessionId: opts.sessionId || 'mock-session-' + randomUUID() } : {}), usage: fakeUsage(opts, r.text) };
 }
 
 async function reply({ system, prompt, images = [], cwd, access, signal, onDelta, onActivity, onRaw, onApproval }) {
   const me = (system.match(/(?:你是「|You are “)([^」”]+)[」”]/) || [])[1] || tr('演示');
   const members = [...system.matchAll(/^- @([^（(\s]+)/gm)].map((m) => m[1]);
   onRaw?.(`{"type":"mock.start","me":"${me}"}`);
-  await sleep(400, signal);
+  if (system === handoffSystem()) {
+    const refs = prompt.split('\n').slice(1).filter((s) => /走不通|失败|未完成|待办|failed|didn.t work|unfinished|pending/i.test(s));
+    return { text: refs.slice(-3).join('\n') || tr('[无]') };
+  }
 
   if (system.startsWith(tr('你是这个空间记忆库的整理者'))) {
-    const { mockOps } = await import('../memory/organize.mjs');
-    return stream('```json\n' + JSON.stringify({ ops: mockOps(prompt) }) + '\n```', onDelta, signal);
+    const { mockOps, mockRecap } = await import('../memory/organize.mjs');
+    return { text: JSON.stringify({ ops: mockOps(prompt), recap: mockRecap(prompt) }) };
   }
+
+  await sleep(400, signal);
 
   // ---- 任务协作：规划 / 审阅 / 子任务 / 总结 ----
   if (system.includes(tr('为这次任务的合并起草提交说明'))) return stream(tr('演示：合并已通过的任务改动'), onDelta, signal);
@@ -149,7 +161,8 @@ async function reply({ system, prompt, images = [], cwd, access, signal, onDelta
   const speakers = [...prompt.matchAll(/^<(?:消息 来自|message from)="([^"]+)"/gm)].map((m) => m[1]);
   const lastSpeaker = speakers.at(-1) || '';
   const myTurns = speakers.filter((name) => name === me).length;
-  if (myTurns >= 2 && !images.length) return { text: tr('[跳过]') };
+  const solo = /一对一|one-on-one/i.test(system);
+  if (!solo && myTurns >= 2 && !images.length) return { text: tr('[跳过]') };
   let text = lastSpeaker === tr('我') || !lastSpeaker
     ? tr('收到。我是**{0}**，先说说我的看法：这个问题可以拆成两步——先明确目标，再挑最小的可行方案验证。', [me])
     : tr('同意 **{0}** 的思路。我补充一点：把结论记到共享文档里，方便之后回看。', [lastSpeaker]);
@@ -172,6 +185,6 @@ async function reply({ system, prompt, images = [], cwd, access, signal, onDelta
     }
   }
   if (images.length) text += tr('（看到了 {0} 张图片）', [images.length]);
-  if (myTurns === 1) text += tr(' [结束]');
+  if (!solo && myTurns === 1) text += tr(' [结束]');
   return stream(text, onDelta, signal);
 }

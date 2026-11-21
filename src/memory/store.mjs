@@ -135,7 +135,7 @@ function workerRows(active, task) {
       rows.push({ e, title, text: entryLine(e) });
     }
   }
-  section(tr('全员都要遵守'), active.filter((e) => !e.scope && ['constraint', 'preference', 'rejected'].includes(e.type)));
+  section(tr('全员都要遵守'), active.filter((e) => !e.scope && (['constraint', 'preference', 'rejected'].includes(e.type) || (e.type === 'decision' && e.source.tasks?.includes('plan')))));
   section(tr('你的子任务 {0}', [task.id]), active.filter((e) => e.scope === task.id || taskIds(e).has(task.id)));
   const latest = new Map();
   for (const e of active) if (e.type === 'result' && task.deps?.includes(e.task)) latest.set(e.task, e);
@@ -161,7 +161,7 @@ function rowText(rows) {
 
 function fit(rows, budget, query) {
   const full = rowText(rows);
-  if (!Number.isFinite(budget) || full.length <= budget) return full;
+  if (!Number.isFinite(budget) || full.length <= budget) return rows;
   const scores = new Map(ranked(rows.map((r) => r.e), query).map(({ entry, score }) => [entry.id, score]));
   const order = [...rows].sort((a, b) => (scores.get(b.e.id) || 0) - (scores.get(a.e.id) || 0) || b.e.id - a.e.id);
   const kept = new Set(), headings = new Set();
@@ -171,7 +171,7 @@ function fit(rows, budget, query) {
     if (r.title && !headings.has(r.title)) cost += r.title.length + 5;
     if (cost <= left) { kept.add(r); headings.add(r.title); left -= cost; }
   }
-  return rowText(rows.filter((r) => kept.has(r)));
+  return rows.filter((r) => kept.has(r));
 }
 
 function directory(active) {
@@ -239,9 +239,26 @@ export function openMemory(dir) {
     fs.writeFileSync(file(name + '.tmp'), data);
     fs.renameSync(file(name + '.tmp'), file(name));
   }
+  function renderWithIds({ layer = 1, task, budget, query, ids = [], sinceId } = {}, rows = entries()) {
+    const active = rows.filter((e) => e.status === 'active');
+    if (layer === 1) {
+      let selected = task && !task.coordinator ? workerRows(active, task) : globalRows(rows, state().compactedAt);
+      if (sinceId != null) {
+        const byId = new Map(selected.map((r) => [r.e.id, r]));
+        selected = rows.filter((e) => e.id > sinceId).map((e) => {
+          const lines = new Set([...(byId.get(e.id)?.text.split('\n') || []), ...correctionsOf(e)]);
+          return { e, text: [...lines].join('\n') };
+        }).filter((r) => r.text);
+      }
+      const kept = fit(selected, budget, query);
+      return { text: rowText(kept), entryIds: kept.map((r) => r.e.id).sort((a, b) => a - b) };
+    }
+    const selected = layer === 2 ? active.filter((e) => e.topics?.length || taskIds(e).size) : rows.filter((e) => ids.includes(e.id));
+    return { text: render({ layer, ids }, rows), entryIds: selected.map((e) => e.id) };
+  }
   function render({ layer, task, budget, query, ids = [] } = {}, rows = entries()) {
     const current = rows.filter((e) => e.status === 'active');
-    const one = () => fit(task && !task.coordinator ? workerRows(current, task) : globalRows(rows, state().compactedAt), budget, query);
+    const one = () => renderWithIds({ layer: 1, task, budget, query }, rows).text;
     const two = () => directory(current);
     const three = () => details(rows, ids, (seq) => validId(seq) && fs.existsSync(msgFile(seq)));
     if (layer === 1) return one();
@@ -257,7 +274,7 @@ export function openMemory(dir) {
       section('目录', render({ layer: 2 }, rows)), section('全部条目', lines.join('\n'))].join('\n\n') + '\n');
   }
   return {
-    dir, entries, active, render,
+    dir, entries, active, render, renderWithIds,
     get: (id) => entries().find((e) => e.id === id),
     append(batch) {
       const rows = entries();

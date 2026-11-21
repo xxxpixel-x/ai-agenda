@@ -41,14 +41,29 @@ function contains(root, target) {
   return rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel);
 }
 
+// 新文件可能缺好几层目录。先解析存在的祖先，再补回尚未创建的路径。
+function physicalPath(target) {
+  const absolute = path.resolve(target);
+  let parent = absolute;
+  while (!fs.lstatSync(parent, { throwIfNoEntry: false })) {
+    const next = path.dirname(parent);
+    if (next === parent) throw new Error(tr('只能访问共享文件夹里的文件'));
+    parent = next;
+  }
+  return path.resolve(fs.realpathSync.native(parent), path.relative(parent, absolute));
+}
+
 export function insideDir(target, cwd) {
-  let p = path.resolve(cwd, target || '.');
-  if (!contains(cwd, p)) return false;
+  const p = path.resolve(cwd, target || '.');
+  try { return contains(cwd, p) && contains(fs.realpathSync.native(cwd), physicalPath(p)); }
+  catch { return false; }
+}
+
+function canWrite(target, cwd, readOnlyDirs) {
+  if (!insideDir(target, cwd)) return false;
   try {
-    const root = fs.realpathSync.native(cwd);
-    // 新文件可能还缺好几层目录。遇到断链、无权访问等情况一律拒绝。
-    while (!fs.lstatSync(p, { throwIfNoEntry: false })) p = path.dirname(p);
-    return contains(root, fs.realpathSync.native(p));
+    const real = physicalPath(target);
+    return !readOnlyDirs.some((dir) => contains(dir, target) || contains(physicalPath(dir), real));
   } catch { return false; }
 }
 
@@ -77,7 +92,7 @@ async function approvalFor(command, onApproval, signal) {
   }
 }
 
-export function permissionExtension({ access, cwd, tools, onApproval, signal, paths }) {
+export function permissionExtension({ access, cwd, tools, onApproval, signal, paths, readOnlyDirs = [] }) {
   const notes = new Map();
   return (api) => {
     api.on('tool_call', async ({ toolName, toolCallId, input }) => {
@@ -85,11 +100,16 @@ export function permissionExtension({ access, cwd, tools, onApproval, signal, pa
       if (!tools.includes(toolName) && !(mcp && ['run', 'full'].includes(access))) {
         return { block: true, reason: tr('超出了当前权限。') };
       }
-      if (access === 'full') return;
+      if (access === 'full' && !readOnlyDirs.length) return;
       if (fileTools.includes(toolName)) {
         // 先按 pi 的规则展开 @、~、file URL、Windows 的 /c/ 等，再检查实际访问的路径。
         const target = paths.resolveToCwd(input.path || '.', cwd);
-        if (!insideDir(target, cwd) || (toolName === 'read' && !insideDir(paths.resolveReadPath(input.path || '.', cwd), cwd))) {
+        const reading = readTools.includes(toolName);
+        const allowed = (p) => {
+          if (reading) return [cwd, ...readOnlyDirs].some((dir) => insideDir(p, dir));
+          return canWrite(p, cwd, readOnlyDirs);
+        };
+        if (!allowed(target) || (toolName === 'read' && !allowed(paths.resolveReadPath(input.path || '.', cwd)))) {
           return { block: true, reason: tr('只能访问共享文件夹里的文件') };
         }
       } else if (access === 'run' && onApproval) {

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { isMemoryCall, MEMORY_IDLE } from './helpers.mjs';
 import { t } from '../public/i18n.js';
 import { formatNotes, lineLabel, locateNotes, notesByMember, quoteLine } from '../public/js/notes-format.js';
 import { startServer } from '../src/app-server.mjs';
@@ -64,6 +65,7 @@ test('rejecting a reviewed task keeps long feedback in the retry prompt', async 
   t.after(() => settleSpace(space));
   const prompts = [];
   space.registry.runTurn = async (_engine, opts) => {
+    if (isMemoryCall(opts)) return MEMORY_IDLE;
     prompts.push(opts.prompt);
     if (prompts.length === 1) return { text: JSON.stringify({ tasks: [{ id: 'T1', title: '样例', assignee: 'Alice', spec: '整理样例' }] }) };
     return { text: '整理好了。\n结果：完成' };

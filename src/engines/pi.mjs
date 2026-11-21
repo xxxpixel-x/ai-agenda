@@ -47,7 +47,7 @@ function imageError(message) {
 }
 
 export async function runTurn({
-  system, prompt, images = [], onNoImages, model, effort, cwd, access = 'edit', signal,
+  system, prompt, images = [], onNoImages, model, effort, cwd, access = 'edit', readOnlyDirs = [], signal,
   onDelta, onActivity, onRaw, onApproval, sessionId, conn, agentDir, skills = [], mcp = {}, provider,
 }) {
   if (!agentDir) throw new Error(tr('缺少 Pi 数据目录'));
@@ -64,7 +64,7 @@ export async function runTurn({
   const name = conn?.name || 'Pi';
   try {
     ({ session } = await createSession({
-      cwd, agentDir, sessionId, model, conn, effort, provider, access, tools, shell, system, skills, mcp, signal, onApproval,
+      cwd, agentDir, sessionId, model, conn, effort, provider, access, readOnlyDirs, tools, shell, system, skills, mcp, signal, onApproval,
     }));
     signal?.addEventListener('abort', abort);
     await session.bindExtensions({});

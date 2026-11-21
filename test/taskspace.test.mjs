@@ -1,3 +1,4 @@
+import { isMemoryCall, MEMORY_IDLE } from './helpers.mjs';
 import { testInChinese as test } from './helpers.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -19,6 +20,7 @@ async function taskSpace(t, { work, decide, planConfirm = 'manual', tasks } = {}
   t.after(() => settleSpace(space));
   const calls = [];
   space.registry.runTurn = async (_engine, opts) => {
+    if (isMemoryCall(opts)) return MEMORY_IDLE;
     calls.push(opts);
     if (isPlanner(opts)) return plan(tasks || [
       { id: 'T1', title: '写需求', assignee: 'Alice', deps: [], spec: '写 需求.md' },

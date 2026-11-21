@@ -2,11 +2,13 @@
 import { t as tr } from './i18n.mjs';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
-import { fileBlockRules, filesForPrompt } from './engines/file-blocks.mjs';
+import { assembleContext, memoryForTurn, escapeTags, budgetFor, contextWindowFor } from './context.mjs';
+export { escapeTags };
+import { fileBlockRules } from './engines/file-blocks.mjs';
 
 // 聊天记录按字数取：超出预算时按档往后裁，同一档里开头几轮不变，模型那边的前缀缓存才用得上
 const HISTORY_CHARS = 60000;
-const HISTORY_STEP = 10;
+
 // 较早的 AI 长回复只留头尾（最近几条保持原样）
 const LONG_REPLY = 8000;
 const CLIP_HEAD = 4000;
@@ -32,9 +34,6 @@ export const DONE = '[结束]';
 // 任务协作的提示词是一次性的，另外再加一个每次都换的随机标记（key）。
 
 export const newKey = () => randomBytes(4).toString('hex');
-
-const TAG_RE = /<(\s*\/?\s*)(消息|message)(?=[\s>/]|$)/gi;
-export const escapeTags = (text) => String(text ?? '').replace(TAG_RE, '＜$1$2');
 
 export function said(key, who, text, user = false) {
   const speaker = user ? tr('我') : /^(me|我)$/i.test(who) ? `@${who}` : who;
@@ -103,18 +102,11 @@ function line(m, full, names) {
   const text = attachmentText(m).trim();
   if (text) parts.push(m.kind === 'ai' && !full ? clip(text) : text);
   if (m.changes?.length) parts.push(tr('（修改了：{0}）', [m.changes.map((c) => c.path).join('、')]));
+  if (m.actions?.length) parts.push(tr('（运行了：{0}）', [m.actions.join(tr('、'))]));
   return said(null, who, parts.join('\n'), m.kind === 'user');
 }
 
-/** 从第几条开始带：从最新往前装满预算，再按档对齐（最新一条总会带上）。 */
-function windowStart(lens) {
-  let i = lens.length;
-  let total = 0;
-  while (i > 0 && total + lens[i - 1] <= HISTORY_CHARS) total += lens[--i];
-  return i === 0 ? 0 : Math.min(Math.ceil(i / HISTORY_STEP) * HISTORY_STEP, lens.length - 1);
-}
-
-const visible = (m) => (m.kind === 'user' || m.kind === 'ai' || m.kind === 'task') && !m.passed && (m.text?.trim() || m.attachments?.length || m.changes?.length);
+export const visible = (m) => (m.kind === 'user' || m.kind === 'ai' || m.kind === 'task') && !m.passed && !m.streaming && (m.text?.trim() || m.attachments?.length || m.changes?.length || m.actions?.length);
 
 /** 最近 rounds 轮的起点：倒数第 rounds 条「我」的消息在 messages 里的位置。 */
 export function recentStart(messages, rounds) {
@@ -130,30 +122,38 @@ export function recentStart(messages, rounds) {
  *  background：导入的外部对话（固定附带，不占聊天记录的预算）
  *  reason：'turn' 轮到你 / 'mention' 被 @ / 'only' 只问你 / 'solo' 单人聊天（不提 [跳过]）
  */
-export function turnPrompt(space, member, { reason, api = false, files = null, since = null, recent = null, background = '' } = {}) {
-  const start = since ?? recent ?? 0;
-  const pool = space.messages.slice(start).filter(visible);
+export function turnPrompt(space, member, opts) {
+  return buildTurnContext(space, member, opts).prompt;
+}
+
+export function buildTurnContext(space, member, opts = {}) {
+  const { reason, api = false, files, since, recent, background, system = '', importBlocks, memory, memoryDir,
+    recap = '', handoffNote = '', lastMemoryId, tokenBudget = member.engine ? budgetFor(contextWindowFor(member)) : 80000 } = opts;
+  const pool = space.messages.slice(since ?? 0).filter(visible);
+  const start = since == null && recent ? space.messages.slice(0, recent).filter(visible).length : 0;
   const names = new Map((space.members || []).map((m) => [m.id, m.name]));
-  const lines = pool.map((m, i) => line(m, i >= pool.length - RECENT_FULL, names));
-  const cut = windowStart(lines.map((l) => l.length));
-  const shown = lines.slice(cut);
-  const omitted = cut + (since == null ? space.messages.slice(0, start).filter(visible).length : 0);
+  const lines = pool.map((m, i) => ({ seq: m.seq, text: line(m, recent != null && i >= start || i >= pool.length - RECENT_FULL, names) }));
+  const query = pool.findLast((m) => m.kind === 'user')?.text || pool.at(-1)?.text || '';
+  const references = [query, ...(since != null ? pool : pool.slice(-3)).map((m) => m.text), recap, handoffNote].join('\n');
   const parts = [];
-  if (since == null) parts.push(tr('# 空间：{0}', [escapeTags(space.title)]));
-  parts.push(tr('chat.rule'));
-  if (background) parts.push(escapeTags(background));
-  if (lines.length) {
-    parts.push(`# ${since != null ? tr('你上次发言之后的新消息') : tr('聊天记录')}${omitted ? tr('（更早的 {0} 条已省略）', [omitted]) : ''}\n${shown.join('\n\n')}`);
-  } else if (since != null) {
-    parts.push(tr('# 你上次发言之后没有新消息'));
-  }
-  if (api && files) parts.push(escapeTags(filesForPrompt(files)));
   if (space.readOnly) parts.push(tr('# 文件暂时只读\n任务空间「{0}」正在依次修改共享文件夹，在它做完之前，这个空间只能阅读文件，不能修改。聊天照常进行。', [escapeTags(space.readOnly.title)]));
   if (reason === 'only') parts.push(tr('「我」这条只问你（「{0}」），其他成员这次不接话。现在请你回应。', [member.name]));
   else if (reason === 'solo') parts.push(tr('现在请你（「{0}」）回复。', [member.name]));
   else if (reason === 'mention') parts.push(tr('有人 @ 了你。现在请你（「{0}」）回应。', [member.name]));
   else parts.push(tr('现在轮到你（「{0}」）发言。没有要补充的就只回复 {1}。', [member.name, tr(PASS)]));
-  return parts.join('\n\n');
+  const ending = parts.join('\n\n');
+  return assembleContext({ system, tokenBudget, files: api ? files : null, lines, start, historyChars: member.engine || opts.tokenBudget != null ? Infinity : HISTORY_CHARS,
+    imports: importBlocks || (background ? [{ fullText: background, summaryText: background }] : []),
+    handoff: handoffNote ? tr('# 上个会话的交接说明') + '\n' + handoffNote : '',
+    recap: recap ? tr('# 前情提要') + '\n' + recap : '', lastMemoryId: memory?.entries().at(-1)?.id || 0,
+    memory: (limits) => memoryForTurn({ memory, memoryDir, query, references, messages: space.messages, sinceId: since != null ? lastMemoryId ?? 0 : undefined, api }, limits),
+    compose: (s) => {
+      const history = s.recent ? `# ${since != null ? tr('你上次发言之后的新消息') : tr('聊天记录')}${s.omitted ? tr('（更早的 {0} 条已省略）', [s.omitted]) : ''}\n${s.recent}`
+        : since != null ? tr('# 你上次发言之后没有新消息') : '';
+      return [since == null && tr('# 空间：{0}', [escapeTags(space.title)]), tr('chat.rule'), s.memory.prefix, s.imports,
+        s.recap, s.handoff, history, s.memory.extras, s.files, ending].filter(Boolean).join('\n\n');
+    },
+  });
 }
 
 /** 解析回复里的 [跳过] / [结束] 标记。markers 为 false（单人聊天）时不认标记：顺手去掉，只剩标记时原样保留。 */

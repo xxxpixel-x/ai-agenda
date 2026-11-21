@@ -76,7 +76,7 @@ export function sessionDetail(source, id) {
 /** 接续原会话时传给引擎的参数：还没复制过就复制，并且只复制到导入时的最后一条。 */
 export function resumeOpts(resume, state) {
   if (!resume) return { sessionId: undefined, fork: false };
-  return { sessionId: state.sessionId, fork: !!state.fork, resumeAt: state.fork ? state.resumeAt : undefined };
+  return { sessionId: state.sessionId, imported: !!state.importId, fork: !!state.fork, resumeAt: state.fork ? state.resumeAt : undefined };
 }
 
 /** 接续中的 Claude 成员复制出来的会话：导入列表里不显示。 */
@@ -94,7 +94,7 @@ function entryText(e, aiName) {
   const who = e.role === 'user' ? tr('我') : aiName;
   const parts = [`【${who}】`];
   if (e.text) parts.push(e.text);
-  if (e.acts.length) parts.push(tr('（操作：{0}{1}）', [e.acts.slice(0, MAX_ACTS).map(localizeActivity).join('；'), e.acts.length > MAX_ACTS ? tr('；等共 {0} 个', [e.acts.length]) : '']));
+  if (e.acts?.length) parts.push(tr('（操作：{0}{1}）', [e.acts.slice(0, MAX_ACTS).map(localizeActivity).join('；'), e.acts.length > MAX_ACTS ? tr('；等共 {0} 个', [e.acts.length]) : '']));
   return parts.join('\n');
 }
 const entriesText = (entries, aiName) => entries.map((e) => entryText(e, aiName)).join('\n\n');
@@ -124,12 +124,22 @@ function topicText(m) {
  *  excludeId  接续中的 Claude 自己那段原对话（它记得，不用再给）
  *  briefs     续接会话的成员上次看到的各份主题简报版本：只给有变化的；不给表示全部都给
  */
-export function importsBackground(messages, { from = 0, excludeId = null, briefs = null } = {}) {
+export function importBlocks(messages, { from = 0, excludeId = null, briefs = null } = {}) {
   return messages
     .filter((m, i) => m.kind === 'import' && (m.mode === 'topic'
       ? m.briefText != null && (!briefs || briefs[m.id] !== m.briefVer)
       : i >= from && m.status !== 'writing' && m.id !== excludeId))
-    .map(blockText).join('\n\n---\n\n');
+    .map((m) => {
+      const fullText = blockText(m);
+      let summaryText = fullText;
+      if (m.summary || m.handoff) summaryText = blockText({ ...m, entries: [] });
+      else if (fullText.length > 650) summaryText = fullText.slice(0, 360) + '\n…\n' + fullText.slice(-240);
+      return { id: m.id, fullText, summaryText };
+    });
+}
+
+export function importsBackground(messages, opts) {
+  return importBlocks(messages, opts).map((b) => b.fullText).join('\n\n---\n\n');
 }
 
 /** 当前各份主题简报的版本，发言后记给续接会话的成员。 */

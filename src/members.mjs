@@ -40,7 +40,7 @@ export function normalizeMembers(input, engines) {
     if (!MODEL_RE.test(model)) throw new Error(tr('成员「{0}」的模型名不合法', [name]));
     const source = sourceOf(m, engine, name);
     return {
-      id: typeof m.id === 'string' && /^[a-z0-9-]{4,40}$/i.test(m.id) ? m.id : randomUUID().slice(0, 8),
+      id: typeof m.id === 'string' && /^[a-z0-9_-]{4,40}$/i.test(m.id) ? m.id : randomUUID().slice(0, 8),
       name,
       engine: engine.id,
       engineLabel: source ? `${engine.label} · ${source.name}` : engine.label,

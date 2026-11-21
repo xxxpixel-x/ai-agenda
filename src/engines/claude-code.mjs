@@ -27,6 +27,7 @@ export const meta = {
   efforts: ['', 'low', 'medium', 'high', 'xhigh', 'max'],
   get capabilities() { return tr('读写共享文件、联网搜索'); },
   approvals: true, // 运行命令前可以先问你
+  privateSessions: true,
   continuesImports: true, // 导入它自己的对话时，对应成员复制一份原会话接着聊（runTurn 的 sessionId + fork）
   usage: { tokens: true, context: true, quota: true }, // 结果里的 token 和上下文窗口、rate_limit_event 里的账号额度（2.1.325 实测）
   sources: true, // 能换模型来源（Anthropic 兼容接口）
@@ -213,7 +214,7 @@ function friendly(text, bin, source) {
  * 接续时用 --system-prompt-snapshot off，否则会一直沿用原会话第一次记下的系统提示，Agenda 的规则传不进去。
  */
 /** source / configDir：成员的模型来源（接口）和它独立的配置目录，由注册表给。 */
-export async function runTurn({ system, prompt, images = [], model, effort, cwd, access = 'edit', signal, onDelta, onActivity, onRaw, onApproval, binOverride, sessionId, fork = false, resumeAt, source, configDir }) {
+export async function runTurn({ system, prompt, images = [], model, effort, cwd, access = 'edit', signal, onDelta, onActivity, onRaw, onApproval, binOverride, sessionId, fork = false, resumeAt, source, configDir, keepSession = false, sessionHome, imported = false }) {
   const ask = access === 'run' && !!onApproval;
   const bin = findBin(binOverride);
   if (!bin) throw new Error(tr('没有找到 Claude Code'));
@@ -231,16 +232,26 @@ export async function runTurn({ system, prompt, images = [], model, effort, cwd,
     '--safe-mode',            // 不加载个人的 CLAUDE.md / 插件 / hooks / MCP
     '--strict-mcp-config',
   ];
+  const persist = !!sessionId || !!keepSession;
+  const isImported = !!imported || !!fork || !!resumeAt;
   if (sessionId) {
     args.push('--resume', sessionId, '--system-prompt-snapshot', 'off');
     if (fork) args.push('--fork-session');
     if (fork && resumeAt) args.push('--resume-session-at', resumeAt);
-  } else {
+  } else if (!persist) {
     args.push('--no-session-persistence');
   }
   if (model && !source) args.push('--model', model); // 用接口时型号走环境变量
   if (effort) args.push('--effort', effort);
-  if (source) fs.mkdirSync(configDir, { recursive: true });
+  let env;
+  if (source) {
+    fs.mkdirSync(configDir, { recursive: true });
+    env = sourceEnv(source, { configDir, model });
+  } else if (persist && !isImported && sessionHome) {
+    fs.mkdirSync(sessionHome, { recursive: true });
+    env = { CLAUDE_CONFIG_DIR: sessionHome,
+      CLAUDE_SECURESTORAGE_CONFIG_DIR: process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR ?? '' };
+  }
 
   let text = '';
   let result = null;
@@ -270,7 +281,7 @@ export async function runTurn({ system, prompt, images = [], model, effort, cwd,
       cmd: bin,
       args,
       cwd,
-      ...(source ? { env: sourceEnv(source, { configDir, model }) } : {}),
+      env,
       // 双向通信时先握手（不握手 Claude 不会把权限请求发过来），再发这次的输入
       input: ask || images.length ? [
         ...(ask ? [{ type: 'control_request', request_id: 'init', request: { subtype: 'initialize' } }] : []),
@@ -318,7 +329,7 @@ export async function runTurn({ system, prompt, images = [], model, effort, cwd,
     const usage = usageFrom(result, rateLimit);
     // 别家型号 Claude Code 不认识，报的上下文窗口是它猜的，不显示
     if (source && usage) delete usage.contextWindow;
-    return { text, sessionId: sessionId ? result?.session_id || null : undefined, ...(usage ? { usage } : {}) };
+    return { text, sessionId: persist ? result?.session_id || null : undefined, ...(usage ? { usage } : {}) };
   } finally {
     fs.rm(sysFile, { force: true }, () => {});
   }

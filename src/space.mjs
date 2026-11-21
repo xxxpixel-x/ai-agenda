@@ -8,18 +8,20 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Workspace } from './workspace.mjs';
-import { ACCESS, attachmentText } from './prompts.mjs';
+import { ACCESS, attachmentText, visible } from './prompts.mjs';
 import { Attachments } from './attachments.mjs';
 import { excludeFolder } from './git.mjs';
 import { Chat } from './chat.mjs';
 import { TaskRun, preflight, cleanupRunFiles, runDir, PLAN_CONFIRM } from './taskrun.mjs';
-import { importsBackground, syncBriefs } from './imports.mjs';
+import { syncBriefs } from './imports.mjs';
 import { runAgentTurn } from './turn-runner.mjs';
 import { distillSystem, distillPrompt } from './task-prompts.mjs';
 import { normalizeAllowed } from './approvals.mjs';
 import { normalizeMembers } from './members.mjs';
 import { openMemory } from './memory/store.mjs';
-import { organize } from './memory/organize.mjs';
+import { organize, recordPlanDecisions, recordApprovedResults } from './memory/organize.mjs';
+
+import { handoffSystem, handoffPrompt, budgetFor, contextWindowFor } from './context.mjs';
 
 const str = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
 const clampInt = (v, lo, hi, d) => { const n = parseInt(v, 10); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
@@ -36,8 +38,7 @@ export const runNeedsUser = (r) => !!r && !r.closed && (r.status === 'clarifying
   || (r.status === 'done' && r.mode === 'git' && !r.merged && r.tasks.some((t) => t.status === 'approved')));
 
 export class Space extends EventEmitter {
-  /** 空闲时自动整理记忆库。成员要到上下文管理接上后才看得到记忆库，在那之前先关着，免得白花 token（2026-11-21 定）。 */
-  static memoryAuto = false;
+  static memoryAuto = true;
 
   constructor(data, { registry, store, dataDir, hooks = {} }) {
     super();
@@ -48,7 +49,19 @@ export class Space extends EventEmitter {
     this.hooks = hooks; // 跨空间的事：folderLock(space)、folderInUse(path, exceptId)、postToSpace(id, msg)
     this.dir = path.join(dataDir, 'spaces', data.id);
     data.kind = KINDS.includes(data.kind) ? data.kind : 'chat';
-    data.memberState ||= {};
+    data.memberState = Object.assign(Object.create(null), data.memberState);
+    data.recap ||= { text: '', uptoSeq: 0, version: 0, editedByUser: false, updatedAt: null };
+    data.memberContext = Object.assign(Object.create(null), data.memberContext);
+    data.handoffs = Object.assign(Object.create(null), data.handoffs);
+    data.organizeLogs ||= [];
+    data.recapTargetSeq ||= 0;
+    data.lastCompactedSeq ||= 0;
+    this.pendingHandoffNotes = data.pendingHandoffNotes ||= [];
+    this.handoffing = new Set();
+    this.handoffJobs = new Map();
+    this.handoffControllers = new Set();
+    data.pendingConfigHandoffs = Object.assign(Object.create(null), data.pendingConfigHandoffs);
+    for (const [id, snapshot] of Object.entries(data.pendingConfigHandoffs)) data.memberState[id] ??= snapshot.oldState;
     data.allowedPrograms = normalizeAllowed(data.allowedPrograms);
     data.status = 'idle';
     for (const m of data.messages) {
@@ -58,7 +71,8 @@ export class Space extends EventEmitter {
     this.numberMessages(); // 旧空间：按顺序补上消息编号
     this.ws = new Workspace(this.workspacePath, path.join(this.dir, 'history.json'));
     this.attachments = new Attachments(this.dir, (a) => this.checkAttachment(a));
-    this.chat = new Chat(this.createChatHost());
+    this.chatHost = this.createChatHost();
+    this.chat = new Chat(this.chatHost);
     this.importHost = this.createImportHost();
     this.pendingOperations = new Set();
     this.deleting = false;
@@ -67,6 +81,7 @@ export class Space extends EventEmitter {
     this.runHost = this.createRunHost();
     // 任务空间只有一个任务；聊天空间没有任务
     this.run = data.kind === 'task' && data.runs[0] ? new TaskRun(this.runHost, data.runs[0]) : null;
+    if (this.run) recordPlanDecisions(this.memory, this.run.data);
     this.memoryHost = this.createMemoryHost();
     this.approvedSeen = this.approvedKey();
   }
@@ -77,10 +92,30 @@ export class Space extends EventEmitter {
   /** 同一个文件夹正被某个任务空间“依次直接改”：这个聊天空间暂时只能读。 */
   get readOnly() { return this.isTask ? null : this.hooks.folderLock?.(this) || null; }
 
+  contextOptions(member) {
+    const settings = this.registry.settings?.get();
+    const providerId = member.source || member.engine.replace(/^openai:/, '');
+    return { provider: settings?.providers?.find((p) => p.id === providerId), learnedLimits: settings?.contextLimits };
+  }
+
+  contextHost() {
+    const space = this;
+    return {
+      memory: space.memory,
+      memoryDir: space.memoryDir,
+      contextOptions: (member) => space.contextOptions(member),
+      rememberContextLimit: (key, n) => space.registry.settings?.rememberContextLimit?.(key, n),
+      recordContext: (id, breakdown) => { space.data.memberContext[id] = { lastTurnAt: Date.now(), breakdown }; },
+    };
+  }
+
   /** 任务看到的空间：只暴露它需要的这些，不把整个 Space 交出去。 */
   createRunHost() {
     const space = this;
     return {
+      ...this.contextHost(),
+      recordApprovedTask: (task) => recordApprovedResults(space.memory, [task]),
+      recordPlanDecisions: (run) => recordPlanDecisions(space.memory, run),
       get members() { return space.data.members; },
       get access() { return space.data.access; },
       get workspacePath() { return space.workspacePath; },
@@ -90,7 +125,6 @@ export class Space extends EventEmitter {
       get ws() { return space.ws; },
       get messages() { return space.data.messages; },
       images: (items) => space.attachments.images(items),
-      get importBackground() { return importsBackground(space.data.messages); },
       get deleting() { return space.deleting; },
       addMessage: (msg) => {
         space.data.messages.push(msg);
@@ -110,6 +144,11 @@ export class Space extends EventEmitter {
   createChatHost() {
     const space = this;
     return {
+      ...this.contextHost(),
+      get recap() { return space.data.recap; },
+      rollover: (seq) => space.rollover(seq),
+      waitHandoff: (id) => space.handoffJobs.get(id)?.catch(() => {}) || (space.data.pendingConfigHandoffs?.[id]
+        ? space.handoffMember(id, 'config_changed', space.data.pendingConfigHandoffs[id]) : null),
       get registry() { return space.registry; },
       get ws() { return space.ws; },
       get workspacePath() { return space.workspacePath; },
@@ -264,7 +303,7 @@ export class Space extends EventEmitter {
   get approvals() { return this.chat.approvals; }
 
   toJSON() {
-    const { runs, pendingTask, ...rest } = this.data;
+    const { runs, pendingTask, pendingConfigHandoffs, pendingHandoffNotes, ...rest } = this.data;
     return {
       ...rest,
       run: this.run ? this.run.publicView() : null,
@@ -299,21 +338,16 @@ export class Space extends EventEmitter {
     if (this.finished && Object.keys(patch).some((k) => k !== 'title')) throw new Error(tr('这个任务已经结束，只能改名字'));
     if (this.run?.active && 'members' in patch) throw new Error(tr('任务进行中，不能修改成员'));
     if ('title' in patch) this.data.title = str(patch.title, 60) || this.data.title;
+    const previous = this.data.members;
+    const oldAccess = this.data.access;
     if ('members' in patch) {
       const next = normalizeMembers(patch.members, this.registry.list());
-      // 成员换了引擎或设定后，之前的会话不再适用（接续导入对话的 Claude 只在换引擎时断开）
-      for (const m of next) {
-        const old = this.data.members.find((o) => o.id === m.id);
-        const imported = !!this.data.memberState[m.id]?.importId;
-        if (!old || old.engine !== m.engine || (old.persona !== m.persona && !imported)) delete this.data.memberState[m.id];
-      }
       this.data.members = next;
     }
     if ('access' in patch && ACCESS[patch.access] && patch.access !== this.data.access) {
       this.data.access = patch.access;
-      // 续接的会话不会再收到系统提示，权限说明换了就开新会话（接续导入对话的 Claude 每次都重发，不用断开）
-      for (const [id, st] of Object.entries(this.data.memberState)) if (!st?.importId) delete this.data.memberState[id];
     }
+    this.resetChangedSessions(previous, oldAccess);
     if ('maxTurns' in patch) this.data.maxTurns = clampInt(patch.maxTurns, 1, 30, this.data.maxTurns);
     if ('allowedPrograms' in patch) this.data.allowedPrograms = normalizeAllowed(patch.allowedPrograms);
     // 整理记忆库的成员（不给或已不在空间里：第一个成员）
@@ -327,13 +361,31 @@ export class Space extends EventEmitter {
     this.emitEvent({ type: 'snapshot', space: this.toJSON() });
   }
 
+  resetChangedSessions(previous, oldAccess) {
+    for (const old of previous) {
+      const state = this.data.memberState[old.id];
+      const member = this.data.members.find((m) => m.id === old.id);
+      if (!member) { delete this.data.memberState[old.id]; delete this.data.pendingConfigHandoffs[old.id]; continue; }
+      if (!state) continue;
+      const changed = ['engine', 'source', 'persona', 'model', 'effort'].some((k) => old[k] !== member[k]);
+      const soloChanged = (previous.length === 1) !== this.chat.solo;
+      if (!(changed || soloChanged || oldAccess !== this.data.access)) continue;
+      if (state.importId && old.engine === member.engine && old.source === member.source && !soloChanged) continue;
+      if (this.memberBusy(old.id) || this.handoffing.has(old.id)) continue;
+      delete this.data.memberState[old.id];
+      if (state.sessionId) this.handoffMember(old.id, 'config_changed', { oldMember: old, oldState: state });
+    }
+  }
+
   /** 换某个成员的型号 / 思考档位：讨论进行中也可以，下一次发言生效。 */
   updateMember(memberId, patch = {}) {
     if (this.finished) throw new Error(tr('这个任务已经结束，只能查看'));
     const i = this.data.members.findIndex((m) => m.id === memberId);
     if (i < 0) throw new Error(tr('没有这个成员'));
     const next = this.data.members.map((m, k) => (k === i ? { ...m, model: patch.model ?? m.model, effort: patch.effort ?? m.effort } : m));
+    const previous = this.data.members;
     this.data.members = normalizeMembers(next, this.registry.list());
+    this.resetChangedSessions(previous, this.data.access);
     this.save();
     this.emitEvent({ type: 'members', members: this.data.members });
     return this.data.members[i];
@@ -526,7 +578,123 @@ export class Space extends EventEmitter {
   }
 
   // ---------- 记忆库 ----------
-  get memory() { return (this.memoryStore ||= openMemory(path.join(this.dir, 'memory'))); }
+  get memoryDir() { return path.join(this.dir, 'memory'); }
+
+  rollover(seq) {
+    if (seq <= this.data.recapTargetSeq) return;
+    if (seq > this.data.lastCompactedSeq) {
+      this.memory.compact();
+      this.data.lastCompactedSeq = seq;
+    }
+    this.data.recapTargetSeq = seq;
+    this.save();
+  }
+
+  recapView() { return { ...this.data.recap }; }
+
+  updateRecap(text, version) {
+    if (typeof text !== 'string') throw Object.assign(new Error(tr('前情提要必须是文本')), { status: 400 });
+    if (version !== this.data.recap.version) throw Object.assign(new Error(tr('前情提要已经更新')), { status: 409, recap: this.recapView() });
+    Object.assign(this.data.recap, { text: text.trim().slice(0, 50000), version: version + 1, updatedAt: Date.now(), editedByUser: true });
+    this.save();
+    this.emitEvent({ type: 'recap', recap: this.recapView() });
+    return this.recapView();
+  }
+
+  memberBusy(id) {
+    return this.chat.current?.member.id === id || !!this.run?.data.tasks.some((t) => t.status === 'running' && t.assigneeId === id)
+      || [...(this.run?.controllers.values() || [])].some((c) => c.memberId === id);
+  }
+
+  sessionMode(m) { return !this.isTask && (this.chat.longSession(m) || !!this.data.memberState[m.id]?.importId); }
+
+  contextView() {
+    const members = Object.fromEntries(this.data.members.map((m) => {
+      const session = this.sessionMode(m);
+      const running = this.memberBusy(m.id) || this.handoffing.has(m.id);
+      const saved = this.data.memberContext[m.id];
+      const tokenBudget = budgetFor(contextWindowFor(m, this.contextOptions(m)));
+      const breakdown = saved?.breakdown ?? (this.run ? this.run.previewContext(m, tokenBudget) : this.chat.buildContext(m, { tokenBudget })).breakdown;
+      return [m.id, { mode: session ? 'session' : 'stateless', lastTurnAt: saved?.lastTurnAt || 0,
+        canHandoff: session && !running, running, breakdown, handoffs: this.data.handoffs[m.id] || [] }];
+    }));
+    return { recap: this.recapView(), members };
+  }
+
+  getAutoHandoffPct() { return this.registry.settings?.get()?.autoHandoffPct ?? 50; }
+
+  autoHandoff() {
+    const pct = this.getAutoHandoffPct();
+    if (!pct || this.running || this.isTask || this.deleting || this.closing) return;
+    for (const member of this.data.members) {
+      if (!this.sessionMode(member) || !this.data.memberState[member.id]?.sessionId) continue;
+      const usage = this.data.messages.findLast((m) => m.kind === 'ai' && m.memberId === member.id)?.usage;
+      if (usage?.contextUsed > 0 && usage.contextWindow > 0 && usage.contextUsed * 100 >= pct * usage.contextWindow) {
+        this.handoffMember(member.id, 'auto');
+      }
+    }
+  }
+
+  async handoffMember(id, reason = 'manual', { oldMember, oldState } = {}) {
+    const member = oldMember || this.data.members.find((m) => m.id === id);
+    if (!member) throw Object.assign(new Error(tr('没有这个成员')), { status: 404 });
+    if (this.memberBusy(id) || this.handoffing.has(id)) {
+      if (reason !== 'manual') return null;
+      throw Object.assign(new Error(tr('这个成员正在发言，稍后再重开会话')), { status: 409 });
+    }
+    this.handoffing.add(id);
+    const controller = new AbortController();
+    this.handoffControllers.add(controller);
+    const state = oldState || this.data.memberState[id];
+    if (oldState && reason === 'config_changed') this.data.pendingConfigHandoffs[id] = { oldMember, oldState };
+    const work = async () => {
+      let summary = '';
+      const anchorSeq = this.data.messages.at(-1)?.seq || 0;
+      if (state?.sessionId) {
+        const recent = this.data.messages.filter(visible).slice(-6).map((m) => tr('消息 {0}', [m.seq]) + ' · ' + attachmentText(m).slice(0, 500)).join('\n');
+        const r = await runAgentTurn(this.registry, member, { system: handoffSystem(), prompt: handoffPrompt(recent), cwd: this.workspacePath,
+          access: 'read', sessionId: state.sessionId, fork: !!state.fork, resumeAt: state.resumeAt, imported: !!state.importId, keepSession: !state.importId,
+          readOnlyDirs: [this.memoryDir], signal: controller.signal, sink: { text: '', activities: [] } });
+        controller.signal.throwIfAborted();
+        summary = r.text.trim().replace(/^\[(?:无|none)\]$/i, '').slice(0, 3000);
+      }
+      const handoff = { at: Date.now(), reason, summary };
+      const history = this.data.handoffs[id] ||= [];
+      history.push(handoff);
+      if (history.length > 30) history.shift();
+      const active = this.data.memberState[id];
+      const replacing = !active?.sessionId || active.sessionId === state?.sessionId;
+      if (replacing) delete this.data.memberState[id];
+      delete this.data.pendingConfigHandoffs[id];
+      const current = this.data.members.find((m) => m.id === id);
+      if (replacing && current && this.sessionMode(current) && summary) this.data.memberState[id] = { pendingHandoff: summary };
+      if (summary) {
+        this.pendingHandoffNotes.push({ memberId: id, memberName: member.name, summary, at: handoff.at, anchorSeq });
+        this.organizeMemory();
+      }
+      this.save();
+      this.emitEvent({ type: 'handoff', memberId: id, handoff });
+      return handoff;
+    };
+    const job = this.track(work().catch((err) => {
+      if (oldState && this.data.members.some((m) => m.id === id)) {
+        this.data.pendingConfigHandoffs[id] = { oldMember, oldState };
+        this.data.memberState[id] ??= oldState;
+      }
+      this.save();
+      if (reason === 'manual') throw err;
+      if (!controller.signal.aborted) console.warn(tr('会话交接失败：{0}', [err.message]));
+      return null;
+    }).finally(() => {
+      this.handoffControllers.delete(controller);
+      this.handoffing.delete(id);
+      this.handoffJobs.delete(id);
+    }));
+    this.handoffJobs.set(id, job);
+    return job;
+  }
+
+  get memory() { return (this.memoryStore ||= openMemory(this.memoryDir)); }
   get memoryWriter() { return this.data.members.find((m) => m.id === this.data.memoryWriterId) || this.data.members[0]; }
 
   /** 子任务通过的情况（编号 + 通过时间），用来发现新通过的子任务。 */
@@ -548,9 +716,26 @@ export class Space extends EventEmitter {
       await new Promise((resolve) => setImmediate(resolve));
       let next = false;
       try {
-        const r = await organize(this.memoryHost, this.memory, { writer: this.memoryWriter, signal: controller.signal });
-        next = !!r.more && !r.error; // 积压的旧消息分批整理
+        const recap = { ...this.data.recap, targetSeq: this.data.recapTargetSeq };
+        const handoffs = this.pendingHandoffNotes.slice();
+        const r = await organize(this.memoryHost, this.memory, { writer: this.memoryWriter, signal: controller.signal, recap, handoffs });
+        if (controller.signal.aborted) return;
+        next = !!r.more && !r.error;
+        if (!r.skipped) {
+          const log = this.recordOrganizerRun(r, recap.uptoSeq);
+          if (!r.error) this.pendingHandoffNotes.splice(0, handoffs.length);
+          if (r.recapText && this.data.recap.version === recap.version) {
+            Object.assign(this.data.recap, { text: [recap.text, r.recapText].filter(Boolean).join('\n\n'),
+              uptoSeq: r.recapUptoSeq, version: recap.version + 1, updatedAt: Date.now() });
+            this.emitEvent({ type: 'recap', recap: this.recapView() });
+          } else if (r.recapText) log.note = tr('前情提要已经更新');
+          this.save();
+        }
       } catch (e) {
+        if (e.organizeRecord && !controller.signal.aborted) {
+          this.recordOrganizerRun(e.organizeRecord, this.data.recap.uptoSeq);
+          this.save();
+        }
         if (!e.aborted) console.warn(tr('整理记忆库失败：'), e.message);
       } finally {
         this.memoryRun = null;
@@ -560,6 +745,15 @@ export class Space extends EventEmitter {
     })();
     this.memoryRun = this.track(work);
     return this.memoryRun;
+  }
+
+  recordOrganizerRun(record, uptoSeq) {
+    const log = { at: record.at, memberId: record.writerId, fromSeq: record.fromSeq, toSeq: record.toSeq,
+      recapUptoSeq: record.recapUptoSeq ?? uptoSeq, usage: record.usage ?? null };
+    if (record.error) log.error = record.error;
+    this.data.organizeLogs.push(log);
+    this.data.organizeLogs.splice(0, Math.max(0, this.data.organizeLogs.length - 100));
+    return log;
   }
 
   /** 只读查看记忆库（排查和以后的展示页用）。 */
@@ -600,6 +794,7 @@ export class Space extends EventEmitter {
     if (this.run) { clearTimeout(this.run.timer); for (const c of this.run.controllers.values()) c.abort(); }
     this.importController?.abort();
     this.memoryController?.abort();
+    for (const c of this.handoffControllers) c.abort();
   }
 
   /**
@@ -618,6 +813,7 @@ export class Space extends EventEmitter {
     if (this.deleted || this.closing) return;
     this.emit('event', ev);
     if (ev.type === 'files_changed' && ev.changes?.length) syncBriefs(this.importHost, ev.changes); // 主题简报被改了
+    if (ev.type === 'round_end' && !ev.failed && !ev.stopped) this.autoHandoff();
     if (this.memoryTrigger(ev) && Space.memoryAuto) this.organizeMemory();
   }
 
@@ -648,6 +844,7 @@ export class Space extends EventEmitter {
       this.importController?.abort();
       this.distillController?.abort();
       this.memoryController?.abort();
+      for (const c of this.handoffControllers) c.abort();
       this.run?.stopForRemoval();
       // 等发言、任务和导入的收尾写入结束，再删文件，避免后台把空间重新保存出来。
       while (this.pendingOperations.size) await Promise.allSettled([...this.pendingOperations]);
@@ -670,11 +867,12 @@ export class Space extends EventEmitter {
     if (this.run) lines.push(tr('- 目标：{0}', [this.run.data.objective.replace(/\s+/g, ' ').slice(0, 300)]));
     lines.push('', '---', '');
     for (const m of d.messages) {
-      if (m.passed || (!m.text && !m.changes?.length && !m.attachments?.length)) continue;
+      if (m.passed || (!m.text && !m.changes?.length && !m.attachments?.length && !m.actions?.length)) continue;
       const time = new Date(m.ts).toLocaleString(getLanguage(), { hour12: false });
       const who = m.kind === 'user' ? tr('我') : m.kind === 'summary' ? tr('{0}（总结）', [m.name]) : m.kind === 'task' ? tr('{0}（任务「{1}」的总结）', [m.name, m.title]) : m.name;
       lines.push(`### ${who}　<small>${time}</small>`, '');
       if (m.text || m.attachments?.length) lines.push(attachmentText(m), '');
+      if (m.actions?.length) lines.push(tr('> 运行了：{0}', [m.actions.join(tr('、'))]), '');
       if (m.changes?.length) lines.push(tr('> 修改了：{0}', [m.changes.map((c) => c.path).join('、')]), '');
     }
     return lines.join('\n');

@@ -1,7 +1,7 @@
 import { testInChinese as test } from './helpers.mjs';
 import assert from 'node:assert/strict';
 import { parseCommand, isPreapproved, normalizeAllowed } from '../src/approvals.mjs';
-import { tempDir, makeSpace, until, settleSpace } from './helpers.mjs';
+import { isMemoryCall, MEMORY_IDLE, tempDir, makeSpace, until, settleSpace } from './helpers.mjs';
 
 test('commands are split into the programs they run', () => {
   assert.deepEqual(parseCommand('npm test && git status').programs, ['npm', 'git']);
@@ -82,7 +82,7 @@ test('a card still waiting when the turn ends on its own is cancelled', { timeou
   const space = makeSpace(tempDir(t), { access: 'run', maxTurns: 1 });
   t.after(() => settleSpace(space));
   // 像 AI 进程自己退出了：发出审批请求后不等结果就结束这一轮
-  space.registry = { ...space.registry, runTurn: async (_id, opts) => { opts.onApproval({ command: 'npm test' }); return { text: '进程退出了' }; } };
+  space.registry = { ...space.registry, runTurn: async (_id, opts) => { if (isMemoryCall(opts)) return MEMORY_IDLE; opts.onApproval({ command: 'npm test' }); return { text: '进程退出了' }; } };
   space.userMessage('@Alice 跑一下');
   await until(() => space.running, (r) => !r);
   const [reply] = replies(space);
@@ -96,7 +96,7 @@ test('an AI that cannot ask only gets file access at the run level', { timeout: 
   t.after(() => settleSpace(space));
   const calls = [];
   const real = space.registry;
-  space.registry = { ...real, supportsApproval: () => false, runTurn: (id, opts) => { calls.push(opts); return real.runTurn(id, opts); } };
+  space.registry = { ...real, supportsApproval: () => false, runTurn: (id, opts) => { if (isMemoryCall(opts)) return MEMORY_IDLE; calls.push(opts); return real.runTurn(id, opts); } };
   space.userMessage('@Alice 你好');
   await until(() => space.running, (r) => !r);
   assert.equal(calls[0].access, 'edit');

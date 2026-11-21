@@ -22,7 +22,7 @@ async function turnModel(runtime, { provider, conn, model, effort }) {
     models: [{
       id, name: id, input: conn.images === false ? ['text'] : ['text', 'image'], reasoning: !!effort && effort !== 'off',
       // registerProvider 要求完整的模型描述，沿用 pi 自定义接口的默认值。
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 16384,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: conn.contextWindow || 128000, maxTokens: Math.min(16384, Math.floor((conn.contextWindow || 128000) / 2)),
     }],
   });
   // 本地免鉴权接口也需要一个非空占位符才能经过 pi 的鉴权预检。

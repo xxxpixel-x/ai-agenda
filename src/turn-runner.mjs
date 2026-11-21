@@ -18,7 +18,7 @@ const MAX_LOG_LINE = 2000;
  * @returns 引擎的返回值，其中 text 已去掉文件块
  */
 export async function runAgentTurn(registry, member, {
-  system, prompt, cwd, access, sessionId, fork, resumeAt, signal,
+  system, prompt, cwd, access, sessionId, fork, resumeAt, keepSession, imported, readOnlyDirs, signal,
   sink, ws = null, maxActivities = 60, maxLog = 600,
   onDelta, onActivity, onApproval, images = [], onNoImages,
 }) {
@@ -37,11 +37,15 @@ export async function runAgentTurn(registry, member, {
     access,
     sessionId,
     fork,
-    resumeAt,
+    resumeAt, keepSession, imported, readOnlyDirs,
     signal,
     onApproval,
     onDelta: (t) => { sink.text = (sink.text || '') + t; onDelta?.(t); },
     onActivity: (a) => {
+      if (a?.kind === 'command') {
+        const cmd = String(a.command || String(a.label || '').replace(/^(?:运行|Run)\s+/i, '')).trim().slice(0, 80);
+        if (cmd && (sink.actions?.length || 0) < 5 && !sink.actions?.includes(cmd)) (sink.actions ||= []).push(cmd);
+      }
       sink.activities.push(a);
       if (sink.activities.length > maxActivities) sink.activities.splice(0, sink.activities.length - maxActivities);
       onActivity?.(a);
