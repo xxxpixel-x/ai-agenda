@@ -172,6 +172,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .person.speaking { color: var(--text); }
 .person.off { opacity: .5; }
 .person small { font-size: 11px; color: var(--muted); }
+.person small.warn-tag { color: var(--warn); }
 /* 头像外面的一圈：发言中用成员色；上下文用量由 setMemberMeter 填（--meter 0–1） */
 .person .pa { position: relative; display: inline-flex; border-radius: 50%; }
 .person .pa .avatar { width: 20px; height: 20px; border-radius: 50%; font-size: 10px; }
@@ -844,6 +845,7 @@ button.tref:hover { text-decoration: underline; text-underline-offset: 3px; }
 .conn-field { display: flex; flex-direction: column; gap: var(--sp-1); font-size: var(--fs-xs); color: var(--muted); min-width: 0; }
 .conn-field.wide { grid-column: 1 / -1; }
 .conn-field input { font-size: var(--fs-sm); color: var(--text); background: var(--bg); }
+.conn-field input[type="color"] { height: var(--sp-8); padding: var(--sp-1); }
 .conn-actions { display: flex; align-items: center; gap: var(--sp-2); }
 .conn-detail .preset-row { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin: 0; }
 

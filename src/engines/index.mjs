@@ -24,6 +24,7 @@ import * as gemini from './gemini.mjs';
 import * as openai from './openai-compat.mjs';
 import * as pi from './pi.mjs';
 import * as mock from './mock.mjs';
+import * as acp from './acp.mjs';
 
 /**
  * 每一项是一种接入方式：
@@ -43,6 +44,8 @@ const cli = (module) => ({
 });
 
 const OPENAI_PREFIX = 'openai:';
+const ACP_PREFIX = 'acp:';
+const customAcpOf = (s, id) => (s.customAcp || []).find((c) => c.id === id) || null;
 
 const providerOf = (s, id) => s.providers.find((p) => p.id === id) || null;
 
@@ -59,6 +62,15 @@ const ENGINES = [
   cli(codex),
   cli(dsh),
   cli(geminiCli),
+  {
+    module: acp,
+    owns: (id) => typeof id === 'string' && id.startsWith(ACP_PREFIX),
+    instances: (s) => (s.customAcp || []).map((c) => ({
+      ...acp.meta, id: ACP_PREFIX + c.id, acpId: c.id, label: c.name || tr('自定义 AI（ACP）'),
+      defaultName: c.name || 'ACP', color: c.color || acp.meta.color,
+    })),
+    options: (s, id) => ({ acp: customAcpOf(s, id.slice(ACP_PREFIX.length)), engineId: id }),
+  },
   {
     module: gemini,
     builtin: true,
@@ -98,7 +110,7 @@ function claudeCodeSource(s, id) {
 /** 需要在设置里填“程序位置”的引擎 id（给 settings 用，避免它自己写死一份）。 */
 export const CLI_ENGINE_IDS = ENGINES.filter((e) => e.module.meta.kind === 'cli').map((e) => e.module.meta.id);
 
-export function createRegistry(settings, { mock: mockMode = false } = {}) {
+export function createRegistry(settings, { mock: mockMode = false, acpChatApproval, onAcpWarning } = {}) {
   const cache = new Map(); // engineId -> { at, status }
 
   const entryOf = (engineId) => ENGINES.find((e) => e.owns(engineId)) || null;
@@ -122,7 +134,7 @@ export function createRegistry(settings, { mock: mockMode = false } = {}) {
   function list() {
     if (mockMode) {
       // 演示模式：外观照搬内置的几种 AI，实际都由演示引擎回答
-      return ENGINES.filter((e) => e.builtin).flatMap((e) => e.instances(settings.get()).map((m) => withSources(e, m))).map((m) => ({
+      return ENGINES.filter((e) => e.builtin || e.module === acp).flatMap((e) => e.instances(settings.get()).map((m) => withSources(e, m))).map((m) => ({
         ...mock.meta, id: m.id, label: tr('演示 · {0}', [m.defaultName]), defaultName: m.defaultName, color: m.color, logo: m.logo, kind: m.kind, models: m.models, efforts: m.efforts,
         continuesImports: m.continuesImports, hideWhenMissing: m.hideWhenMissing,
         sources: m.sources, sourceRequired: m.sourceRequired, sourceChoices: m.sourceChoices,
@@ -132,18 +144,22 @@ export function createRegistry(settings, { mock: mockMode = false } = {}) {
   }
 
   async function detect(engineId, { refresh = false } = {}) {
-    const mod = moduleOf(engineId);
+    // Even in demo mode, a custom connection's badge reflects its real
+    // handshake. Chat turns in demo mode still use the simulated engine.
+    const entry = entryOf(engineId);
+    const mod = entry?.module === acp ? acp : moduleOf(engineId);
     if (!mod) return { available: false, ready: false, note: tr('未知的 AI 类型') };
     const cacheKey = `${getLanguage()}:${engineId}`;
+    const options = mod === acp ? entry.options(settings.get(), engineId) : optionsFor(engineId);
     const hit = cache.get(cacheKey);
-    if (!refresh && hit && Date.now() - hit.at < 60_000) return hit.status;
+    if (!refresh && hit && hit.acp === options.acp && Date.now() - hit.at < 60_000) return hit.status;
     let status;
     try {
-      status = await mod.detect(optionsFor(engineId));
+      status = await mod.detect(options);
     } catch (e) {
       status = { available: false, ready: false, note: e.message };
     }
-    cache.set(cacheKey, { at: Date.now(), status });
+    cache.set(cacheKey, { at: Date.now(), status, acp: options.acp });
     return status;
   }
 
@@ -157,6 +173,13 @@ export function createRegistry(settings, { mock: mockMode = false } = {}) {
     const mod = moduleOf(engineId);
     if (!mod) throw new Error(tr('未知的 AI 类型：{0}', [engineId]));
     const options = optionsFor(engineId, source);
+    if (mod === acp) {
+      opts.onApproval = acpChatApproval?.(opts.signal, opts.onApproval) || opts.onApproval;
+      opts.onUnverified = () => {
+        for (const key of cache.keys()) if (key.endsWith(':' + engineId)) cache.delete(key);
+        onAcpWarning?.(engineId);
+      };
+    }
     // 选的接口删了、或者不再给 Claude Code 用：不要悄悄换回自己的账号
     if (!mockMode && source && !options.source && !options.conn) throw new Error(tr('这个成员的模型来源已经不能用了，在空间设置里换一个'));
     if (!opts.images?.length) return mod.runTurn({ ...options, ...opts });
