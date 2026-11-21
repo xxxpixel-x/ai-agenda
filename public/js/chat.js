@@ -179,6 +179,9 @@ function renderSpace() {
 }
 
 const CHAT_PLACEHOLDER = tr('说点什么，@名字 点名');
+const SOLO_PLACEHOLDER = tr('说点什么');
+/** 只有一个成员的聊天空间：单人聊天（不轮流，不需要「继续讨论」和 @）。 */
+const isSolo = (sp) => sp?.kind !== 'task' && sp?.members.length === 1;
 const TASK_PLACEHOLDER = tr('和协调者说：补充要求、改做法、问进展');
 /** 输入框：聊天空间发给大家；任务空间发给协调者；结束了的任务空间换成一条说明。 */
 export function renderComposer() {
@@ -195,20 +198,44 @@ export function renderComposer() {
       <button class="btn sm" type="button" data-act="again">${ICON.plus}${tr('再开一个类似的任务')}</button>`;
   }
   renderAttachments();
-  input.placeholder = sp.kind === 'task' ? TASK_PLACEHOLDER : CHAT_PLACEHOLDER;
+  renderOnlyTag();
+  input.placeholder = sp.kind === 'task' ? TASK_PLACEHOLDER : isSolo(sp) ? SOLO_PLACEHOLDER : CHAT_PLACEHOLDER;
 }
+
+// ---- 只问某个人：成员菜单里选「只问 TA」，输入框上方出现可以取消的小标记，发出这一条后自动取消 ----
+let onlyAsk = null; // { spaceId, memberId }
+const onlyTag = document.createElement('div');
+onlyTag.className = 'only-tag';
+onlyTag.hidden = true;
+$('.composer-box').prepend(onlyTag);
+function onlyMember() {
+  const sp = state.space;
+  if (!onlyAsk || !sp || onlyAsk.spaceId !== sp.id || sp.kind === 'task' || isSolo(sp)) return null;
+  return memberOf(onlyAsk.memberId) || null;
+}
+function setOnly(memberId) {
+  onlyAsk = memberId && state.space ? { spaceId: state.space.id, memberId } : null;
+  renderOnlyTag();
+}
+function renderOnlyTag() {
+  const m = onlyMember();
+  onlyTag.hidden = !m;
+  onlyTag.innerHTML = m ? `<span class="only-chip">${avatarHtml(m.engine, m.name, m.model)}<span>${tr('只问 {0}', [esc(m.name)])}</span>
+    <button type="button" data-only-clear title="${tr('取消')}" aria-label="${tr('取消')}">×</button></span>` : '';
+}
+onlyTag.addEventListener('click', (e) => { if (e.target.closest('[data-only-clear]')) { setOnly(null); input.focus(); } });
 
 export function renderHeader() {
   const sp = state.space;
   const task = sp.kind === 'task';
   const next = (sp.queue || []).map((id) => memberOf(id)?.name).filter(Boolean);
   const q = $('#queueInfo');
-  q.textContent = task ? taskStatusText() : next.length ? tr('接下来：{0}', [next.slice(0, 5).join(' → ')]) : '';
+  q.textContent = task ? taskStatusText() : next.length && !isSolo(sp) ? tr('接下来：{0}', [next.slice(0, 5).join(' → ')]) : '';
   q.hidden = !q.textContent;
   q.classList.toggle('link', task);
   const btns = task ? [] : sp.running
     ? [['stop', tr('停止')], ...(sp.speaking ? [['skip', tr('跳过当前')]] : [])]
-    : [['continue', tr('继续讨论')]];
+    : isSolo(sp) ? [] : [['continue', tr('继续讨论')]];
   const ended = task && !!sp.run?.closed;
   const side = rightbarOpen();
   const icons = [...(ended ? [] : [['import', tr('导入对话')]]), ['settings', task ? tr('任务空间设置') : tr('空间设置')], ['export', tr('导出')], ['panel', side ? tr('收起侧栏') : tr('展开侧栏'), side, !side && rightbarAlert()]];
@@ -234,6 +261,7 @@ export function renderMembersBar() {
       <span class="pa">${avatarHtml(m.engine, m.name, m.model)}</span>${esc(m.name)}${m.id === coord ? `<small>${tr('协调者')}</small>` : ''}${cannotRun(m) ? `<small>${tr('不能运行命令')}</small>` : ''}</button>`;
   }).join('');
   for (const id of meters.keys()) paintMeter(id);
+  renderOnlyTag();
 }
 
 // ---- 成员标签上的上下文小圈：由用量那部分调用 setMemberMeter 来填 ----
@@ -287,7 +315,8 @@ function renderMemberPop() {
     <select data-k="model" title="${tr('型号')}"><option value="">${esc(st.defaultModel ? tr('默认（{0}）', [st.defaultModel]) : tr('默认型号'))}</option>
       ${models.map(([v, l]) => `<option value="${esc(v)}" ${v === m.model ? 'selected' : ''}>${esc(l || v)}</option>`).join('')}</select>
     ${effortSelect(e, m)}
-    ${state.space.kind === 'task' ? '' : `<button class="btn sm block" type="button" data-act="ask">${tr('让 {0} 现在发言', [esc(m.name)])}</button>`}`;
+    ${state.space.kind === 'task' || isSolo(state.space) ? '' : `<button class="btn sm block" type="button" data-act="only">${tr('只问 {0}', [esc(m.name)])}</button>
+      <button class="btn sm block" type="button" data-act="ask">${tr('让 {0} 现在发言', [esc(m.name)])}</button>`}`;
 }
 $('#memberPop').addEventListener('change', async (e) => {
   const k = e.target.dataset.k;
@@ -298,6 +327,7 @@ $('#memberPop').addEventListener('change', async (e) => {
   try { await api(`/api/spaces/${state.space.id}/members/${m.id}`, { method: 'PATCH', body }); } catch (err) { toast(err.message, 'error'); renderMemberPop(); }
 });
 $('#memberPop').addEventListener('click', async (e) => {
+  if (e.target.closest('[data-act="only"]')) { setOnly(popMember); hideMemberPop(); input.focus(); return; }
   if (!e.target.closest('[data-act="ask"]')) return;
   const id = popMember;
   hideMemberPop();
@@ -349,6 +379,12 @@ export function activitiesHtml(acts, streaming) {
 const transferable = (m) => state.space?.kind !== 'task' && ['user', 'ai', 'task'].includes(m.kind) && !m.passed && !m.streaming && !!m.text?.trim();
 const transferBtn = (m) => (transferable(m) ? `<button type="button" class="msg-act" data-transfer="${m.id}" title="${tr('转到任务空间')}" aria-label="${tr('转到任务空间')}">${ICON.transfer}</button>` : '');
 
+/** 我的消息时间上的提示：消息编号（有 seq 时）、只问了谁。 */
+function userMeta(m) {
+  const only = m.only && memberOf(m.only);
+  return [m.seq ? tr('消息 {0}', [m.seq]) : '', only ? tr('只问 {0}', [only.name]) : ''].filter(Boolean).join(' · ');
+}
+
 export function messageHtml(m) {
   if (m.kind === 'import') return importHtml(m);
   if (m.kind === 'summary') return summaryCardHtml(m);
@@ -357,7 +393,7 @@ export function messageHtml(m) {
   if (m.kind === 'user') {
     const wait = m.queued ? `<div class="msg-note">${tr('等协调者看')}</div>` : m.unanswered ? `<div class="msg-note">${tr('软件关闭时协调者还没回这条，可以再发一次')}</div>` : '';
     return `<div class="msg user ${pick ? 'pickable' : ''}" id="m-${m.id}">${pick}
-      <div class="msg-main"><div class="msg-head"><span class="n">${tr('我')}</span><span class="m">${clock(m.ts)}</span>${transferBtn(m)}</div>
+      <div class="msg-main"><div class="msg-head"><span class="n">${tr('我')}</span><span class="m" title="${esc(userMeta(m))}">${clock(m.ts)}</span>${transferBtn(m)}</div>
       <div class="msg-body">${m.text ? `<div class="md">${md(m.text)}</div>` : ''}${messageAttachments(m.attachments)}</div>${wait}</div></div>`;
   }
   const mem = memberOf(m.memberId);
@@ -366,7 +402,7 @@ export function messageHtml(m) {
   if (m.passed && !m.streaming) {
     return `<div class="pass-line" id="m-${m.id}" style="--c:${color}">${imageNote}<b>${esc(m.name)}</b> ${tr('没有补充{0}', [m.changes?.length ? tr('，但修改了 {0} 个文件', [m.changes.length]) : ''])}</div>`;
   }
-  const meta = [];
+  const meta = m.seq ? [tr('消息 {0}', [m.seq])] : [];
   if (m.durationMs) meta.push(tr('{0} 秒', [(m.durationMs / 1000).toFixed(0)]));
   if (m.model) meta.push(m.model);
   const last = m.activities?.[m.activities.length - 1];
@@ -394,7 +430,7 @@ function taskBackHtml(m, pick) {
   return `<div class="msg task-back ${pick ? 'pickable' : ''}" id="m-${m.id}">${pick}
     <div class="tb-card">
       <div class="tb-head"><span class="tb-icon">${ICON.task}</span><span class="tb-title">${tr('任务「{0}」结束了', [esc(m.title)])}</span>
-        <span class="m">${tr('{0}/{1} 个子任务通过', [m.approved, m.total])}${m.merged ? tr(' · 已合并到 {0}', [esc(m.merged)]) : ''} · ${clock(m.ts)}</span>${transferBtn(m)}</div>
+        <span class="m" title="${m.seq ? tr('消息 {0}', [m.seq]) : ''}">${tr('{0}/{1} 个子任务通过', [m.approved, m.total])}${m.merged ? tr(' · 已合并到 {0}', [esc(m.merged)]) : ''} · ${clock(m.ts)}</span>${transferBtn(m)}</div>
       <div class="md">${md(m.text)}</div>
       <a class="tb-link" href="#/space/${esc(m.taskSpaceId)}">${tr('打开任务空间')}</a>
     </div></div>`;
@@ -483,6 +519,7 @@ export const input = $('#input');
 const autosize = () => { input.style.height = 'auto'; input.style.height = `${Math.min(180, input.scrollHeight + 2)}px`; };
 input.addEventListener('input', autosize);
 input.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && onlyMember()) { setOnly(null); return; }
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); send(); }
 });
 $('#sendBtn').addEventListener('click', send);
@@ -497,10 +534,13 @@ async function send() {
   if (draft.sending || draft.items.some((a) => a.busy) || (!text && !draft.items.length)) return;
   draft.sending = true;
   const attachments = draft.items.map((a) => a.id);
+  const ask = onlyAsk;
+  const only = onlyMember()?.id;
   renderAttachments();
   try {
-    await api(`/api/spaces/${id}/messages`, { method: 'POST', body: { text, attachments } });
+    await api(`/api/spaces/${id}/messages`, { method: 'POST', body: { text, attachments, ...(only ? { only } : {}) } });
     draft.items = draft.items.filter((a) => !attachments.includes(a.id));
+    if (onlyAsk === ask) setOnly(null); // 只管这一条
     if (state.space?.id === id && input.value.trim() === text) { input.value = ''; autosize(); }
   } catch (e) { toast(e.message, 'error'); } finally {
     draft.sending = false;

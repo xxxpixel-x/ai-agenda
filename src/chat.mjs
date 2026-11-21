@@ -1,6 +1,11 @@
 // 聊天：轮流发言的调度、单次发言（含会话续接）和运行命令前的审批。
 // 发言规则：依次发言（同一时间只有一个 AI 在说话、改文件）；被 @ 的成员优先；
 // 所有成员连续表示“没有补充”，或者达到每轮来回上限，就停下来等你。
+// 只有一个成员时是单人聊天：你说一句它回一句，不轮流、不限轮次、不认 [跳过] / [结束]。
+// 「只问某个人」（userMessage 的 only）：只让这个成员回答，其他人不接话，回答大家照样看得到。
+//
+// 会话：引擎 meta.resume 的成员一直续接；单人聊天里 meta.privateSessions 的成员也续接（会话只放在 Agenda 自己的地方）。
+// 续接时只发上次之后的新消息；单人 / 多人、引擎、型号、档位、设定、权限变了就换新会话，新的长会话先带最近几轮原文。
 //
 // 依赖的是一个很窄的“宿主”接口（见 space.mjs 的 createChatHost），不直接碰 Space：
 //   host.members / messages / memberState / access / maxTurns / allowedPrograms（可写）
@@ -8,12 +13,16 @@
 //   host.track(promise) / emit(ev) / save()
 import { t as tr } from './i18n.mjs';
 import { randomUUID } from 'node:crypto';
-import { systemPrompt, turnPrompt, parseMarkers, mentionsIn } from './prompts.mjs';
+import { systemPrompt, turnPrompt, parseMarkers, mentionsIn, recentStart } from './prompts.mjs';
 import { runAgentTurn } from './turn-runner.mjs';
 import { importsBackground, briefVersions, resumeNote, resumeOpts } from './imports.mjs';
 import { isPreapproved, parseCommand, normalizeAllowed } from './approvals.mjs';
 
 const str = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+// 新开的长会话先带最近几轮原文（更早的等第三批的交接说明和记忆库）
+const RECENT_ROUNDS = 3;
+// 这些变了，之前的会话就不再适用（续接的会话不会再收到新的系统提示）
+const sessionSig = (member, solo, access, asks) => JSON.stringify([solo, member.engine, member.model || '', member.effort || '', member.persona || '', access, asks]);
 
 export class Chat {
   constructor(host) {
@@ -29,14 +38,20 @@ export class Chat {
     return { running: this.running, speaking: this.current?.msg.id || null, queue: this.queue.map((q) => q.memberId) };
   }
 
+  /** 只有一个成员：单人聊天。 */
+  get solo() { return this.host.members.length === 1; }
+
   // ---------- 对外操作 ----------
-  userMessage(text, attachments = []) {
+  /** opts.only：成员 id，只让他回答这一条，其他人不接话。 */
+  userMessage(text, attachments = [], { only = null } = {}) {
     const h = this.host;
     text = str(text, 20000);
     if (!text && !attachments.length) throw new Error(tr('消息不能为空'));
+    if (only != null && !h.members.some((m) => m.id === only)) throw new Error(tr('没有这个成员'));
     h.assertAllowed();
     const msg = { id: randomUUID(), kind: 'user', name: tr('我'), text, ts: Date.now() };
     if (attachments.length) msg.attachments = attachments;
+    if (only && !this.solo) msg.only = only;
     h.messages.push(msg);
     h.emit({ type: 'message', message: msg });
     h.save();
@@ -44,7 +59,13 @@ export class Chat {
     const mentioned = mentionsIn(text, h.members, null);
     this.turns = 0;
     this.passesInRow = 0;
-    if (mentioned.length) {
+    if (this.solo || msg.only) {
+      // 单人聊天：你说一句它回一句（它正在说时发的，等它说完再回一次）；只问某人：其他人这次都不接话
+      const id = msg.only || h.members[0].id;
+      this.queue = [{ memberId: id, reason: msg.only ? 'only' : 'turn' }];
+      this.onlyQueued = true;
+      this.onlyMember = msg.only || null;
+    } else if (mentioned.length) {
       // 点名了：只让被点名的人回应（他们之间再互相 @ 会继续）
       this.queue = [...mentioned.map((id) => ({ memberId: id, reason: 'mention' })), ...(this.running ? this.queue : [])];
       if (!this.running) this.onlyQueued = true;
@@ -123,7 +144,7 @@ export class Chat {
           this.queue = this.rotation();
           if (!this.queue.length) break;
         }
-        if (this.turns >= this.host.maxTurns) break;
+        if (n > 1 && this.turns >= this.host.maxTurns) break;
         const item = this.queue.shift();
         const member = this.host.members.find((m) => m.id === item.memberId);
         if (!member) continue;
@@ -133,8 +154,8 @@ export class Chat {
         if (r.passed || r.done) this.passesInRow++;
         else this.passesInRow = 0;
         if (this.passesInRow >= n) break;
-        if (r.mentions.length) {
-          // AI 点名了别人：被点名的人接着说
+        if (r.mentions.length && !this.onlyMember) {
+          // AI 点名了别人：被点名的人接着说（只问某人时不接）
           const rest = this.queue.filter((q) => !r.mentions.includes(q.memberId));
           this.queue = [...r.mentions.map((id) => ({ memberId: id, reason: 'mention' })), ...rest];
         }
@@ -144,6 +165,7 @@ export class Chat {
       this.running = false;
       this.queue = [];
       this.onlyQueued = false;
+      this.onlyMember = null;
       this.host.save();
       this.emitState();
       // 这一轮停下了（宿主据此提醒你；你自己点的停止不算）
@@ -156,20 +178,26 @@ export class Chat {
     const api = h.registry.isApi(member.engine);
     const state = h.memberState[member.id] || {};
     const imported = state.importId ? state : null; // 接续导入对话的成员
-    const canResume = h.registry.supportsResume(member.engine) || !!imported;
+    const solo = h.members.length === 1;
+    // 长会话：引擎本来就续接（meta.resume），或者单人聊天里会话能放在 Agenda 自己的地方（meta.privateSessions）
+    const longSession = h.registry.supportsResume(member.engine) || (solo && !!h.registry.supportsPrivateSessions?.(member.engine));
+    const canResume = longSession || !!imported;
     const outside = h.ws.begin();
     if (outside.length) h.emit({ type: 'files_changed', changes: outside });
     // 「可运行命令」档：能先问的 AI 每条命令先问你；问不了的只能改文件（API 型本来就不能运行命令，不受影响）
     const asks = h.access === 'run' && !api && h.registry.supportsApproval(member.engine);
     const access = h.access === 'run' && !api && !asks ? 'edit' : h.access;
+    const sig = sessionSig(member, solo, access, asks);
+    const stale = !imported && state.sig !== sig; // 设定变了：换新会话
 
     const build = (resume) => ({
-      system: systemPrompt(h.promptView(), member, { api, access, approvals: asks }) + (resume && imported
+      system: systemPrompt(h.promptView(), member, { api, access, approvals: asks, solo }) + (resume && imported
         ? `\n${resumeNote(h.messages.find((m) => m.id === imported.importId) || { sourceLabel: member.engineLabel }, h.workspacePath)}\n` : ''),
       prompt: turnPrompt(h.promptView(), member, {
-        reason, api,
+        reason: solo ? 'solo' : reason, api,
         files: api ? h.ws.snapshot() : null,
         since: resume ? state.seen : null,
+        recent: !resume && solo && longSession && !imported ? recentStart(h.messages, RECENT_ROUNDS) : null,
         background: importsBackground(h.messages, { from: resume ? state.seen : 0, excludeId: resume ? imported?.importId : null, briefs: resume ? state.briefs || {} : null }),
       }),
     });
@@ -195,6 +223,7 @@ export class Chat {
         cwd: h.workspacePath,
         access,
         ...resumeOpts(resume, state),
+        keepSession: longSession && !imported, // 新开的会话要留着下次续接
         signal: controller.signal,
         sink: msg,
         images,
@@ -207,7 +236,7 @@ export class Chat {
     };
 
     try {
-      const resume = canResume && !!state.sessionId && state.seen != null;
+      const resume = canResume && !!state.sessionId && state.seen != null && !stale;
       let r;
       let fellBack = false;
       try {
@@ -218,7 +247,7 @@ export class Chat {
         fellBack = true;
         r = await call(false); // 旧会话失效：开新会话重来
       }
-      const mk = parseMarkers(r.text);
+      const mk = parseMarkers(r.text, { markers: !solo });
       msg.text = mk.text;
       msg.passed = mk.passed;
       msg.done = mk.done;
@@ -232,7 +261,9 @@ export class Chat {
       } else if (imported) {
         h.memberState[member.id] = { ...imported, sessionId: r.sessionId || imported.sessionId, fork: false, seen, briefs: briefVersions(h.messages) };
       } else if (canResume) {
-        h.memberState[member.id] = { sessionId: r.sessionId, seen, briefs: briefVersions(h.messages) };
+        h.memberState[member.id] = { sessionId: r.sessionId, seen, briefs: briefVersions(h.messages), sig };
+      } else {
+        delete h.memberState[member.id]; // 切回一次性对话（比如单人聊天加了成员）：之前的长会话不再用
       }
     } catch (e) {
       if (e.aborted) {
