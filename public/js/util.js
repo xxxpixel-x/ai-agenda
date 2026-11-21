@@ -20,6 +20,8 @@ export const ACCESS = {
 };
 const svg = (d, z = 16) => `<svg viewBox="0 0 24 24" width="${z}" height="${z}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 export const ICON = {
+  context: svg('<path d="m3 7 9-4 9 4-9 4zM3 12l9 4 9-4M3 17l9 4 9-4"/>'),
+  memory: svg('<path d="M6 4h12a1 1 0 0 1 1 1v16l-7-4-7 4V5a1 1 0 0 1 1-1zM9 8h6M9 11h4"/>'),
   files: svg('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'),
   settings: svg('<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>'),
   export: svg('<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>'),
@@ -88,7 +90,7 @@ export async function api(path, opts = {}) {
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw Object.assign(new Error(data.error || tr('请求失败（{0}）', [res.status])), { conflict: data.conflict });
+  if (!res.ok) throw Object.assign(new Error(data?.error || tr('请求失败（{0}）', [res.status])), { status: res.status, conflict: data?.conflict, data });
   return data;
 }
 export function toast(text, level = 'info') {

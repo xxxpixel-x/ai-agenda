@@ -16,6 +16,8 @@ import './js/space-tabs.js';
 import './js/schedules.js';
 // 成员标签上的用量小圈
 import './js/usage-meter.js';
+import './js/context-panel.js';
+import './js/memory-view.js';
 
 // ---------------- 路由与启动 ----------------
 function route() {

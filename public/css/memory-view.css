@@ -1,0 +1,56 @@
+.mem-pane { display: grid; align-content: start; gap: var(--sp-3); padding: var(--sp-3); color: var(--text); font-variant-numeric: tabular-nums; }
+.mem-pane > *, .mem-entry > * { min-width: 0; }
+.mem-hero, .mem-entry, .mem-empty { border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--panel); }
+.mem-hero { position: relative; isolation: isolate; overflow: hidden; padding: var(--sp-4); }
+.mem-hero-art { position: absolute; inset-block: 0; right: var(--sp-8); width: var(--sp-16); opacity: .5; pointer-events: none; z-index: -1; }
+.mem-hero-art canvas, .mem-empty-art canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.mem-hero-title, .mem-stats, .mem-entry header, .mem-filters, .mem-meta > div { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-1); }
+.mem-hero-title { justify-content: space-between; }
+.mem-hero-title h2 { margin: 0; font-size: var(--fs-xl); font-weight: 600; }
+.mem-stats { margin-top: var(--sp-2); color: var(--text-2); font-size: var(--fs-xs); gap: var(--sp-2); }
+.mem-stats b { font-weight: 500; }
+.mem-pill, .mem-filters button, .mem-id {
+  display: inline-block; max-width: 100%; padding: 0 var(--sp-2); border: 1px solid var(--border);
+  border-radius: var(--r-xl); background: var(--panel-2); color: var(--text-2);
+  font-family: var(--font); font-size: var(--fs-xs); line-height: 1.65; overflow-wrap: anywhere;
+}
+button.mem-pill, .mem-filters button { background: var(--panel); cursor: pointer; }
+button.mem-pill:hover, .mem-filters button:hover { border-color: var(--border-strong); background: var(--hover); }
+.mem-filters { gap: var(--sp-1); }
+.mem-filters button { padding-block: var(--sp-1); }
+.mem-filters button[aria-pressed="true"] { background: var(--accent-weak); color: var(--text); border-color: var(--brand-text); }
+.mem-filters .count { font-size: var(--fs-xs); margin-left: var(--sp-1); color: var(--text-2); }
+.mem-search { width: 100%; min-width: 0; background: var(--panel); }
+.mem-list { display: grid; gap: var(--sp-2); font-size: var(--fs-sm); color: var(--muted); }
+.mem-entry { --type-color: var(--info); padding: var(--sp-3); overflow-wrap: anywhere; }
+.mem-entry.type-decision, .mem-entry.type-result { --type-color: var(--brand-text); }
+.mem-entry.type-preference, .mem-entry.type-rejected { --type-color: var(--signal); }
+.mem-entry.type-question, .mem-entry.type-disagreement { --type-color: var(--warn); }
+.mem-entry.type-constraint { --type-color: var(--text-2); }
+.mem-entry .mem-id { font-family: var(--mono); font-weight: 600; color: var(--text); }
+.mem-type { color: var(--type-color); border-color: color-mix(in srgb, var(--type-color) 30%, var(--border)); background: var(--panel); }
+.origin-user { background: var(--accent-weak); color: var(--brand-text); }
+.mem-pill.ask { background: var(--signal-soft); color: var(--signal); }
+.mem-pill.organizing { color: var(--info); }
+.mem-text { margin: var(--sp-2) 0; color: var(--text); white-space: pre-wrap; font-size: var(--fs-md); line-height: 1.55; }
+.mem-entry.inactive { background: color-mix(in srgb, var(--panel) 65%, var(--side)); }
+.mem-entry.inactive .mem-text { color: var(--text-2); }
+.mem-entry.inactive .mem-id { text-decoration: line-through; color: var(--muted); }
+.mem-reason { margin: var(--sp-2) 0; padding: var(--sp-2); border-radius: var(--r-sm); background: var(--panel-2); color: var(--text-2); white-space: pre-wrap; font-size: var(--fs-sm); }
+.mem-reason b { font-weight: 600; margin-right: var(--sp-1); }
+.mem-meta { display: flex; align-items: baseline; gap: var(--sp-2); margin-top: var(--sp-2); font-size: var(--fs-xs); color: var(--muted); }
+.mem-meta > span { flex: none; }
+.mem-meta > div { min-width: 0; }
+.mem-empty { display: grid; justify-items: center; gap: var(--sp-2); padding: var(--sp-6) var(--sp-4); text-align: center; }
+.mem-empty-art { position: relative; display: grid; place-items: center; width: var(--sp-16); height: var(--sp-16); }
+.mem-empty b { font-size: var(--fs-md); color: var(--text); }
+.mem-empty p { margin: 0; color: var(--text-2); }
+.mem-entry.flash { animation: memory-flash calc(var(--dur-slow) * 4) var(--ease); }
+@keyframes memory-flash { from { background: var(--accent-weak); border-color: var(--brand-text); } }
+@media (prefers-reduced-motion: reduce) {
+  .mem-entry.flash { animation: none; outline: 2px solid var(--brand-text); }
+}
+@media (max-width: 760px) {
+  .mem-pane { padding: var(--sp-2); }
+  .mem-hero { padding: var(--sp-3); }
+}

@@ -266,7 +266,7 @@ export function summaryCardHtml(m) {
     if (r.mode === 'git' && !r.merged && m.approved) btns.push(`<button class="btn sm primary" type="button" data-tact="merge">${tr('合并到 {0}', [esc(r.git?.baseBranch || tr('你的分支'))])}</button>`);
     btns.push(`<button class="btn sm" type="button" data-tact="finish">${tr('结束任务')}</button>`);
   }
-  return `<div class="msg summary-card" id="m-${m.id}">
+  return `<div class="msg summary-card" id="m-${m.id}" data-seq="${esc(m.seq)}">
     <div class="sc-head"><span class="sc-label">${tr('总结')}</span><span class="hint">${tr('{0} · {1}/{2} 个子任务通过', [esc(m.name), m.approved, m.total])}</span><span class="m">${clock(m.ts)}</span></div>
     ${m.text ? `<div class="md">${md(m.text)}</div>` : ''}${m.error ? errHtml(m.error) : ''}
     ${latest && r?.merged ? `<div class="note">${tr('已合并到 {0}', [esc(r.merged.branch)])}</div>` : ''}

@@ -211,7 +211,7 @@ export function importHtml(m, prefix = 'm') {
   const head = topic
     ? `<span class="imp-src">${tr('主题')}</span><b>${esc(m.topic)}</b><span class="m">${tr('{0} · {1} 条 · {2}', [esc(m.sourceLabel), m.total, clock(m.ts)])}</span>`
     : `<span class="imp-src">${esc(m.parentId ? tr('补导') : m.sourceLabel)}</span><b>${esc(m.title)}</b><span class="m">${tr('{0} 条 · {1}', [m.parentId ? m.entries.length : m.total, clock(m.ts)])}</span>`;
-  return `<div class="msg import" id="${prefix}-${m.id}" style="--c:${color}">
+  return `<div class="msg import" id="${prefix}-${m.id}" data-seq="${esc(m.seq)}" style="--c:${color}">
     <details class="imp" data-import="${m.id}">
       <summary>${head}</summary>
       <div class="imp-body"></div>
