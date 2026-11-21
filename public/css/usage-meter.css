@@ -1,0 +1,4 @@
+/* 成员标签：额度用到 80% 以上时整个标签染成提醒色（小圈本身的样式在 style.css 的 .pa.metered） */
+.person.quota-warn { color: var(--warn); background: color-mix(in srgb, var(--butter) 26%, transparent); }
+.person.quota-warn:hover { color: var(--warn); background: color-mix(in srgb, var(--butter) 38%, transparent); }
+.person.quota-warn small { color: inherit; opacity: .8; }

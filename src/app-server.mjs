@@ -11,6 +11,7 @@ import { createSettings } from './settings.mjs';
 import { createRegistry, CLI_ENGINE_IDS } from './engines/index.mjs';
 import { listSessions, configureImporters, stagePasted } from './importers/index.mjs';
 import { createScheduler } from './scheduler.mjs';
+import { summarize, latest } from './usage.mjs';
 import { sessionDetail, forkedSessionIds, importSession, checkImport, refreshImport, recompressImport, resolveBrief, topicFolder } from './imports.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -438,6 +439,16 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
         return sendJson(res, 200, await space.run.fileDiff(arg, url.searchParams.get('path')));
       }
       if (sub === '/events' && method === 'GET') return openSse(req, res, space);
+      // 成员用量：最近一次（上下文、额度）、这个空间合计、今天（本地日期）合计
+      if (sub === '/usage' && method === 'GET' && !arg) {
+        const d = new Date();
+        const today = summarize(space.data, { since: new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() });
+        const members = {};
+        for (const [id, total] of Object.entries(summarize(space.data))) {
+          members[id] = { latest: latest(space.data, id), total, today: today[id] ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, turns: 0 } };
+        }
+        return sendJson(res, 200, { members });
+      }
       if (sub === '/imports' && method === 'POST' && !arg) return sendJson(res, 201, importSession(space.importHost, await readJson(req)));
       if (sub === '/imports' && method === 'GET' && arg && tail === '/check') return sendJson(res, 200, checkImport(space.importHost, arg));
       if (sub === '/imports' && method === 'POST' && arg && tail === '/refresh') return sendJson(res, 200, refreshImport(space.importHost, arg));
