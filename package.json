@@ -23,7 +23,7 @@
     "dist": "electron-builder --publish never"
   },
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=22.19.0"
   },
   "devDependencies": {
     "electron": "^45.3.0",
@@ -92,5 +92,9 @@
       "category": "Development",
       "maintainer": "xxxpixel-x <xxxpixel-x@users.noreply.github.com>"
     }
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "1.5.2",
+    "@earendil-works/pi-coding-agent": "1.5.2"
   }
 }

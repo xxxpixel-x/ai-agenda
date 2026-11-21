@@ -26,22 +26,47 @@ export function effortSelect(e, m) {
   if (list.length <= 1) return '<span data-k="effort"></span>';
   return `<select data-k="effort" title="${tr('思考深度')}">${list.map((v) => `<option value="${esc(v)}" ${v === (m.effort || '') ? 'selected' : ''}>${tr('思考：{0}', [esc(v || tr('默认'))])}</option>`).join('')}</select>`;
 }
+// 能换模型来源的 AI（meta.sources）：AI 和模型来源在同一个下拉里选，例如「Claude Code」「Claude Code · Kimi」
+const SEP = '#';
+const choiceValue = (engine, source) => `${engine}${SEP}${source || ''}`;
+function sourceChoice(e, id) {
+  return (e.sourceChoices || []).find((c) => c.id === id) || null;
+}
+// 没有「自己的账号」的 AI 不选接口时，用第一个接口（和服务端一致）
+function sourceOf(e, m) {
+  if (!e.sources) return '';
+  return sourceChoice(e, m.source) ? m.source : e.sourceRequired ? e.sourceChoices?.[0]?.id || '' : '';
+}
+function engineOptions(m) {
+  const options = [];
+  for (const x of state.engines.filter((x) => shownEngines().includes(x) || x.id === m.engine)) {
+    const plain = !x.sources || !x.sourceRequired;
+    if (plain) options.push([choiceValue(x.id), x.label, x.status?.ready]);
+    if (x.sources) for (const c of x.sourceChoices || []) options.push([choiceValue(x.id, c.id), `${x.label} · ${c.name}`, x.status?.available]);
+  }
+  return options;
+}
 export function memberEditor(container, members, onChange) {
   const render = () => {
     container.innerHTML = `<div class="member-rows">${members.map((m, i) => {
       const e = engineOf(m.engine) || {};
       const models = modelChoices(e);
       const st = e.status || {};
+      m.source = sourceOf(e, m);
+      const src = sourceChoice(e, m.source);
+      const ready = src ? st.available : st.ready; // 用接口时不需要登录这个 AI 自己的账号
+      const current = choiceValue(m.engine, m.source);
+      const defaultModel = src ? src.model : st.defaultModel;
       return `<div class="member-row" data-i="${i}" style="--c:${esc(e.color || '#999')}">
         <div class="member-top">
           <input data-k="name" value="${esc(m.name)}" maxlength="20" placeholder="${tr('名字')}">
-          <select data-k="engine">${state.engines.filter((x) => shownEngines().includes(x) || x.id === m.engine).map((x) => `<option value="${esc(x.id)}" ${x.id === m.engine ? 'selected' : ''}>${esc(x.label)}${x.status?.ready ? '' : tr('（未就绪）')}</option>`).join('')}</select>
-          <input data-k="model" value="${esc(m.model || '')}" list="models-${i}" placeholder="${esc(st.defaultModel ? tr('默认：{0}', [st.defaultModel]) : tr('默认模型'))}">
+          <select data-k="engine">${engineOptions(m).map(([v, label, ok]) => `<option value="${esc(v)}" ${v === current ? 'selected' : ''}>${esc(label)}${ok ? '' : tr('（未就绪）')}</option>`).join('')}</select>
+          <input data-k="model" value="${esc(m.model || '')}" list="models-${i}" placeholder="${esc(defaultModel ? tr('默认：{0}', [defaultModel]) : tr('默认模型'))}">
           <datalist id="models-${i}">${models.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('')}</datalist>
           ${effortSelect(e, m)}
           <button class="icon-btn" type="button" data-act="del-member" title="${tr('移除')}" ${members.length <= 1 ? 'disabled' : ''}>${ICON.close}</button>
         </div>
-        ${!st.ready ? `<div class="member-status warn">${esc(st.note || tr('还不能用'))}</div>` : ''}
+        ${!ready ? `<div class="member-status warn">${esc(st.note || tr('还不能用'))}</div>` : ''}
         <details ${m.persona ? 'open' : ''}><summary>${tr('设定')}</summary>
           <textarea data-k="persona" rows="2" placeholder="${tr('例如：你负责挑毛病；或者：你是这份论文的审稿人')}">${esc(m.persona || '')}</textarea></details>
       </div>`;
@@ -54,7 +79,8 @@ export function memberEditor(container, members, onChange) {
     const k = ev.target.dataset.k;
     if (!row || !k) return;
     const m = members[+row.dataset.i];
-    m[k] = ev.target.value;
+    if (k === 'engine') [m.engine, m.source] = ev.target.value.split(SEP);
+    else m[k] = ev.target.value;
     if (k === 'name') onChange?.();
     if (k === 'engine') {
       const e = engineOf(m.engine);
@@ -124,7 +150,7 @@ export function readTaskOptions(root) {
     maxParallel: $('[data-opt=maxParallel]', root).value,
   };
 }
-const copyMembers = (list) => list.map((m) => ({ engine: m.engine, name: m.name, model: m.model || '', effort: m.effort || '', persona: m.persona || '' }));
+const copyMembers = (list) => list.map((m) => ({ engine: m.engine, source: m.source || '', name: m.name, model: m.model || '', effort: m.effort || '', persona: m.persona || '' }));
 
 /**
  * 新建空间。opts：

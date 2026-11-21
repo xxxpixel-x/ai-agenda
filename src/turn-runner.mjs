@@ -8,7 +8,7 @@ const MAX_LOG_LINE = 2000;
 
 /**
  * @param registry  引擎注册表
- * @param member    成员（engine / model / effort / name）
+ * @param member    成员（engine / model / effort / name / source：模型来源，设置里的接口 id）
  * @param opts.system / prompt / cwd / access / sessionId / fork / resumeAt / signal   传给引擎（fork：复制一份会话再接；resumeAt：只复制到这条消息）
  * @param opts.sink         写入对象：{ text, activities, note?, log? }；有 log 数组时记录原始输出，引擎返回用量时写入 usage 并补上缺少的 memberId
  * @param opts.ws           API 型 AI 的文件块写到哪个 Workspace；不给则不写入
@@ -32,6 +32,7 @@ export async function runAgentTurn(registry, member, {
     prompt,
     model: member.model,
     effort: member.effort,
+    source: member.source, // 模型来源（设置里的接口 id），注册表换成接口本身
     cwd,
     access,
     sessionId,

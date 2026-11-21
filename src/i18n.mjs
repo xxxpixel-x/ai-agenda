@@ -822,6 +822,18 @@ Explain your decision and reasoning to the user in one or two paragraphs, then e
   '退出': 'Quit',
   'Agenda 还在后台运行': 'Agenda is still running in the background',
   '设了定时任务，关掉窗口后会照常运行。从托盘图标可以打开或退出。': 'You have scheduled tasks, so Agenda keeps running after you close the window. Use the tray icon to open or quit it.',
+  'Pi 已内置，可用接口：{0}': 'Pi is built in. Available providers: {0}',
+  'Pi 已内置，先在「AI 连接」里添加 API 接口': 'Pi is built in. Add an API provider in AI Connections to get started.',
+  '找不到 Pi 会话 {0}': 'Pi session {0} could not be found',
+  '找不到模型 {0}': 'Model {0} could not be found',
+  '缺少 Pi 数据目录': 'The Pi data directory is missing',
+  '{0} 请求失败：{1}': '{0} request failed: {1}',
+  '「{0}」要给 Claude Code 用，需要填 Anthropic 兼容地址': '“{0}” needs an Anthropic-compatible URL to be used with Claude Code',
+  '成员「{0}」的模型来源已经不能用了，换一个': 'The model source for {0} is no longer available. Choose another one',
+  '成员「{0}」需要一个模型来源，先在「AI 连接」里添加 API 接口': '{0} needs a model source. Add an API provider in AI Connections first',
+  '这个成员的模型来源已经不能用了，在空间设置里换一个': 'This member’s model source is no longer available. Choose another one in space settings',
+  '你的 Claude 账号': 'Your Claude account',
+  '{0} 的 API key 不对或没有填（{1}）': 'The API key for {0} is missing or invalid ({1})',
 };
 
 export const zh = {

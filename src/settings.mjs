@@ -1,4 +1,4 @@
-// 全局设置：语言、提醒和防睡眠开关、各命令行的路径、Gemini API key、OpenAI 兼容接口列表。保存在 data/settings.json。
+// 全局设置：语言、提醒和防睡眠开关、各命令行的路径、Gemini API key、OpenAI 兼容接口列表（可以同时给 Claude Code、pi 当模型来源）。保存在 data/settings.json。
 // 桌面版里 API key 用系统加密（Electron safeStorage，绑定当前 Windows 账户）后再存盘。
 import { t as tr } from './i18n.mjs';
 import fs from 'node:fs';
@@ -12,7 +12,7 @@ const defaults = (pathKeys) => ({
   keepAwake: true, // 有 AI 在干活时不让电脑睡眠（桌面版）
   paths: Object.fromEntries(pathKeys.map((k) => [k, ''])),
   gemini: { apiKey: '', baseUrl: '' },
-  providers: [], // [{ id, name, baseUrl, apiKey, model }]
+  providers: [], // [{ id, name, baseUrl, apiKey, model, anthropicUrl, claudeCode }]
 });
 
 const str = (v, max = 500) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
@@ -61,6 +61,7 @@ export function createSettings(file, { pathKeys = [], protect = (s) => ({ plain:
   const mask = (k) => (k ? `${k.slice(0, 4)}…${k.slice(-4)}` : '');
 
   return {
+    dir: path.dirname(file), // 数据目录：引擎自己的配置（pi、Claude Code 的独立配置目录）放这里
     get: () => data,
     disableProviderImages(conn) {
       const current = data.providers.find((p) => p.id === conn.id && p.baseUrl === conn.baseUrl);
@@ -75,7 +76,7 @@ export function createSettings(file, { pathKeys = [], protect = (s) => ({ plain:
       keepAwake: data.keepAwake,
       paths: data.paths,
       gemini: { baseUrl: data.gemini.baseUrl, hasKey: !!data.gemini.apiKey, keyHint: mask(data.gemini.apiKey) },
-      providers: data.providers.map((p) => ({ id: p.id, name: p.name, baseUrl: p.baseUrl, model: p.model, hasKey: !!p.apiKey, keyHint: mask(p.apiKey) })),
+      providers: data.providers.map((p) => ({ id: p.id, name: p.name, baseUrl: p.baseUrl, model: p.model, anthropicUrl: p.anthropicUrl || '', claudeCode: !!p.claudeCode, hasKey: !!p.apiKey, keyHint: mask(p.apiKey) })),
     }),
     /** 局部更新。apiKey 传 undefined 表示不变，传 '' 表示清空。 */
     update(patch) {
@@ -102,12 +103,18 @@ export function createSettings(file, { pathKeys = [], protect = (s) => ({ plain:
             const prev = old.get(p.id) || {};
             const name = str(p.name, 30).replace(/[@\s]/g, '');
             if (!name) throw new Error(tr('每个接口都需要一个名字'));
+            // 也给 Claude Code 用：要有 Anthropic 兼容地址（没传这两项时保留原来的）
+            const anthropicUrl = 'anthropicUrl' in p ? str(p.anthropicUrl) : prev.anthropicUrl || '';
+            const claudeCode = 'claudeCode' in p ? p.claudeCode === true : !!prev.claudeCode;
+            if (claudeCode && !anthropicUrl) throw new Error(tr('「{0}」要给 Claude Code 用，需要填 Anthropic 兼容地址', [name]));
             return {
               id: prev.id || randomUUID().slice(0, 8),
               name,
               baseUrl: str(p.baseUrl),
               ...(prev.images === false && prev.baseUrl === str(p.baseUrl) ? { images: false } : {}),
               model: str(p.model, 100),
+              ...(anthropicUrl ? { anthropicUrl } : {}),
+              ...(claudeCode ? { claudeCode } : {}),
               apiKey: typeof p.apiKey === 'string' ? str(p.apiKey) : prev.apiKey || '',
             };
           });
