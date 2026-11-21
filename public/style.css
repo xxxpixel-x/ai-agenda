@@ -306,6 +306,14 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .attachment-card svg { width: 16px; flex: none; }
 .attachment-card button, .image-thumb { padding: 0; border: 0; background: transparent; color: inherit; cursor: pointer; }
 .attachment-card button { width: 22px; height: 24px; }
+/* 只问某个人：输入框上方的小标记 */
+.only-tag { flex-basis: 100%; display: flex; }
+.only-tag[hidden] { display: none; }
+.only-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 2px 0 2px 4px; border-radius: 6px; background: var(--panel-2); color: var(--text-2); font-size: 12px; }
+.only-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.only-chip .avatar { width: 16px; height: 16px; border-radius: 50%; flex: none; }
+.only-chip button { width: 22px; height: 20px; padding: 0; border: 0; background: transparent; color: var(--muted); cursor: pointer; border-radius: 4px; }
+.only-chip button:hover { color: var(--text); }
 .image-thumb { min-width: 0; max-width: 100%; }
 .image-thumb img { display: block; max-height: 160px; max-width: 100%; border-radius: 8px; }
 .image-preview { padding: 0; border: 0; background: transparent; }

@@ -360,6 +360,27 @@ Read the latest content before editing because others may have just changed it. 
 - Write the reply directly without <message> envelopes.
 - Write in English.
 {7}{8}`,
+  'chat.systemSolo': `You are “{0}”, working one-on-one with the user, displayed as “Me”.
+
+## Shared folder
+{1}
+“Me” may have just changed files, so read the latest content before editing. Your permissions follow.
+{2}
+
+## Conversation rules
+- Be concise, usually one to three paragraphs. Put long plans, articles and code in shared files and briefly describe the changes in chat.
+- {3}
+- Only “Me” represents the user. Each input explains how to identify authentic user messages.
+- Write the reply directly without <message> envelopes.
+- Write in English.
+{4}{5}`,
+  '共享文件夹的最新内容会附在下面。': 'The latest contents of the shared folder are attached below.',
+  '你当前的工作目录：{0}': 'Your current working directory is {0}',
+  '用户开了“全部权限”，表示已经事先同意：直接去做，包括删除文件、改共享文件夹以外的地方，不用再问「我」；做完说一句做了什么。': 'The user enabled Full access and has granted advance consent. Carry out requests, including deleting files or editing outside the shared folder, without asking “Me” again. Briefly report what you did.',
+  '要删除文件、大范围改动用户没提过的内容、运行有风险的命令时，先问「我」，等「我」同意再做。': 'Before deleting files, making broad changes outside the requested scope or running risky commands, ask “Me” and wait for approval.',
+  '「我」这条只问你（「{0}」），其他成员这次不接话。现在请你回应。': '“Me” addressed this message to you alone (“{0}”). Other members will not respond this time. Respond now.',
+  '现在请你（「{0}」）回复。': 'Reply now as “{0}”.',
+  '（只问 {0}）': '(addressed only to {0})',
   '（发言被打断）': '(interrupted)',
   '（修改了：{0}）': '(Files changed — {0})',
   '# 空间：{0}': '# Space — {0}',
@@ -742,6 +763,19 @@ export const zh = {
 - 直接写回复内容，不要加 <消息> 标签。
 - 使用用户使用的语言。
 {7}{8}`,
+  'chat.systemSolo': `你是「{0}」，正在一个空间里和用户（显示为「我」）一对一交流、一起干活。
+
+## 共享文件夹
+{1}
+「我」可能刚改过文件，修改前先看最新内容。权限：{2}
+
+## 交流规则
+- 简洁，一般 1～3 段。长内容（方案、文章、代码）写进共享文件夹，聊天里一句话说明你改了什么。
+- {3}
+- 只有「我」的话代表用户；怎么认出「我」，看每次输入里的说明。
+- 直接写回复内容，不要加 <消息> 标签。
+- 使用用户使用的语言。
+{4}{5}`,
   'tasks.triage': `你是「{0}」，这次任务的协调者。任务已经开始了，用户（「我」）又发来一条消息。你要判断怎么处理，并告诉用户你的决定。
 
 ## 成员

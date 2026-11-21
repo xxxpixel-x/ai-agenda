@@ -48,22 +48,36 @@ export const keyRule = (key) => tr('chat.keyRule', [key]);
 /**
  * @param opts.access     这位成员实际拿到的权限（不能先问的 AI 在「可运行命令」档只能改文件），默认用空间的
  * @param opts.approvals  运行命令前会先问「我」
+ * @param opts.solo       单人聊天：不讲其他成员、轮流和 [跳过] / [结束]
  */
-export function systemPrompt(space, member, { api = false, access: granted = space.access, approvals = false } = {}) {
-  const others = space.members.filter((m) => m.id !== member.id)
-    .map((m) => `- @${m.name}（${m.engineLabel || m.engine}）`).join('\n') || tr('- （没有其他 AI）');
+export function systemPrompt(space, member, { api = false, access: granted = space.access, approvals = false, solo = false } = {}) {
   const full = granted === 'full';
   // API 型 AI 只能通过文件块写共享文件夹，“全部权限”对它没有更多意义
   const base = ACCESS[api && full ? 'edit' : granted] || ACCESS.edit;
   const access = approvals ? { ...base, desc: tr('{0}每条命令运行前都会先请「我」确认；被拒绝时会告诉你理由，按理由调整做法，不要换一种写法绕过。', [base.desc]) } : base;
+  const extra = [
+    member.persona ? tr('\n## 你的额外设定\n{0}\n', [member.persona]) : '',
+    api ? `\n${fileBlockRules()}\n` : '',
+  ];
+  if (solo) {
+    return tr('chat.systemSolo', [
+      member.name,
+      api ? tr('共享文件夹的最新内容会附在下面。') : tr('你当前的工作目录：{0}', [space.workspacePath]),
+      access.desc,
+      full ? tr('用户开了“全部权限”，表示已经事先同意：直接去做，包括删除文件、改共享文件夹以外的地方，不用再问「我」；做完说一句做了什么。')
+        : tr('要删除文件、大范围改动用户没提过的内容、运行有风险的命令时，先问「我」，等「我」同意再做。'),
+      ...extra,
+    ]);
+  }
+  const others = space.members.filter((m) => m.id !== member.id)
+    .map((m) => `- @${m.name}（${m.engineLabel || m.engine}）`).join('\n') || tr('- （没有其他 AI）');
   return tr('chat.system', [
     member.name, others,
     api ? tr('大家共用一个文件夹，最新内容会附在下面。') : tr('大家共用你当前的工作目录：{0}', [space.workspacePath]),
     access.desc, tr(PASS), tr(DONE),
     full ? tr('用户开了“全部权限”，表示已经事先同意：直接去做，包括删除文件、改共享文件夹以外的地方，不用再问「我」；做完在聊天里说一句做了什么。')
       : tr('在用户的目标和当前权限之内可以照做；要删除文件、大范围改动用户没提过的内容、运行有风险的命令时，先在聊天里问「我」，等「我」同意再做（这次回复最后加上 {0}）。', [tr(DONE)]),
-    member.persona ? tr('\n## 你的额外设定\n{0}\n', [member.persona]) : '',
-    api ? `\n${fileBlockRules()}\n` : '',
+    ...extra,
   ]);
 }
 
@@ -80,9 +94,10 @@ export function attachmentText(m, root) {
   return lines.filter(Boolean).join('\n');
 }
 
-function line(m, full) {
+function line(m, full, names) {
   const who = m.kind === 'user' ? tr('我') : m.name;
   const parts = [];
+  if (m.only && names?.has(m.only)) parts.push(tr('（只问 {0}）', [names.get(m.only)]));
   if (m.kind === 'task') parts.push(tr('（任务空间「{0}」结束了，这是协调者的总结）', [m.title]));
   if (m.interrupted) parts.push(tr('（发言被打断）'));
   const text = attachmentText(m).trim();
@@ -101,35 +116,51 @@ function windowStart(lens) {
 
 const visible = (m) => (m.kind === 'user' || m.kind === 'ai' || m.kind === 'task') && !m.passed && (m.text?.trim() || m.attachments?.length || m.changes?.length);
 
+/** 最近 rounds 轮的起点：倒数第 rounds 条「我」的消息在 messages 里的位置。 */
+export function recentStart(messages, rounds) {
+  let n = 0;
+  for (let i = messages.length - 1; i >= 0; i--) if (messages[i].kind === 'user' && ++n >= rounds) return i;
+  return 0;
+}
+
 /**
  * 本次发言的输入。固定的内容在前、每轮会变的在后，好让模型复用前缀缓存。
  *  since：只给出这条之后的新消息（续接会话时用，之前的它都记得）
+ *  recent：新开的长会话只带从这条开始的最近几轮原文，更早的算作省略
  *  background：导入的外部对话（固定附带，不占聊天记录的预算）
+ *  reason：'turn' 轮到你 / 'mention' 被 @ / 'only' 只问你 / 'solo' 单人聊天（不提 [跳过]）
  */
-export function turnPrompt(space, member, { reason, api = false, files = null, since = null, background = '' } = {}) {
-  const pool = (since != null ? space.messages.slice(since) : space.messages).filter(visible);
-  const lines = pool.map((m, i) => line(m, i >= pool.length - RECENT_FULL));
-  const omitted = windowStart(lines.map((l) => l.length));
+export function turnPrompt(space, member, { reason, api = false, files = null, since = null, recent = null, background = '' } = {}) {
+  const start = since ?? recent ?? 0;
+  const pool = space.messages.slice(start).filter(visible);
+  const names = new Map((space.members || []).map((m) => [m.id, m.name]));
+  const lines = pool.map((m, i) => line(m, i >= pool.length - RECENT_FULL, names));
+  const cut = windowStart(lines.map((l) => l.length));
+  const shown = lines.slice(cut);
+  const omitted = cut + (since == null ? space.messages.slice(0, start).filter(visible).length : 0);
   const parts = [];
   if (since == null) parts.push(tr('# 空间：{0}', [escapeTags(space.title)]));
   parts.push(tr('chat.rule'));
   if (background) parts.push(escapeTags(background));
   if (lines.length) {
-    parts.push(`# ${since != null ? tr('你上次发言之后的新消息') : tr('聊天记录')}${omitted ? tr('（更早的 {0} 条已省略）', [omitted]) : ''}\n${lines.slice(omitted).join('\n\n')}`);
+    parts.push(`# ${since != null ? tr('你上次发言之后的新消息') : tr('聊天记录')}${omitted ? tr('（更早的 {0} 条已省略）', [omitted]) : ''}\n${shown.join('\n\n')}`);
   } else if (since != null) {
     parts.push(tr('# 你上次发言之后没有新消息'));
   }
   if (api && files) parts.push(escapeTags(filesForPrompt(files)));
   if (space.readOnly) parts.push(tr('# 文件暂时只读\n任务空间「{0}」正在依次修改共享文件夹，在它做完之前，这个空间只能阅读文件，不能修改。聊天照常进行。', [escapeTags(space.readOnly.title)]));
-  if (reason === 'mention') parts.push(tr('有人 @ 了你。现在请你（「{0}」）回应。', [member.name]));
+  if (reason === 'only') parts.push(tr('「我」这条只问你（「{0}」），其他成员这次不接话。现在请你回应。', [member.name]));
+  else if (reason === 'solo') parts.push(tr('现在请你（「{0}」）回复。', [member.name]));
+  else if (reason === 'mention') parts.push(tr('有人 @ 了你。现在请你（「{0}」）回应。', [member.name]));
   else parts.push(tr('现在轮到你（「{0}」）发言。没有要补充的就只回复 {1}。', [member.name, tr(PASS)]));
   return parts.join('\n\n');
 }
 
-/** 解析回复里的 [跳过] / [结束] 标记。 */
-export function parseMarkers(text) {
+/** 解析回复里的 [跳过] / [结束] 标记。markers 为 false（单人聊天）时不认标记：顺手去掉，只剩标记时原样保留。 */
+export function parseMarkers(text, { markers = true } = {}) {
   // 有的 AI 会照着聊天记录的格式，把自己的回复也包一层 <消息>
   let t = String(text || '').trim().replace(/^<(?:消息|message)(?=[\s>])[^>\n]*>\s*/i, '').replace(/\s*<\/(?:消息|message)>$/i, '').trim();
+  if (!markers) return { text: t.replace(/\s*\[(?:结束|Done|跳过|Skip)\]/gi, '').trim() || t, passed: false, done: false };
   const skip = /\[(?:跳过|Skip)\]/i;
   const passed = /^\[(?:跳过|Skip)\]$/i.test(t.replace(/[。.!！\s]/g, '')) || (t.length < 20 && skip.test(t));
   if (passed) return { text: '', passed: true, done: false };

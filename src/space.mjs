@@ -310,15 +310,15 @@ export class Space extends EventEmitter {
     if (this.importing) throw new Error(tr('正在整理导入的对话，稍等一下'));
   }
 
-  /** 输入框：聊天空间发给所有成员；任务空间只发给协调者。 */
-  userMessage(text, ids = []) {
+  /** 输入框：聊天空间发给所有成员（opts.only：只问这个成员）；任务空间只发给协调者。 */
+  userMessage(text, ids = [], opts = {}) {
     if (!Array.isArray(ids) || new Set(ids).size !== ids.length) throw new Error(tr('附件列表不合法'));
-    if (ids.length) return this.track(this.sendAttachments(text, ids));
-    return this.postMessage(text, []);
+    if (ids.length) return this.track(this.sendAttachments(text, ids, opts));
+    return this.postMessage(text, [], opts);
   }
 
-  postMessage(text, attachments) {
-    if (!this.isTask) return this.chat.userMessage(text, attachments);
+  postMessage(text, attachments, opts = {}) {
+    if (!this.isTask) return this.chat.userMessage(text, attachments, opts);
     if (!this.run) throw new Error(tr('任务还没开始'));
     return this.run.userMessage(text, attachments);
   }
@@ -337,7 +337,7 @@ export class Space extends EventEmitter {
     return a;
   }
 
-  async sendAttachments(text, ids) {
+  async sendAttachments(text, ids, opts = {}) {
     const items = ids.map((id) => this.staged(id));
     for (const a of items) this.checkAttachment(a);
     if (items.filter((a) => a.kind === 'image').length > 10) throw new Error(tr('每条消息最多 10 张图片'));
@@ -360,7 +360,7 @@ export class Space extends EventEmitter {
         this.ws.acceptCopy(rel);
         this.hooks.acceptCopy?.(this, rel);
       }
-      msg = this.postMessage(text, attachments);
+      msg = this.postMessage(text, attachments, opts);
     } catch (e) {
       for (const rel of copied) {
         fs.unlinkSync(this.ws.resolve(rel));

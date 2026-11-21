@@ -466,8 +466,8 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
         }
       }
       if (sub === '/messages' && method === 'POST') {
-        const { text, attachments } = await readJson(req);
-        return sendJson(res, 201, await space.userMessage(text, attachments));
+        const { text, attachments, only } = await readJson(req);
+        return sendJson(res, 201, await space.userMessage(text, attachments, { only }));
       }
       // 聊天空间 → 任务空间：让一个成员把选出的讨论提炼成任务目标
       if (sub === '/distill' && method === 'POST') {
