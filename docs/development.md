@@ -6,7 +6,7 @@
 
 项目使用 Electron 和原生 JavaScript，没有前端打包步骤。`npm ci` 按锁文件安装依赖，`npm start` 打开桌面窗口，`npm run mock` 使用模拟引擎和独立数据目录。
 
-Node.js 最低版本为 22.12.0，与锁文件中的 `@electron/get`、`@electron-internal/extract-zip` 安装依赖要求一致。
+Node.js 最低版本为 22.19.0（内嵌 `@earendil-works/pi-coding-agent` 与 Electron 依赖要求）。
 
 源码运行时数据在项目里的 `data/`；打包后程序目录只读，数据改放在 Electron 的 `userData` 目录（见 `electron/main.cjs`）。macOS / Linux 从图形界面启动时拿不到终端的 PATH，主进程启动时会向登录 shell 要一份补上，否则找不到命令行 AI。
 
@@ -28,10 +28,14 @@ Electron 主进程启动仅监听 `127.0.0.1` 的 HTTP 服务，并以随机端�
 | `src/attachments.mjs` | 输入框里的附件：暂存在空间数据目录，图片按文件头识别，普通文件发送时复制到共享文件夹的附件目录 |
 | `src/workspace.mjs` | 文件扫描、读写、改动记录、撤销冲突检测 |
 | `src/git.mjs` | Git worktree、提交、对比与合并 |
-| `src/store.mjs` / `src/settings.mjs` | 空间持久化、连接配置、密钥编码与界面脱敏 |
+| `src/store.mjs` / `src/settings.mjs` | 空间持久化、连接配置、自定义 ACP 配置、自动交接阈值、密钥编码与界面脱敏 |
+| `src/context.mjs` / `src/usage.mjs` | token 估算、模型上下文窗口预设、总预算缩减顺序与快照拆解；用量汇总 |
+| `src/memory/` | 空间记忆库存储（`store.mjs`）、写入规则（`rules.mjs`）、与前情提要联合整理（`organize.mjs`）和检索 |
+| `src/scheduler.mjs` | 单次、每周与固定间隔定时任务调度和运行记录 |
+| `src/roles.mjs` / `src/extensions.mjs` / `src/library-routes.mjs` | 双语角色卡、团队、Markdown 导入导出、本机 Skill/MCP 扫描安装、集市清单与 `/api/library/*` 路由 |
 | `src/imports.mjs` | 导入方式、摘要、主题简报、补导和背景版本 |
 | `src/importers/` | 只读解析外部工具的会话记录，以及粘贴文字和导出文件的整理（新增来源见 [importers.md](importers.md)） |
-| `src/engines/` | CLI / API 适配器与统一注册表 |
+| `src/engines/` | CLI / 内嵌 `pi` / ACP / API 适配器与统一注册表 |
 | `public/` | 界面与静态素材：`app.js` 是入口（路由与启动），各部分在 `public/js/`（`util.js` 是工具和全局状态，不依赖其他模块）。样式变量在 `public/css/tokens.css`，其他样式只用变量 |
 | `public/js/slots.js` | 挂载点：设置分类（`settings`）、资源库分类（`library`）、空间设置标签（`spaceTabs`）、右侧栏面板（`panels`）都用 `register(slot, def)` 注册，加功能加一个文件，不改布局 |
 | `public/js/pages.js` / `rightbar.js` | 整页视图（`#/settings/<id>`、`#/library/<id>`）；右侧栏（一次看一个面板，能收起） |
@@ -68,7 +72,7 @@ npm run verify
 
 测试使用 Node.js 内置的 `node:test`，无需第三方测试框架，覆盖设置持久化与密钥脱敏、文件历史与撤销、导入背景、任务计划、本机 HTTP 接口、模拟讨论以及 Git / 非 Git 任务协作。全部测试数据位于操作系统临时目录，测试后清理；Git 测试只操作自己创建的临时仓库。
 
-GitHub Actions 在 Windows 和 Ubuntu、Node.js 22.12.0 和 24 上执行同样的检查。CI 设置 `ELECTRON_SKIP_BINARY_DOWNLOAD=1`，不下载桌面二进制、不启动窗口，不需要 AI 凭据。后端测试通过不等同于完整桌面兼容性验证。
+GitHub Actions 在 Windows 和 Ubuntu、Node.js 22.19.0 和 24 上执行同样的检查。CI 设置 `ELECTRON_SKIP_BINARY_DOWNLOAD=1`，不下载桌面二进制、不启动窗口，不需要 AI 凭据。后端测试通过不等同于完整桌面兼容性验证。
 
 涉及 UI 时用 `npm run mock` 检查相关流程。涉及真实引擎时，用对应账号验证登录、模型选择、一次发言、中止与权限，并在 PR 中记录验证范围。
 

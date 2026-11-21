@@ -14,8 +14,8 @@ Agenda is a desktop workspace where you can bring Claude Code, Codex, Gemini, De
 
 | Space | How it works |
 | --- | --- |
-| **Chat space** | Discuss a plan, write together, or edit shared files. Members take turns and can respond to one another. Use `@` to address a member, or interrupt, skip, or stop at any time. |
-| **Task space** | Give a coordinator a goal and it breaks the work into subtasks with dependencies. Approve the plan and review the results yourself, or enable automatic starts and approvals. Git projects can run in parallel in separate worktrees, and you merge the result into your branch after review. Other folders are edited sequentially. |
+| **Chat space** | Discuss a plan, write together, or edit shared files. Multiple members take turns and can respond to one another. Use `@` to address a member, **Ask only** to direct a message to one member, or interrupt, skip, or stop at any time. A chat space with a single member automatically switches to solo chat without turn limits and uses a private long session when supported. |
+| **Task space** | Give a coordinator a goal. If the goal is ambiguous, it asks up to three clarifying questions with default answers before breaking work into subtasks with dependencies and listed assumptions. Approve plans and review results yourself, or enable automatic starts and approvals. Git projects can run in parallel in separate worktrees, and you merge the result with a drafted commit message after review. Other folders are edited sequentially. |
 
 Once a discussion settles on a plan, select messages and choose **Move to a task space**. Send new requirements to the coordinator while work is underway. It can record them as notes or revise the plan. When the task ends, you can post the summary back to the original chat space.
 
@@ -40,7 +40,7 @@ Recent changes were tested primarily on Windows. GitHub Actions builds the macOS
 
 ### Run from source
 
-Requires Node.js **22.12.0 or later**. Parallel task execution in a Git project also requires Git.
+Requires Node.js **22.19.0 or later**. Parallel task execution in a Git project also requires Git.
 
 ```sh
 git clone https://github.com/xxxpixel-x/ai-agenda.git
@@ -55,18 +55,26 @@ On Windows, you can also double-click `启动.cmd` in the project folder. It ins
 
 ## Start collaborating
 
-1. **Connect an AI.** Open **Settings → AI connections** in the lower left. You can mix local tools and API models. CLI tools use your existing accounts and quotas.
-2. **Create a space.** Choose a chat or task space and add members. Expand **More options** to pick a folder and permission level, or use a shared folder created by Agenda. You can add the same AI more than once, with different roles, models, and supported reasoning levels.
-3. **Send a message or set a goal.** Send a message in a chat space. In a task space, planning starts on creation. Open **Plan** in the right sidebar to see subtasks, dependencies, progress, and items awaiting review.
-4. **Review the files.** Switch between **Files**, **Changes**, and **Plan** (task spaces) in the collapsible right sidebar. Preview and edit shared files, view or undo tracked changes, or send inline diff comments to the member who made a change. Drag files and images into the message field. Image input depends on the engine.
+1. **Connect an AI.** Open **Settings → AI connections** in the lower left. You can mix local tools, embedded `pi`, API models, and custom ACP tools. CLI tools use your existing accounts and quotas, and Claude Code can also point to an Anthropic-compatible third-party provider.
+2. **Create a space.** Choose a chat or task space and add members, or load members, instructions, and tools from **Role cards** and **Teams**. Pick a folder and permission level directly, or use a shared folder created by Agenda. You can add the same AI more than once, with different roles, model sources, models, and supported reasoning levels.
+3. **Send a message or set a goal.** Send a message in a chat space; AI replies include a compact summary of commands they ran. In a task space, planning starts on creation (with clarifying questions if needed). Open **Plan** in the right sidebar to see subtasks, assumptions, dependencies, progress, and items awaiting review.
+4. **Review files, context, and memory.** Switch between **Files**, **Changes**, **Plan** (task spaces), **Context**, and **Memory** in the collapsible right sidebar. Preview and edit shared files, send inline diff comments, inspect each member's context breakdown and memory references, reopen a session manually, or view and edit the chat recap. Drag files and images into the message field; image input depends on the engine.
 
 | Connection | Supported AIs | Setup |
 | --- | --- | --- |
-| Local tool | Claude Code, Codex, DeepSeek Harness, Gemini CLI | Install and sign in to the tool. Set its executable path manually if Agenda can't find it. |
+| Local tool | Claude Code, Codex, DeepSeek Harness, Gemini CLI | Install and sign in to the tool. Set its executable path manually if Agenda can't find it. Claude Code can also use any provider marked for Claude Code. |
+| Embedded `pi` | Runs API models as hands-on file/command agents with skill and MCP mounting | Bundled with Agenda—no extra install required. Configure an API provider below, then pick `Pi · <Provider>`. |
+| Custom AI (ACP) | Any CLI AI supporting Agent Client Protocol over stdio JSON-RPC | Add name, launch command, and arguments under **AI connections → Custom AI (ACP)**; saving runs a handshake check automatically. |
 | Gemini API | Gemini models | Enter an API key. |
-| OpenAI-compatible API | DeepSeek, Qwen, Kimi, Zhipu, OpenAI, Ollama, and others | Enter the endpoint, model, and any key required by the service. Local services such as Ollama can leave the key blank. |
+| OpenAI-compatible API | DeepSeek, Qwen, Kimi, Zhipu, OpenAI, Ollama, and others | Enter the endpoint, model, and any key required by the service (local services like Ollama can leave the key blank). Optionally enable **Also use with Claude Code**. |
 
-In **Settings → General**, choose Chinese, English, or the system language, switch between light and dark appearance, and manage desktop notifications and whether to prevent sleep while AI is working. When Agenda is in the background, it can notify you that a discussion has ended, a task needs attention, or a command is waiting for approval. Click a notification to open its space.
+In **Settings → General**, choose Chinese, English, or the system language, switch between light and dark appearance, and manage desktop notifications, sleep prevention while AI is working, and the automatic session handoff threshold (50% by default). When Agenda is in the background, it can notify you that a discussion has ended, the coordinator has clarifying questions, a task needs attention, or a command is waiting for approval. Click a notification to open its space.
+
+## Role cards, memory, and scheduling
+
+- **Library and marketplace.** Open **Library** in the sidebar to manage **Role cards**, **Teams**, **Skills and MCP**, and the **Marketplace**. Includes 7 built-in bilingual role cards and preset teams, custom overrides with reset, single-file Markdown export and previewed import, local skill/MCP discovery, cross-AI skill linking, isolated MCP secret storage, and per-member mounting for `pi`, Claude Code, and Codex.
+- **Context management and space memory.** Agenda organizes decisions, constraints, preferences, rejected approaches, proposals, and task results into a structured space memory, injects layered context per member/dependency with message-number citations, maintains an editable rolling recap when older messages roll out, performs automatic session handoffs at the configured context threshold, and shows context rings and quota warnings on member badges.
+- **Scheduling.** Configure one-time, weekly, or fixed-interval schedules in space settings (**Schedules**) or global settings (**Schedules**) to create task spaces or post messages to chat spaces. Overlapping or missed runs are skipped. With an enabled schedule, closing the window hides Agenda in the system tray or menu bar; both the computer and Agenda must keep running.
 
 ## Import conversations and hand off work
 
@@ -79,16 +87,16 @@ Import instructions and supported formats are documented in Chinese. [Conversati
 ## Permissions and data
 
 - Spaces have four permission levels, **Read only**, **Edit files**, **Run commands**, and **Full access**. Restrictions depend on each engine's tools, sandbox, or prompts. **Full access** allows access outside the shared folder.
-- With **Run commands**, Claude Code and Codex in chat spaces ask for approval. You can allow a command once, allow a program, or deny the request, with an optional note. DeepSeek Harness and Gemini CLI use the **Edit files** level in this case. Task workers run with at least **Edit files**, and their engines handle commands according to the applicable permissions.
+- With **Run commands**, Claude Code, Codex, and embedded `pi` in chat spaces ask for approval. You can allow a command once, allow a program, or deny the request, with an optional note. Custom ACP tools also route file-edit and command permission requests to approval cards in **Read only** and **Edit files** modes (ACP tools that do not enforce permissions are flagged on the member badge). DeepSeek Harness and Gemini CLI use the **Edit files** level in this case. Task workers run with at least **Edit files**, and their engines handle commands according to the applicable permissions. Mounting a mutating MCP server in a space with lower permissions prompts you to raise access, skip the MCP server, or cancel.
 - File history tracks up to 3,000 text files of at most 1 MiB each. Recover large or binary files through your project's version history or backups. **Raw output** in task spaces shows the execution log.
-- Chat history and settings are stored locally. The default paths for installed apps are `%APPDATA%\Agenda\data` on Windows, `~/Library/Application Support/Agenda/data` on macOS, and `~/.config/Agenda/data` on Linux. Source runs use the project's `data/` directory, and demo mode uses `data-mock/`.
-- API keys are stored in `settings.json` in the data directory. They are encrypted when system encryption is available and stored in plain text otherwise. Real AI calls send relevant conversation and file context to the selected engine or API service.
+- Chat history, space memory, role cards, and settings are stored locally. The default paths for installed apps are `%APPDATA%\Agenda\data` on Windows, `~/Library/Application Support/Agenda/data` on macOS, and `~/.config/Agenda/data` on Linux. Source runs use the project's `data/` directory, and demo mode uses `data-mock/`.
+- API keys and MCP secrets are stored in config files inside the data directory. They are encrypted when system encryption is available and stored in plain text otherwise. Real AI calls send relevant conversation and file context to the selected engine or API service.
 
-## In development
+## Ongoing verification and backlog
 
-- **Scheduling.** The local `/api/schedules` endpoint supports one-time, weekly, and fixed-interval scheduling. It can create task spaces or post messages to chat spaces. Overlapping or missed runs are skipped. With an enabled schedule, closing the window hides Agenda in the system tray or menu bar. The computer and Agenda must both keep running. Desktop configuration is pending. [Scheduling design](docs/需求-定时任务.md)
-- **Usage and context.** The backend records token, cache, context, and quota data when the engine reports it. Member usage indicators, the context panel, and automatic handoff are planned. [Context and quota design](docs/需求-上下文与额度.md)
-- The backlog tracks progress on role cards, teams, memory, and other features. [Project backlog](docs/待办.md)
+- **Live provider and account verification.** Embedded `pi`, Claude Code with third-party providers, automatic handoff, long-discussion space memory, role-card skill/MCP mounting, and ACP support are verified with automated mock tests. Live end-to-end verification with real API keys/accounts and migrating legacy API members onto `pi` are still pending.
+- **Cross-platform verification.** Recent changes were tested primarily on Windows; live verification on macOS and Linux (including tray and notification behavior) is pending.
+- Detailed status and future ideas are tracked in the backlog. [Project backlog](docs/待办.md)
 
 ## Development and documentation
 
