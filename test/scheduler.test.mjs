@@ -451,7 +451,7 @@ test('app-server 到点发消息和建任务空间，上一次没跑完就跳过
   const created = await until(() => api(`/api/spaces/${runs[0].spaceId}`).then(r => r.body), s => s.run?.status === 'plan_review');
   assert.equal(created.kind, 'task');
   assert.equal(created.scheduleId, task.id);
-  assert.equal(created.workspacePath, folder);
+  assert.equal(created.workspacePath, fs.realpathSync.native(folder));
   assert.equal(created.run.objective, '整理今天的资料');
   assert.equal((await api('/api/spaces')).body.find(s => s.id === created.id).scheduleId, task.id);
   // 计划还等你确认，算没跑完：跳过

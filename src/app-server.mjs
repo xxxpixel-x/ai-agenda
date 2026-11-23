@@ -122,9 +122,10 @@ export async function startServer({ port = 3210, dataDir, mock = false, auth = {
   // This exception never adds a data directory to the folder-picker grants.
   function assertFolderAllowed(dir, ownerId) {
     const owner = spaces.get(ownerId);
-    if (owner && !owner.deleting && containsPath(dataRoot, owner.workspacePath)
-        && path.relative(owner.workspacePath, physicalPath(dir)) === '') {
-      return folderPath(dir, { managedId: path.basename(path.dirname(owner.workspacePath)) });
+    const ownerReal = owner && !owner.deleting ? physicalPath(owner.workspacePath) : null;
+    if (ownerReal && containsPath(dataRoot, ownerReal)
+        && path.relative(ownerReal, physicalPath(dir)) === '') {
+      return folderPath(dir, { managedId: path.basename(path.dirname(ownerReal)) });
     }
     const real = folderPath(dir);
     if (!allowedFolders.has(folderKey(real))) throw folderDenied();

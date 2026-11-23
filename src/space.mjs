@@ -276,7 +276,7 @@ export class Space extends EventEmitter {
         workspace.managedSpaceId = path.basename(path.dirname(authorizedPath));
       }
     } else {
-      workspace = { type: 'managed', path: directChild(spaceDirectory(deps.store.dir, id), 'files') };
+      workspace = { type: 'managed', path: physicalPath(directChild(spaceDirectory(deps.store.dir, id), 'files')) };
     }
     const title = str(input.title, 60) || (kind === 'task' ? objective.split('\n')[0].replace(/^#+\s*/, '').slice(0, 60) : '') || tr('新的空间');
     const now = Date.now();

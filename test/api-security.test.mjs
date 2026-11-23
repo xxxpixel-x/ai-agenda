@@ -312,3 +312,23 @@ test('local session metadata authorizes its cwd and a direct topic child before 
   assert.equal(brief.workspacePath, fs.realpathSync.native(path.join(project, 'Notes')));
   await json(createSpace(server, { workspace: workspace(brief.workspacePath) }), 201);
 });
+
+test('aliased dataDir still allows derived tasks and schedules to reuse a managed space folder', async (t) => {
+  const root = tempDir();
+  const realData = path.join(root, 'real-data');
+  const dataAlias = path.join(root, 'data-alias');
+  fs.mkdirSync(realData);
+  fs.symlinkSync(realData, dataAlias, linkType);
+  const server = await serve(t, { dataDir: dataAlias });
+  const owner = await json(createSpace(server, {}), 201);
+  assert.equal(owner.workspacePath, fs.realpathSync.native(owner.workspacePath));
+  const derived = await json(createSpace(server, {
+    kind: 'task', objective: 'Reuse managed folder', workspace: workspace(owner.workspacePath), source: { spaceId: owner.id },
+  }), 201);
+  assert.equal(derived.workspacePath, owner.workspacePath);
+  const sched = await json(apiRequest(server, '/api/schedules', 'POST', {
+    spaceId: owner.id, enabled: false, rule: { type: 'interval', minutes: 5 },
+    action: { type: 'task', template: { goal: 'Scheduled reuse', members, workspace: workspace(owner.workspacePath) } },
+  }), 201);
+  assert.equal(sched.action.template.workspace.path, owner.workspacePath);
+});
