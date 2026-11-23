@@ -1,6 +1,6 @@
 # 开发说明
 
-[返回项目首页](../README.md)
+[返回中文首页](../README.zh-CN.md) · [English README](../README.md)
 
 ## 运行方式
 
