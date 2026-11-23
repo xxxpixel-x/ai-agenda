@@ -92,11 +92,10 @@ Windows 上也可以双击项目里的 `启动.cmd`，首次运行会安装依�
 - 聊天记录、记忆库、角色卡和设置保存在本机。安装版默认位于 Windows 的 `%APPDATA%\Agenda\data`、macOS 的 `~/Library/Application Support/Agenda/data` 或 Linux 的 `~/.config/Agenda/data`。源码版使用项目的 `data/`，演示模式使用 `data-mock/`。
 - API 密钥和 MCP 密钥存于数据目录的配置文件，系统加密可用时加密保存，否则以明文保存。调用真实 AI 时，相关对话和文件上下文会交给所选引擎或 API 服务。
 
-## 后续验证与待办
+## 后续验证
 
 - **真实模型与账号端到端实测。** 内嵌 `pi`、Claude Code 配第三方接口、上下文自动交接、记忆库长讨论、角色卡挂载 skill/MCP 以及 ACP 接入已在模拟环境通过自动化测试，真实 API Key / 真实账号的端到端验证及旧 API 成员向 `pi` 的切换收尾仍在推进。
 - **跨平台验证。** 近期改动主要在 Windows 上验证，macOS / Linux 的真机验证及系统托盘/通知表现待逐项确认。
-- 详细进度和远期想法记录在项目待办中。[项目待办](docs/待办.md)
 
 ## 开发与文档
 
@@ -108,6 +107,5 @@ npm run dist       # 构建当前系统的安装包，输出到 dist/
 - [使用指南](docs/usage.md)
 - [开发说明与发布流程](docs/development.md)
 - [贡献指南](CONTRIBUTING.md)
-- [需求与产品方向](docs/需求说明.md)
 
 Agenda 采用 MIT 许可。AI 品牌图标来自 LobeHub，任务空间的协调者、工作者与依赖图设计参考了 Orca。[MIT License](LICENSE) · [图标许可](public/icons/LICENSE.md) · [第三方声明](THIRD_PARTY_NOTICES.md) · [Orca](https://github.com/stablyai/orca)

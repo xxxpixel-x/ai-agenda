@@ -9,6 +9,6 @@
 
 AI 品牌和商标归各自权利人所有。图标用于标识所连接的引擎，不表示本项目获得这些厂商的背书。
 
-任务协作设计参考 [orca](https://github.com/stablyai/orca)，相关设计取舍记录在 [需求说明](docs/需求说明.md)。
+任务协作设计参考 [orca](https://github.com/stablyai/orca)。
 
 当前仓库发布源码；以后分发 Electron 安装包时，还需随包保留 Electron / Chromium 的许可和第三方声明。

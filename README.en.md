@@ -92,11 +92,10 @@ Import instructions and supported formats are documented in Chinese. [Conversati
 - Chat history, space memory, role cards, and settings are stored locally. The default paths for installed apps are `%APPDATA%\Agenda\data` on Windows, `~/Library/Application Support/Agenda/data` on macOS, and `~/.config/Agenda/data` on Linux. Source runs use the project's `data/` directory, and demo mode uses `data-mock/`.
 - API keys and MCP secrets are stored in config files inside the data directory. They are encrypted when system encryption is available and stored in plain text otherwise. Real AI calls send relevant conversation and file context to the selected engine or API service.
 
-## Ongoing verification and backlog
+## Ongoing verification
 
 - **Live provider and account verification.** Embedded `pi`, Claude Code with third-party providers, automatic handoff, long-discussion space memory, role-card skill/MCP mounting, and ACP support are verified with automated mock tests. Live end-to-end verification with real API keys/accounts and migrating legacy API members onto `pi` are still pending.
 - **Cross-platform verification.** Recent changes were tested primarily on Windows; live verification on macOS and Linux (including tray and notification behavior) is pending.
-- Detailed status and future ideas are tracked in the backlog. [Project backlog](docs/待办.md)
 
 ## Development and documentation
 
@@ -110,6 +109,5 @@ The detailed documentation is in Chinese.
 - [Usage guide](docs/usage.md)
 - [Development and release notes](docs/development.md)
 - [Contributing guide](CONTRIBUTING.md)
-- [Requirements and product direction](docs/需求说明.md)
 
 Agenda is MIT licensed. AI brand icons come from LobeHub. Orca informed the coordinator and worker roles and the dependency graph in task spaces. [MIT License](LICENSE) · [Icon license](public/icons/LICENSE.md) · [Third-party notices](THIRD_PARTY_NOTICES.md) · [Orca](https://github.com/stablyai/orca)

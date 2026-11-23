@@ -31,3 +31,11 @@ node_modules/
 Thumbs.db
 .DS_Store
 Desktop.ini
+
+# Local working notes and reports (kept on disk, not published)
+/docs/待办.md
+/docs/需求说明.md
+/docs/需求-*.md
+/docs/代码审查报告-*.md
+/docs/审阅-*.md
+/docs/讨论-*.md
