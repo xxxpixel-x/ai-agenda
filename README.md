@@ -1,14 +1,18 @@
 <img src="public/brand/agenda.svg" width="64" height="64" alt="Agenda">
 
-# Agenda
+# Agenda · v0.4.0
 
-English · [简体中文](README.zh-CN.md)
+**A local-first multi-AI collaborative desktop workspace.** Agenda brings **Claude Code**, **Codex**, **Gemini**, **DeepSeek**, embedded **Pi**, and custom **ACP** agents into the same room to discuss ideas, divide up work, and edit the same project folder together. Start from a round-table discussion, or import an ongoing conversation from another AI app and keep building—stepping in whenever it is time to approve a plan, authorize a command, review diffs, or merge into Git.
 
-**A local-first multi-AI collaborative desktop workspace.**
+English | [简体中文](./README.zh-CN.md)
 
-Agenda brings **Claude Code**, **Codex**, **Gemini**, **DeepSeek**, embedded **Pi**, and custom **ACP** agents into the same room to discuss ideas, divide up work, and edit the same project folder together. Start from a round-table discussion, or import an ongoing conversation from another AI app and keep building—stepping in whenever it is time to approve a plan, authorize a command, review diffs, or merge into Git.
-
-**Windows · macOS · Linux · MIT Licensed**
+[![Latest Release](https://img.shields.io/github/v/release/xxxpixel-x/ai-agenda?color=1D8468&label=Release)](https://github.com/xxxpixel-x/ai-agenda/releases/latest)
+[![CI](https://github.com/xxxpixel-x/ai-agenda/actions/workflows/ci.yml/badge.svg)](https://github.com/xxxpixel-x/ai-agenda/actions/workflows/ci.yml)
+[![MIT License](https://img.shields.io/badge/License-MIT-173732)](./LICENSE)
+![Local-First](https://img.shields.io/badge/Local--First-Desktop_App-1D8468)
+![Platforms](https://img.shields.io/badge/Platforms-Windows%20%7C%20macOS%20%7C%20Linux-4A5B56)
+![Engines](https://img.shields.io/badge/Engines-Claude%20%7C%20Codex%20%7C%20Gemini%20%7C%20DeepSeek%20%7C%20Pi%20%7C%20ACP-2C6CB3)
+![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22.19.0-4A5B56)
 
 > **Upgrading from 0.3.x?** On first launch, Agenda removes legacy spaces created before the split into Chat Spaces and Task Spaces (along with Agenda-managed folders for those spaces; user-selected folders are never deleted). Before upgrading, click **Export** in the top-right corner of each 0.3.x space and back up any managed files you want to keep.
 
@@ -61,10 +65,10 @@ Add different engines—or multiple instances of the same engine with distinct n
 
 Long multi-AI discussions quickly exhaust context windows or lose track of earlier decisions. Agenda manages context as a first-class system:
 
-- **Structured Space Memory** — Automatically organizes space consensus into **Decisions**, **Constraints**, **Preferences**, **Rejected Approaches**, **Proposals**, and **Task Results**, complete with reasons and source message citations (`#N`).
-- **Layered Context Injection** — Each member and task worker receives the core memory layer plus relevant items and on-demand message lookups, keeping prompts focused without cross-space leakage.
+- **Structured Space Memory** — Automatically organizes space consensus into **Decisions**, **Constraints**, **Preferences**, **Project Facts**, **Rejected Approaches** (distinguishing user-declined options from per-model/attempt trial-and-error), **Questions / Proposals / Disagreements**, and **Task Results**, complete with reasons, source citations (`#N`), and immediate zero-token message archiving (`messages/<seq>.md`).
+- **Layered, Cache-Friendly Injection & Throttled Organization** — Orders prompts to preserve shared prefixes (`imports → L1 → history → L2/extras`), protects mandatory user constraints during budget trimming, and runs tool-less background organization on an idle debounce schedule (or using an optional cheap global API organizer model).
 - **Rolling Recaps & Auto-Handoff** — Older chat history rolls into a versioned, user-editable recap. When a persistent session crosses your context threshold (50% by default), Agenda writes a handoff brief during idle time and rotates to a fresh session.
-- **Live Context Inspection** — Member badges display context usage rings and quota warnings. Open the **Context** and **Memory** panels in the right sidebar to inspect exact token breakdowns or manually restart a session.
+- **Interactive Memory & Context Panels** — Member badges display context usage rings and quota warnings. Open the **Context** panel to inspect the latest estimated prompt breakdown or manually restart a session, and use the **Memory** panel to **Accept / Reject** disagreements and proposals, **Answer** questions, **Edit**, **Retract**, or trigger **Organize now** (with a sidebar dot indicator for items awaiting your decision).
 
 ### 3. Role Cards, Teams, Skills & MCP Library
 
@@ -145,7 +149,7 @@ npm start
 3. **Collaborate** — In a Chat Space, send a message or `@mention` specific members. In a Task Space, answer any clarifying questions from the Coordinator, review or edit the generated dependency plan in the **Plan** tab, and start execution.
 4. **Inspect & merge** — Use the collapsible right sidebar to switch between **Files**, **Changes**, **Plan** (Task Spaces), **Context**, and **Memory**. Annotate diffs inline, approve or request rework on subtasks, and merge completed Git task branches when ready.
 
-In **Settings → General**, you can switch the UI and AI prompt language between **English**, **Chinese**, or **System default**, toggle light/dark themes, configure background desktop notifications, prevent system sleep while AIs are working, and adjust the automatic context handoff threshold.
+In **Settings → General**, you can switch the UI and AI prompt language between **English**, **Chinese**, or **System default**, toggle light/dark themes, configure background desktop notifications, prevent system sleep while AIs are working, adjust the automatic context handoff threshold, and optionally select a dedicated global memory organizer model.
 
 ---
 
@@ -154,8 +158,9 @@ In **Settings → General**, you can switch the UI and AI prompt language betwee
 - **Four Permission Tiers**:
   - **Read only** — Inspect files and discuss without modifying the workspace.
   - **Edit files** — Read and modify files inside the shared folder.
-  - **Run commands** — Also execute shell commands in the shared folder. In Chat Spaces, **Claude Code**, **Codex**, embedded **`pi`**, and supported **ACP** agents pause and display an interactive approval card (*Allow once*, *Always allow program*, or *Deny*, with an optional note passed back to the AI). Engines that cannot prompt for command approval fall back to *Edit files* in this mode.
+  - **Run commands** — The shared folder is the starting directory. Chat engines that support approval can request permission before executing a command. Engines without that support use *Edit files* in chat.
   - **Full access** — Unrestricted file and command access, including paths outside the shared folder.
+  - **Embedded Pi** — Its shell runs with your operating-system account and can access files outside the shared folder. At *Run commands*, each shell command and mutating MCP call requires one-time approval; without an interactive approval channel (such as unattended task workers), both are disabled. Protected read-only directories (such as the space memory directory) remain protected against file-tool writes.
 - **Credential Protection**:
   - API keys and MCP secrets are stored in your local data directory and encrypted with OS-level encryption (`Electron safeStorage`) whenever available, falling back to plain text if unavailable.
   - Common credential files (such as `.env`, `.npmrc`, `.pypirc`, SSH keys, and `.pem`/`.key` certificates) are automatically excluded from workspace file snapshots sent to direct API models.
@@ -181,6 +186,7 @@ In **Settings → General**, you can switch the UI and AI prompt language betwee
 npm run verify     # Run JS syntax checks, metadata validation, and the automated test suite
 npm run mock       # Launch desktop app with mock AI engines and isolated data-mock/ storage
 npm run dist       # Package an installer for the current OS into dist/
+node scripts/replay-memory.mjs --space data/spaces/<id>.json --mock  # Replay a space chronologically to evaluate memory organizers
 ```
 
 Detailed documentation (currently in Chinese):

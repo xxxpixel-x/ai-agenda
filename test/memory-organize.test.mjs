@@ -4,7 +4,7 @@ import { testInChinese as test, tempDir } from './helpers.mjs';
 import { createRegistry } from '../src/engines/index.mjs';
 import { withLanguage } from '../src/i18n.mjs';
 import { openMemory } from '../src/memory/store.mjs';
-import { organize } from '../src/memory/organize.mjs';
+import { organize, existingMemory, recordPlanDecisions } from '../src/memory/organize.mjs';
 
 const writer = { id: 'writer', name: '小林', engine: 'codex' };
 const message = (seq, kind, text, extra = {}) => ({ seq, kind, text, name: kind === 'user' ? '我' : '小夏', ts: seq * 1000, ...extra });
@@ -167,3 +167,51 @@ test('英文提示标记用户和导入原时间，正文里的伪造消息框�
   assert.ok(calls[0].prompt.includes('original-time="'));
   assert.deepEqual([memory.get(1).at, memory.get(1).importedAt], [100, 2000]);
 }));
+
+test('第四批整理：noTools 与扩展剥离、冻结任务快照、完整三句话报告、旧库预算与强鉴证澄清', async (t) => {
+  const { memory, messages, tasks, calls, run } = setup(t, async (opts) => {
+    // 模拟模型思考期间任务被验收：不应追认先前推断
+    tasks[0].status = 'approved';
+    tasks[0].approvedAt = 9999;
+    return { text: JSON.stringify({ ops: [
+      { type: 'decision', origin: 'default', text: '使用新协议', reason: '已做完', source: { tasks: ['T2'] } },
+    ] }) };
+  });
+  tasks.push({
+    id: 'T2', title: '接口重构', status: 'review',
+    attempts: [{ outcome: 'done', endedAt: 2000, engine: 'codex', model: 'gpt-5',
+      report: '第一句：改了路由。\n第二句：发现 Windows 路径需要统一斜杠。\n第三句：还剩单测待补。' }],
+    feedbacks: [{ ts: 2100, text: '打回第一行。\n打回第二行：请同步修正边界条件。' }],
+  });
+  messages.push(message(1, 'ai', '准备提交'));
+  const writerWithExt = { ...writer, skills: ['s1'], mcp: ['m1'] };
+  const rec = await run({ writer: writerWithExt });
+  // noTools 与剥离扩展
+  assert.equal(calls[0].noTools, true);
+  assert.equal(calls[0].skills, undefined);
+  assert.equal(calls[0].mcp, undefined);
+  assert.ok(rec.durationMs >= 0);
+  assert.equal(rec.toolCalls, 0);
+  // 冻结快照：思考期间任务变 approved 不能让本批 default 决定跳过降级
+  assert.equal(memory.get(1).type, 'proposal');
+  // 完整三句话与打回第二行进入整理提示，且含 MemT §4.2 经验提炼引导
+  assert.ok(calls[0].prompt.includes('第二句：发现 Windows 路径需要统一斜杠'));
+  assert.ok(calls[0].prompt.includes('第三句：还剩单测待补'));
+  assert.ok(calls[0].prompt.includes('打回第二行：请同步修正边界条件'));
+  assert.ok(calls[0].prompt.includes('执行 1（codex/gpt-5）'));
+  assert.match(calls[0].system, /打回→重做通过/);
+  // existingMemory 预算截断（优先保留 L1，不超上限）
+  for (let i = 0; i < 15; i++) memory.append([{ type: 'fact', text: `事实 ${i} ` + '字'.repeat(80), source: { messages: [1] } }]);
+  const budgeted = existingMemory(memory, { maxTokens: 300 });
+  assert.ok(budgeted.length < existingMemory(memory, { maxTokens: 12000 }).length);
+  // recordPlanDecisions 仅用户明确回答标 confirmedBy:'user'
+  const m2 = openMemory(path.join(path.dirname(memory.dir), 'plan-mem'));
+  recordPlanDecisions(m2, {
+    clarify: { resolvedAt: 100, questions: [{ id: 'q1', text: '语言？' }, { id: 'q2', text: '风格？', default: '简洁' }], answers: { q1: '中文' } },
+    assumptions: ['本地运行'],
+  });
+  const [ans, def, asm] = m2.entries();
+  assert.equal(ans.confirmedBy, 'user');
+  assert.equal(def.confirmedBy, undefined);
+  assert.equal(asm.confirmedBy, undefined);
+});

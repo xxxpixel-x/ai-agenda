@@ -12,6 +12,7 @@ const RUN_STATUS = { planning: tr('规划中'), clarifying: tr('等你回答问�
 const T_STATUS = { pending: tr('等前置任务'), ready: tr('排队中'), running: tr('进行中'), review: tr('待你审查'), approved: tr('已通过'), failed: tr('失败'), blocked: tr('等你回答'), skipped: tr('已跳过'), cancelled: tr('已取消') };
 const WHAT = { title: tr('标题'), spec: tr('说明'), assignee: tr('负责人'), deps: tr('依赖') };
 let planDraft = null;
+let attemptTimer = null;
 
 const memberName = (id) => memberOf(id)?.name || tr('（已移除）');
 const memberColor = (id) => memberOf(id)?.color || 'var(--muted)';
@@ -56,10 +57,11 @@ function renderPlanPane(body) {
   enterPanel('plan');
   const v = state.files.view;
   if (v?.type === 'task') return renderTaskDetail(body, v);
+  stopAttemptTimer();
   if (v?.type === 'taskdiff') return renderTaskDiff(body, v);
   body.innerHTML = planListHtml();
 }
-register('panels', { id: 'plan', label: tr('计划'), icon: ICON.task, order: 30, when: (ctx) => ctx.space?.kind === 'task', render: renderPlanPane });
+register('panels', { id: 'plan', label: tr('计划'), icon: ICON.task, order: 30, when: (ctx) => ctx.space?.kind === 'task', render: renderPlanPane, dispose: stopAttemptTimer });
 
 function planListHtml() {
   const r = state.space.run;
@@ -317,7 +319,23 @@ async function refreshTaskDetail() {
   try { v.detail = await api(`/api/spaces/${state.space.id}/task/${v.taskId}`); } catch (e) { v.detail = { error: e.message }; }
   if (state.files.views.plan === v && currentPanel() === 'plan') keepInputs($('#filesBody'), () => renderFilesBody());
 }
+function stopAttemptTimer() {
+  clearInterval(attemptTimer);
+  attemptTimer = null;
+}
+function tickAttemptElapsed() {
+  const spans = $$('[data-attempt-elapsed]');
+  if (!spans.length) { stopAttemptTimer(); return; }
+  const now = Date.now();
+  for (const el of spans) el.textContent = mins(Math.max(0, now - Number(el.dataset.attemptElapsed)));
+}
+function attemptDuration(a) {
+  if (a.endedAt) return `<span>${mins(a.endedAt - a.startedAt)}</span>`;
+  const elapsed = Number.isFinite(a.startedAt) ? `<span data-attempt-elapsed="${esc(a.startedAt)}">${mins(Math.max(0, Date.now() - a.startedAt))}</span>` : '';
+  return `<span class="typing"><i></i><i></i><i></i></span>${elapsed}`;
+}
 export function renderTaskDetail(body, v) {
+  stopAttemptTimer();
   const t = v.detail;
   const r = state.space.run;
   if (!t) { body.innerHTML = `<div class="empty-files">${tr('加载中…')}</div>`; return; }
@@ -328,7 +346,7 @@ export function renderTaskDetail(body, v) {
   const live = open && r.status === 'executing';
   const outcome = { done: tr('报告完成'), question: tr('提了问题'), stopped: tr('被协调者停下'), cancelled: tr('被中止'), failed: tr('失败') };
   const attempts = t.attempts.map((a, i) => ({ a, i })).reverse().map(({ a, i }) => `<div class="attempt">
-      <div class="attempt-head"><b>${tr('第 {0} 次', [i + 1])}</b><span>${new Date(a.startedAt).toLocaleTimeString(getLanguage(), { hour12: false })}</span>${a.endedAt ? `<span>${mins(a.endedAt - a.startedAt)}</span>` : '<span class="typing"><i></i><i></i><i></i></span>'}
+      <div class="attempt-head"><b>${tr('第 {0} 次', [i + 1])}</b><span>${new Date(a.startedAt).toLocaleTimeString(getLanguage(), { hour12: false })}</span>${attemptDuration(a)}
         ${a.outcome ? `<span class="st ${a.outcome === 'done' ? 'approved' : a.outcome === 'question' ? 'blocked' : a.outcome === 'stopped' ? 'pending' : 'failed'}">${outcome[a.outcome] || a.outcome}</span>` : ''}</div>
       ${a.conflict ? `<div class="note">${tr('这次是在解决合并冲突：{0}', [esc(a.conflict.join('、'))])}</div>` : ''}
       ${activitiesHtml(a.activities, !a.endedAt)}
@@ -359,6 +377,7 @@ export function renderTaskDetail(body, v) {
       <div><h4>${tr('改动（{0} 个文件）{1}', [t.changes?.length || 0, t.undone ? tr(' · 已撤销') : ''])}</h4>${changes || `<div class="hint">${tr('还没有改动')}</div>`}</div>
       <div><h4>${tr('过程')}</h4>${attempts || `<div class="hint">${tr('还没开始')}</div>`}</div>
     </div>`;
+  if ($('[data-attempt-elapsed]', body)) attemptTimer = setInterval(tickAttemptElapsed, 10_000);
 }
 async function openTaskDiff(taskId, file) {
   const detail = state.files.view;

@@ -12,6 +12,7 @@
 //   host.addMessage(msg) / messageDone(msg)：往任务空间的对话里加一条、一条写完了
 //   澄清结束后用 host.track 接着规划；等回答期间，输入框发来的消息先排队
 import { t as tr } from './i18n.mjs';
+import { resolveTurnAccess } from './access.mjs';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
@@ -44,6 +45,15 @@ const SETTLED = new Set(['approved', 'skipped', 'cancelled']);
 const MAX_LOG = 600;
 const str = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
 const realPath = (p) => { try { return fs.realpathSync.native(p); } catch { return path.resolve(p); } };
+export function extractTaskPaths(text) {
+  const out = new Set();
+  const cleaned = String(text || '').replace(/[a-z]+:\/\/\S+/gi, ' ');
+  for (const m of cleaned.matchAll(/(?:^|[\s`'"（(【\[,，;；:：])(\.?\/?(?:[\w.\-\u4e00-\u9fff]+[/\\])+[\w.\-\u4e00-\u9fff]+\.[A-Za-z0-9]{1,10}|[\w.\-\u4e00-\u9fff]+\.(?:mjs|cjs|js|ts|tsx|jsx|json|md|css|html|py|go|rs|java|yml|yaml|toml|sh|cmd|ps1))(?=$|[\s`'"）)】\],，;；:：。])/g)) {
+    const p = m[1].replace(/\\/g, '/').replace(/^\.\//, '');
+    if (p && !p.startsWith('../')) out.add(p);
+  }
+  return [...out];
+}
 
 /** 开始前检查：是不是 git 项目、有没有未提交的改动。 */
 export async function preflight(host) {
@@ -191,13 +201,15 @@ export class TaskRun extends EventEmitter {
   // ---------- 调用 AI（统一处理流式、日志、文件块） ----------
   buildContext(member, { system, prompt, task, files, tokenBudget }) {
     const h = this.host, api = h.registry.isApi(member.engine);
-    const taskFiles = [...(task?.files || []), ...(task?.changes || []).map((c) => c.path)];
-    const focus = task ? { id: task.id, deps: task.deps, files: taskFiles, text: task.title + '\n' + task.spec } : { coordinator: true };
+    const taskText = task ? task.title + '\n' + task.spec : '';
+    const taskFiles = task ? [...new Set([...(task.files || []), ...extractTaskPaths(taskText), ...(task.changes || []).map((c) => c.path)])] : [];
+    const focus = task ? { id: task.id, deps: task.deps, files: taskFiles, text: taskText } : { coordinator: true };
     const base = typeof prompt === 'function' ? prompt('') : prompt;
     return assembleContext({ system, tokenBudget, imports: importBlocks(h.messages || []), files,
       lines: [{ text: base }], memory: (limits) => memoryForTurn({ memory: h.memory, memoryDir: h.memoryDir, api,
+        canReadMemoryDir: h.registry.supportsReadOnlyDirs?.(member.engine) ?? (member.engine === 'pi'),
         task: focus, query: focus.text || this.data.objective, references: base, messages: h.messages }, limits),
-      compose: (s) => [s.memory.prefix, s.memory.extras, s.imports, typeof prompt === 'function' ? prompt(s.files) : base].filter(Boolean).join('\n\n'),
+      compose: (s) => [s.imports, s.memory.prefix, s.memory.extras, typeof prompt === 'function' ? prompt(s.files) : base].filter(Boolean).join('\n\n'),
     });
   }
 
@@ -210,12 +222,15 @@ export class TaskRun extends EventEmitter {
     return this.buildContext(member, { system: plannerSystem(h, d, member), prompt: plannerPrompt(d, { clarify: d.clarify }), tokenBudget });
   }
 
-  async call(member, { system, prompt, cwd, access, key, sink, wsForApi, onDelta, images, onNoImages, task, files }) {
+  async call(member, { system, prompt, cwd, role = 'coordinator', key, sink, wsForApi, onDelta, images, onNoImages, task, files }) {
     if (this.host.deleting) throw new AbortedError();
     const controller = new AbortController();
     this.controllers.set(key, controller);
     try {
       controller.memberId = member.id;
+      const { access } = resolveTurnAccess({
+        spaceKind: 'task', spaceAccess: this.host.access, role, isApi: this.host.registry.isApi(member.engine),
+      });
       const build = (tokenBudget) => this.buildContext(member, { system, prompt, task, files, tokenBudget });
       const { result } = await withOverflowRetry(this.host, member, sink, build, (ctx) => runAgentTurn(this.host.registry, member, {
         system: ctx.system, prompt: ctx.prompt, readOnlyDirs: this.host.memoryDir ? [this.host.memoryDir] : [],
@@ -248,7 +263,7 @@ export class TaskRun extends EventEmitter {
       d.planning.messages.push(msg);
       this.changed();
       try {
-        msg.text = (await this.call(member, { system, prompt, images, cwd, access: 'read', key: 'plan', sink: msg })).trim();
+        msg.text = (await this.call(member, { system, prompt, images, cwd, key: 'plan', sink: msg })).trim();
         return msg.text;
       } catch (e) {
         if (e.aborted) msg.interrupted = true; else msg.error = e.message;
@@ -435,7 +450,8 @@ export class TaskRun extends EventEmitter {
     const d = this.data;
     const member = this.member(task.assigneeId);
     task.status = 'running';
-    const attempt = { id: randomUUID().slice(0, 10), startedAt: Date.now(), text: '', activities: [], log: [], conflict: conflict || undefined, notes: task.notes?.length || 0 };
+    const attempt = { id: randomUUID().slice(0, 10), memberId: member?.id || task.assigneeId, engine: member?.engine || '',
+      model: member?.model || '', startedAt: Date.now(), text: '', activities: [], log: [], conflict: conflict || undefined, notes: task.notes?.length || 0 };
     task.attempts.push(attempt);
     this.changed();
     if (!member) {
@@ -448,6 +464,7 @@ export class TaskRun extends EventEmitter {
     let cwd;
     let ws = null;
     try {
+      const api = this.host.registry.isApi(member.engine);
       if (d.mode === 'git') {
         const g = d.git;
         if (!task.git) {
@@ -459,22 +476,20 @@ export class TaskRun extends EventEmitter {
         }
         attempt.startHead = task.git.head;
         cwd = path.join(task.git.path, g.sub);
-        if (this.host.registry.isApi(member.engine)) ws = new Workspace(cwd, path.join(this.dir, `${task.id}-scratch-history.json`));
+        if (api) ws = new Workspace(cwd, path.join(this.dir, `${task.id}-scratch-history.json`));
       } else {
         cwd = this.host.workspacePath;
         const outside = this.host.ws.begin();
         if (outside.length) this.host.emit({ type: 'files_changed', changes: outside });
-        if (this.host.registry.isApi(member.engine)) ws = this.host.ws;
+        if (api) ws = this.host.ws;
       }
 
-      const api = this.host.registry.isApi(member.engine);
-      const access = this.host.access === 'read' ? 'edit' : this.host.access;
       const key = newKey();
       const text = await this.call(member, {
         system: workerSystem(this.host, d, task, member, { api, cwd }),
         task, files: ws?.snapshot(), prompt: (fileText) => workerPrompt(this.host, d, task, { key, fileText, conflict }),
         cwd,
-        access,
+        role: 'task-worker',
         key: task.id,
         sink: attempt,
         wsForApi: ws,
@@ -550,7 +565,8 @@ export class TaskRun extends EventEmitter {
     }
     t.status = 'approved';
     t.approvedAt = Date.now();
-    this.host.recordApprovedTask?.(t);
+    this.host.save();
+    try { this.host.recordApprovedTask?.(t); } catch (e) { console.warn(tr('写入任务结果到记忆库失败：'), e.message); }
     this.changed();
     this.tick();
     return { ok: true };
@@ -657,7 +673,7 @@ export class TaskRun extends EventEmitter {
     const sink = { text: '', activities: [], streaming: true };
     d.summary = sink;
     try {
-      sink.text = (await this.call(coord, { system: summarySystem(this.host, coord), prompt: summaryPrompt(this.host, d), cwd: this.host.workspacePath, access: 'read', key: 'summary', sink })).trim();
+      sink.text = (await this.call(coord, { system: summarySystem(this.host, coord), prompt: summaryPrompt(this.host, d), cwd: this.host.workspacePath, key: 'summary', sink })).trim();
     } catch (e) {
       sink.error = e.aborted ? tr('总结被取消了') : e.message;
     }
@@ -696,7 +712,7 @@ export class TaskRun extends EventEmitter {
       const coord = this.coordinator;
       const reply = await this.call(coord, {
         system: commitSystem(this.host, coord), prompt: commitPrompt(d, { commits, files, summary }),
-        cwd: this.host.workspacePath, access: 'read', key: Symbol('commit'), sink: { text: '', activities: [], streaming: true },
+        cwd: this.host.workspacePath, key: Symbol('commit'), sink: { text: '', activities: [], streaming: true },
       });
       const message = str(reply.trim().replace(/^```[^\n]*\n(?:([\s\S]*?)\n)?```$/, '$1'), 4000);
       if (message) return { message, drafted: true };
@@ -842,7 +858,6 @@ export class TaskRun extends EventEmitter {
         images,
         onNoImages: () => this.host.emit({ type: 'no_images', id: reply.id }),
         cwd: this.host.workspacePath,
-        access: 'read',
         key: 'coord',
         sink: reply,
         onDelta: (t) => this.host.emit({ type: 'delta', id: reply.id, text: t }),

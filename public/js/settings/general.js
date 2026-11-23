@@ -13,6 +13,15 @@ async function render(el) {
   const toggles = [['notify', tr('AI 做完或等你处理时提醒我')], ['keepAwake', tr('AI 工作时不让电脑睡眠')]];
   let currentAutoHandoff = normalizeAutoHandoffPct(settings.autoHandoffPct);
   const thresholds = [...new Set([...AUTO_HANDOFF_PRESETS, currentAutoHandoff])].sort((a, b) => a - b);
+  let currentOrganizer = settings.memoryOrganizer?.engine || '';
+  const organizerChoices = [
+    ['', tr('默认（使用空间整理成员）')],
+    ['gemini', 'Gemini API'],
+    ...(settings.providers || []).map((p) => [`openai:${p.id}`, `${p.name}${p.model ? ` (${p.model})` : ''}`]),
+  ];
+  if (currentOrganizer && !organizerChoices.some(([v]) => v === currentOrganizer)) {
+    organizerChoices.push([currentOrganizer, tr('{0}（已失效）', [currentOrganizer])]);
+  }
   el.innerHTML = `<section class="set-group">
     <div class="set-row">
       <label class="set-label" for="appLanguage">${esc(tr('语言'))}</label>
@@ -30,6 +39,11 @@ async function render(el) {
       <label class="set-label" for="autoHandoffPct">${tr('上下文达到此比例时自动交接')}</label>
       <div class="set-control"><select id="autoHandoffPct">${thresholds.map((v) =>
         `<option value="${v}" ${v === currentAutoHandoff ? 'selected' : ''}>${v === 0 ? tr('不自动交接') : v === 50 ? tr('{0}%（默认）', [v]) : v + '%'}</option>`).join('')}</select></div>
+    </div>
+    <div class="set-row">
+      <label class="set-label" for="memoryOrganizer">${tr('全局记忆整理模型（推荐便宜 API）')}</label>
+      <div class="set-control"><select id="memoryOrganizer">${organizerChoices.map(([value, label]) =>
+        `<option value="${esc(value)}" ${value === currentOrganizer ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select></div>
     </div>
     ${state.app.desktop ? toggles.map(([key, label]) => `<div class="set-row">
       <span class="set-label" id="${esc(key)}-label">${esc(label)}</span>
@@ -82,6 +96,20 @@ async function render(el) {
       toast(tr('已保存'));
     } catch (e) {
       target.value = String(currentAutoHandoff);
+      toast(e.message, 'error');
+    } finally { target.disabled = false; }
+  };
+  const orgSelect = $('#memoryOrganizer', el);
+  if (orgSelect) orgSelect.onchange = async ({ target }) => {
+    target.disabled = true;
+    try {
+      const value = target.value ? { engine: target.value, model: '' } : null;
+      const saved = await api('/api/settings', { method: 'PUT', body: { memoryOrganizer: value } });
+      currentOrganizer = saved?.memoryOrganizer?.engine || '';
+      target.value = currentOrganizer;
+      toast(tr('已保存'));
+    } catch (e) {
+      target.value = currentOrganizer;
       toast(e.message, 'error');
     } finally { target.disabled = false; }
   };

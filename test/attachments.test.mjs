@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { isMemoryCall, MEMORY_IDLE } from './helpers.mjs';
-import { testInChinese as test, tempDir, makeSpace, until } from './helpers.mjs';
+import { apiRequest, testInChinese as test, tempDir, makeSpace, until } from './helpers.mjs';
 import { startServer } from '../src/app-server.mjs';
 import { createSettings } from '../src/settings.mjs';
 import { createRegistry } from '../src/engines/index.mjs';
@@ -23,10 +23,7 @@ test('attachment HTTP lifecycle and new images in mock chat', async (t) => {
   const root = tempDir(t);
   const server = await startServer({ port: 0, dataDir: root, mock: true, hooks: { locales: () => ['zh'] } });
   t.after(() => server.close());
-  const base = 'http://127.0.0.1:' + server.port;
-  const api = (url, method = 'GET', body) => fetch(base + url, {
-    method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-  });
+  const api = (url, method, body) => apiRequest(server, url, method, body);
   const { id } = await (await api('/api/spaces', 'POST', { members, access: 'read' })).json();
   const space = '/api/spaces/' + id;
   const uploads = space + '/attachments';
@@ -37,7 +34,7 @@ test('attachment HTTP lifecycle and new images in mock chat', async (t) => {
   };
   const a = await upload(image);
   assert.deepEqual(a, { id: a.id, kind: 'image', name: image.name, type: 'image/png', size: png.length });
-  const res = await api(uploads + '/' + a.id);
+  const res = await fetch(server.url + uploads + '/' + a.id, { headers: { Cookie: `${server.cookieName}=${server.cookieToken}`, 'Sec-Fetch-Site': 'same-origin' } });
   assert.equal(res.headers.get('content-type'), 'image/png');
   assert.equal(res.headers.get('cache-control'), 'private, max-age=31536000');
   assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
@@ -153,19 +150,19 @@ test('one-shot stream-json input reaches EOF after the last image message', asyn
   assert.deepEqual(seen, input);
 });
 
-test('OpenAI-compatible 4xx retries text once and persists image support per connection', async (t) => {
+test('explicit vision rejection retries once and persists only the rejected provider and model', async (t) => {
   const root = tempDir(t);
   const config = path.join(root, 'fixture.json');
   const settings = createSettings(config);
   const providers = settings.update({ providers: ['First', 'Second'].map((name) => ({ name, baseUrl: 'https://fixture.invalid', model: 'test' })) }).providers;
   const registry = createRegistry(settings);
-  const member = { engine: 'openai:' + providers[0].id };
+  const member = { engine: 'openai:' + providers[0].id, model: 'text-only' };
   const img = path.join(root, 'a.png');
   fs.writeFileSync(img, png);
   const sent = [];
   setFetch(async (_url, req) => {
     sent.push(JSON.parse(req.body).messages.at(-1).content);
-    if (sent.length === 1) return new Response('fixture error', { status: 400 });
+    if (sent.length === 1) return new Response('This model does not support image_url content parts', { status: 400 });
     return new Response('data: {"choices":[{"delta":{"content":"fixture reply"}}]}\n');
   });
   t.after(() => setFetch((...args) => globalThis.fetch(...args)));
@@ -176,8 +173,67 @@ test('OpenAI-compatible 4xx retries text once and persists image support per con
   assert.deepEqual(sent, [[{ type: 'text', text: 'fixture' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,' + image.data } }], 'fixture']);
   settings.update({ providers });
   const reloaded = createRegistry(createSettings(config));
-  assert.equal(reloaded.supportsImages(member.engine), false);
-  assert.equal(reloaded.supportsImages('openai:' + providers[1].id), true);
+  assert.equal(reloaded.supportsImages(member.engine, member.model), false);
+  assert.equal(reloaded.supportsImages(member.engine), true);
+  assert.equal(reloaded.supportsImages('openai:' + providers[1].id, member.model), true);
+  assert.equal(reloaded.supportsImages('pi', member.model, providers[0].id), false);
+  assert.equal(reloaded.supportsImages('pi', 'test', providers[0].id), true);
   await runAgentTurn(reloaded, member, opts);
   assert.equal(sent[2], 'fixture');
+  await runAgentTurn(reloaded, { ...member, model: '' }, { ...opts, sink: {} });
+  assert.deepEqual(sent[3], sent[0]);
+
+  const old = settings.get().providers[0];
+  const patchUrl = baseUrl => settings.update({ providers: [{ ...providers[0], baseUrl }, providers[1]] });
+  patchUrl(old.baseUrl + '/v1beta');
+  assert.equal(registry.supportsImages(member.engine, member.model), false);
+  patchUrl('https://other.invalid');
+  settings.disableProviderImages(old, member.model); // late failure from the original endpoint
+  assert.equal(registry.supportsImages(member.engine, member.model), true);
+});
+
+test('rate limits, auth, transient and unrelated API errors preserve images and the original error', async t => {
+  const root = tempDir(t);
+  const settings = createSettings(path.join(root, 'settings.json'));
+  const [row] = settings.update({ providers: [{ name: 'Fixture', baseUrl: 'https://errors.invalid', model: 'vision' }] }).providers;
+  const member = { engine: 'openai:' + row.id };
+  const registry = createRegistry(settings);
+  const img = path.join(root, 'pixel.png');
+  fs.writeFileSync(img, png);
+  t.after(() => setFetch((...args) => globalThis.fetch(...args)));
+  for (const [status, message] of [
+    [429, 'Rate limit for image_url and stream_options'], [401, 'image API key'], [403, 'vision forbidden'],
+    [408, 'image timeout'], [503, 'unsupported image'], [400, 'unknown temperature'], [400, 'insufficient image quota'],
+  ]) {
+    const send = t.mock.fn(() => Response.json({ error: { message } }, { status }));
+    setFetch(send);
+    const fallback = t.mock.fn();
+    const sink = {};
+    await assert.rejects(runAgentTurn(registry, member, { prompt: 'fixture', sink, images: [{ path: img, type: 'image/png' }], onNoImages: fallback }),
+      { message: 'Fixture：' + status + ' ' + message });
+    assert.equal(send.mock.callCount(), 1);
+    assert.equal(fallback.mock.callCount(), 0);
+    assert.equal(sink.noImages, undefined);
+    assert.equal(registry.supportsImages(member.engine), true);
+    assert.equal(settings.get().providers[0].disabledImages, undefined);
+  }
+});
+
+test('known defaults use a model-specific entry and legacy provider-wide image settings survive reload', t => {
+  const file = path.join(tempDir(t), 'settings.json');
+  const provider = { id: 'test', name: 'Fixture', baseUrl: 'https://default.invalid/v1', model: 'default' };
+  fs.writeFileSync(file, JSON.stringify({ providers: [provider] }));
+  const settings = createSettings(file);
+  settings.disableProviderImages(provider);
+  settings.disableProviderImages(provider);
+  assert.deepEqual(createSettings(file).get().providers[0].disabledImages, ['default']);
+  settings.update({ providers: [{ ...provider, model: '' }] });
+  settings.disableProviderImages(settings.get().providers[0]);
+  assert.equal(createRegistry(createSettings(file)).supportsImages('openai:test', 'other'), false);
+  fs.writeFileSync(file, JSON.stringify({ providers: [{ ...provider, images: false }] }));
+  const legacy = createSettings(file);
+  legacy.update({ providers: [{ ...provider, baseUrl: 'https://default.invalid/v2' }] });
+  assert.equal(createRegistry(legacy).supportsImages('openai:test', 'other'), false);
+  legacy.update({ providers: [{ ...provider, baseUrl: 'https://new.invalid' }] });
+  assert.equal(createRegistry(legacy).supportsImages('openai:test', 'other'), true);
 });

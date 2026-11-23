@@ -42,7 +42,7 @@ test('scan both skill roots, deduplicate by directory or frontmatter name, and t
   assert.ok((await mgr.installSkill({id:'other',content:'---\nname: Design\n---\nDifferent.'})).alreadyInstalled);
   assert.throws(() => mgr.removeSkill('design'),/local/i);
   mgr.setSkillEnabled('design',false);
-  assert.deepEqual(createExtensionsManager(opts).resolveForMember({skills:['design']}),{skills:[],mcp:{}});
+  assert.deepEqual(createExtensionsManager(opts).resolveForMember({skills:['design']}),{skills:[],mcp:{},readonlyMcp:[]});
   mgr.setSkillEnabled('design',true);
   assert.deepEqual(mgr.resolveForMember({skills:['design','absent']}).skills,[design.dir]);
 });
@@ -124,6 +124,32 @@ test('managed MCPs protect secrets at rest, mask short values, rotate and clear 
   assert.equal(next.resolveForMember({mcp:['postgres-readonly']},{access:'read'}).mcp['postgres-readonly'].args.at(-1),'postgresql://fixture');
   next.removeMcp('github'); assert.equal(runtime(),undefined); assert.ok(!read(file).includes('new-credential'));
   assert.equal(fs.existsSync(opts.claudeJsonPath),false); assert.equal(fs.existsSync(path.join(opts.codexHome,'config.toml')),false);
+});
+
+test('managed MCP credentials follow only the same transport and service', t => {
+  const opts = libraryFixture(t, hooks);
+  const mgr = createExtensionsManager(opts);
+  const credentials = { headers: { Authorization: 'old' }, env: { TOKEN: 'previous', OPTION: 'on' } };
+  for (const [i, url] of ['http://host.test', 'https://other.test', 'https://host.test:8443'].entries()) {
+    const id = 'remote-' + i;
+    mgr.installMcp({ id, transport: 'http', url: 'https://host.test/api', ...credentials });
+    const same = mgr.updateMcp(id, { name: 'New name', url: 'https://HOST.TEST:443/next?version=2', mode: 'readonly' });
+    assert.deepEqual(Object.keys(same.headers), ['Authorization']);
+    assert.deepEqual(Object.keys(same.env), ['TOKEN', 'OPTION']);
+    mgr.updateMcp(id, { url, headers: { New: 'replacement' } });
+    const loaded = createExtensionsManager(opts);
+    assert.deepEqual(loaded.listMcp().find(s => s.id === id).env, {});
+    assert.deepEqual(loaded.resolveForMember({ mcp: [id] }).mcp[id].headers, { New: 'replacement' });
+  }
+  mgr.installMcp({ id: 'local-tool', command: 'first', ...credentials });
+  const changed = mgr.updateMcp('local-tool', { command: 'second', env: { OPTION: 'new' } });
+  assert.deepEqual(changed.headers, {});
+  assert.deepEqual(changed.env, { OPTION: 'new' });
+  const http = mgr.updateMcp('local-tool', { transport: 'http', url: 'https://example.test', headers: { New: 'new' } });
+  assert.deepEqual(http.env, {});
+  const stdio = mgr.updateMcp('local-tool', { transport: 'stdio', command: 'second' });
+  assert.deepEqual(stdio.headers, {});
+  assert.deepEqual(stdio.env, {});
 });
 
 test('marketplace caches a valid refresh, falls back on invalid or offline responses, and searches registry formats', async t => {
@@ -230,12 +256,18 @@ test('runAgentTurn and registry preserve resolved configs and filter by engine c
     assert.equal(registry.supportsExtensions(e.id),supported);
     assert.equal(e.skills,supported); assert.equal(e.mcp,supported);
     const options = registry.extensionOptionsFor(e.id,ids);
-    if (supported) { assert.deepEqual(options.skills,[skill.dir]); assert.deepEqual(Object.keys(options.mcp),['fetch']); }
+    if (supported) { assert.deepEqual(options.skills,[skill.dir]); assert.deepEqual(Object.keys(options.mcp),['fetch']); assert.deepEqual(options.readonlyMcp,['fetch']); }
     else assert.deepEqual(options,{});
   }
-  const pre = {skills:[skill.dir],mcp:{supplied:{command:'fixture'}}};
+  const pre = {skills:[skill.dir],mcp:{fetch:{command:'supplied'},playwright:{command:'supplied'}},readonlyMcp:['playwright']};
+  const checked = registry.extensionOptionsFor('pi',pre);
+  assert.deepEqual(Object.keys(checked.mcp),['fetch']);
+  assert.notEqual(checked.mcp.fetch.command,'supplied');
+  assert.deepEqual(checked.readonlyMcp,['fetch']);
+  const direct = createRegistry(createSettings(path.join(opts.dataDir,'settings.json')));
+  assert.deepEqual(Object.keys(direct.extensionOptionsFor('pi',pre).mcp),['playwright']);
+  assert.deepEqual(Object.keys(direct.extensionOptionsFor('pi',{...pre,access:'run'}).mcp),['fetch','playwright']);
   resolve.mock.resetCalls();
-  assert.deepEqual(registry.extensionOptionsFor('pi',pre),pre); assert.equal(resolve.mock.callCount(),0);
   const sink = {};
   await runAgentTurn(registry,{engine:'codex',...ids},{system:'Fixture',prompt:'Hi',cwd:opts.dataDir,access:'read',sink});
   assert.ok(sink.text);
@@ -245,7 +277,7 @@ test('runAgentTurn and registry preserve resolved configs and filter by engine c
 });
 
 test('HTTP marketplace, skill and MCP lifecycle includes key redaction, permissions and team dependencies', async t => {
-  const req = await libraryHttp(t), api = (route,...args) => req('library/' + route,...args);
+  const { api: req } = await libraryHttp(t), api = (route,...args) => req('library/' + route,...args);
   assert.deepEqual(await api('extensions'),{skills:[],mcp:[]});
   await api('skills/install','POST',{id:'copy-editing'},201);
   assert.ok((await api('skills/install','POST',{id:'copy-editing'},200)).alreadyInstalled);

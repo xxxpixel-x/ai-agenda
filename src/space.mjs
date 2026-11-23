@@ -8,7 +8,10 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Workspace } from './workspace.mjs';
-import { ACCESS, attachmentText, visible } from './prompts.mjs';
+import { assertSpaceId, spaceDirectory } from './store.mjs';
+import { containsPath, directChild, physicalPath } from './paths.mjs';
+import { attachmentText, visible } from './prompts.mjs';
+import { assertTaskSpaceAccess, isAccessLevel, resolveTurnAccess } from './access.mjs';
 import { Attachments } from './attachments.mjs';
 import { excludeFolder } from './git.mjs';
 import { Chat } from './chat.mjs';
@@ -19,7 +22,7 @@ import { distillSystem, distillPrompt } from './task-prompts.mjs';
 import { normalizeAllowed } from './approvals.mjs';
 import { normalizeMembers } from './members.mjs';
 import { openMemory } from './memory/store.mjs';
-import { organize, recordPlanDecisions, recordApprovedResults } from './memory/organize.mjs';
+import { organize, recordPlanDecisions, recordApprovedResults, messageView, isArchivableMessage } from './memory/organize.mjs';
 
 import { handoffSystem, handoffPrompt, budgetFor, contextWindowFor } from './context.mjs';
 
@@ -39,6 +42,16 @@ export const runNeedsUser = (r) => !!r && !r.closed && (r.status === 'clarifying
 
 export class Space extends EventEmitter {
   static memoryAuto = true;
+  static memoryDebounceMs = 75_000;
+  static memoryMaxWaitMs = 5 * 60_000;
+  static memoryMinUserMessages = 2;
+  static memoryMinChars = 3000;
+  static memoryCompactThreshold = 3;
+  static clock = {
+    now: () => Date.now(),
+    setTimeout: (fn, ms) => setTimeout(fn, ms),
+    clearTimeout: (t) => clearTimeout(t),
+  };
 
   constructor(data, { registry, store, dataDir, hooks = {} }) {
     super();
@@ -47,19 +60,23 @@ export class Space extends EventEmitter {
     this.registry = registry;
     this.store = store;
     this.hooks = hooks; // 跨空间的事：folderLock(space)、folderInUse(path, exceptId)、postToSpace(id, msg)
-    this.dir = path.join(dataDir, 'spaces', data.id);
+    this.dir = spaceDirectory(path.join(dataDir, 'spaces'), data.id);
     data.kind = KINDS.includes(data.kind) ? data.kind : 'chat';
     data.memberState = Object.assign(Object.create(null), data.memberState);
     data.recap ||= { text: '', uptoSeq: 0, version: 0, editedByUser: false, updatedAt: null };
     data.memberContext = Object.assign(Object.create(null), data.memberContext);
     data.handoffs = Object.assign(Object.create(null), data.handoffs);
     data.organizeLogs ||= [];
+    data.handoffLogs ||= [];
     data.recapTargetSeq ||= 0;
     data.lastCompactedSeq ||= 0;
+    if (typeof data.memoryAuto !== 'boolean') data.memoryAuto = true;
     this.pendingHandoffNotes = data.pendingHandoffNotes ||= [];
     this.handoffing = new Set();
     this.handoffJobs = new Map();
     this.handoffControllers = new Set();
+    this.memoryTimer = null;
+    this.memoryFirstPendingAt = 0;
     data.pendingConfigHandoffs = Object.assign(Object.create(null), data.pendingConfigHandoffs);
     for (const [id, snapshot] of Object.entries(data.pendingConfigHandoffs)) data.memberState[id] ??= snapshot.oldState;
     data.allowedPrograms = normalizeAllowed(data.allowedPrograms);
@@ -84,6 +101,13 @@ export class Space extends EventEmitter {
     if (this.run) recordPlanDecisions(this.memory, this.run.data);
     this.memoryHost = this.createMemoryHost();
     this.approvedSeen = this.approvedKey();
+    // 重启后按 lastSeq、未完成 recapTargetSeq 与持久化交接便笺补欠账。
+    if (this.memoryAutoEnabled && (data.messages.length || data.recapTargetSeq > data.recap.uptoSeq || this.pendingHandoffNotes.length)) {
+      const backlog = this.memoryBacklog();
+      if (backlog.needsRecap || backlog.hasHandoffs || backlog.meetsThreshold) {
+        this.scheduleMemoryOrganize({ immediate: backlog.needsRecap || backlog.hasHandoffs || backlog.hitsBatchCap });
+      }
+    }
   }
 
   get isTask() { return this.data.kind === 'task'; }
@@ -114,8 +138,16 @@ export class Space extends EventEmitter {
     const space = this;
     return {
       ...this.contextHost(),
-      recordApprovedTask: (task) => recordApprovedResults(space.memory, [task]),
-      recordPlanDecisions: (run) => recordPlanDecisions(space.memory, run),
+      recordApprovedTask: (task) => {
+        const rec = recordApprovedResults(space.memory, [task]);
+        if (rec.added.length) space.emitEvent({ type: 'memory_changed' });
+        return rec;
+      },
+      recordPlanDecisions: (run) => {
+        const before = space.memory.latestId;
+        recordPlanDecisions(space.memory, run);
+        if (space.memory.latestId > before) space.emitEvent({ type: 'memory_changed' });
+      },
       get members() { return space.data.members; },
       get access() { return space.data.access; },
       get workspacePath() { return space.workspacePath; },
@@ -155,8 +187,8 @@ export class Space extends EventEmitter {
       get members() { return space.data.members; },
       get messages() { return space.data.messages; },
       get memberState() { return space.data.memberState; },
-      // 文件夹暂时只读时，这一轮发言按“只读”来（聊天照常进行）
-      get access() { return space.readOnly ? 'read' : space.data.access; },
+      get access() { return space.data.access; },
+      get readOnly() { return space.readOnly; },
       get maxTurns() { return space.data.maxTurns; },
       get allowedPrograms() { return space.data.allowedPrograms; },
       set allowedPrograms(v) { space.data.allowedPrograms = v; },
@@ -203,6 +235,8 @@ export class Space extends EventEmitter {
       get members() { return space.data.members; },
       get workspacePath() { return space.workspacePath; },
       get kind() { return space.data.kind; },
+      get access() { return space.data.access; },
+      contextOptions: (member) => space.contextOptions(member),
       // 编号大于 since 的消息，按编号排；遇到还在写的就停，免得跳过它
       messages: (since = 0) => {
         const out = [];
@@ -223,10 +257,11 @@ export class Space extends EventEmitter {
    * 任务空间：input.objective、coordinatorId、planConfirm、clarify、discuss、autoApprove、maxParallel、source（{ spaceId, title }，从聊天空间转来时）
 
    */
-  static create(input, deps) {
+  static create(input, deps, workspaceOwnerId) {
     const engines = deps.registry.list();
     const id = randomUUID();
     const kind = input.kind === 'task' ? 'task' : 'chat';
+    if (kind === 'task') assertTaskSpaceAccess(input.access);
     const objective = str(input.objective, 8000);
     if (kind === 'task' && !objective) throw new Error(tr('请写下这次要完成的目标'));
     const members = normalizeMembers(input.members, engines);
@@ -235,9 +270,13 @@ export class Space extends EventEmitter {
       const p = str(input.workspace.path, 1000);
       if (!p || !path.isAbsolute(p)) throw new Error(tr('请选择一个文件夹'));
       if (!fs.existsSync(p) || !fs.statSync(p).isDirectory()) throw new Error(tr('这个文件夹不存在'));
-      workspace = { type: 'folder', path: path.resolve(p) };
+      const authorizedPath = deps.hooks?.assertFolderAllowed?.(p, kind === 'task' ? workspaceOwnerId ?? input.source?.spaceId : undefined);
+      workspace = { type: 'folder', path: authorizedPath ?? path.resolve(p) };
+      if (authorizedPath && kind === 'task' && containsPath(physicalPath(deps.dataDir), authorizedPath)) {
+        workspace.managedSpaceId = path.basename(path.dirname(authorizedPath));
+      }
     } else {
-      workspace = { type: 'managed', path: path.join(deps.dataDir, 'spaces', id, 'files') };
+      workspace = { type: 'managed', path: directChild(spaceDirectory(deps.store.dir, id), 'files') };
     }
     const title = str(input.title, 60) || (kind === 'task' ? objective.split('\n')[0].replace(/^#+\s*/, '').slice(0, 60) : '') || tr('新的空间');
     const now = Date.now();
@@ -247,7 +286,7 @@ export class Space extends EventEmitter {
       title,
       members,
       workspace,
-      access: ACCESS[input.access] ? input.access : 'edit',
+      access: isAccessLevel(input.access) ? input.access : 'edit',
       maxTurns: clampInt(input.maxTurns, 1, 30, 6),
       messages: [],
       memberState: {},
@@ -308,6 +347,7 @@ export class Space extends EventEmitter {
       ...rest,
       run: this.run ? this.run.publicView() : null,
       workspacePath: this.workspacePath,
+      folderSharedWith: this.data.workspace.type === 'managed' ? this.hooks.folderSharedWith?.(this.workspacePath, this.id) || [] : [],
       readOnly: this.readOnly,
       ...this.chat.status,
     };
@@ -321,7 +361,8 @@ export class Space extends EventEmitter {
       id: d.id, kind: d.kind, title: d.title, updatedAt: d.updatedAt,
       running: this.running || (!!r && !r.closed && ['planning', 'executing', 'summarizing'].includes(r.status) && !r.paused && !r.hold) || !!this.run?.thinking,
       waiting: this.approvals.size > 0,
-      needsYou: runNeedsUser(r),
+      needsYou: runNeedsUser(r) || this.memoryAskCount > 0,
+      memoryAskCount: this.memoryAskCount,
       finished: !!r?.closed,
       lastAt: last?.ts || null,
       members: d.members.map((m) => ({ name: m.name, color: m.color, engine: m.engine })),
@@ -334,6 +375,7 @@ export class Space extends EventEmitter {
 
   // ---------- 修改设置 ----------
   update(patch) {
+    if (this.isTask && patch.access !== this.data.access) assertTaskSpaceAccess(patch.access);
     if (this.running) throw new Error(tr('请先停止当前讨论再修改设置'));
     if (this.finished && Object.keys(patch).some((k) => k !== 'title')) throw new Error(tr('这个任务已经结束，只能改名字'));
     if (this.run?.active && 'members' in patch) throw new Error(tr('任务进行中，不能修改成员'));
@@ -344,16 +386,20 @@ export class Space extends EventEmitter {
       const next = normalizeMembers(patch.members, this.registry.list());
       this.data.members = next;
     }
-    if ('access' in patch && ACCESS[patch.access] && patch.access !== this.data.access) {
+    if (isAccessLevel(patch.access) && patch.access !== this.data.access) {
       this.data.access = patch.access;
     }
     this.resetChangedSessions(previous, oldAccess);
     if ('maxTurns' in patch) this.data.maxTurns = clampInt(patch.maxTurns, 1, 30, this.data.maxTurns);
     if ('allowedPrograms' in patch) this.data.allowedPrograms = normalizeAllowed(patch.allowedPrograms);
-    // 整理记忆库的成员（不给或已不在空间里：第一个成员）
+    // 整理记忆库的成员（不给或已不在空间里：走全局设置或第一个成员）
     if ('memoryWriterId' in patch) {
       if (this.data.members.some((m) => m.id === patch.memoryWriterId)) this.data.memoryWriterId = patch.memoryWriterId;
       else delete this.data.memoryWriterId;
+    }
+    if (typeof patch.memoryAuto === 'boolean') {
+      this.data.memoryAuto = patch.memoryAuto;
+      if (!patch.memoryAuto) this.clearMemoryTimer();
     }
     // 任务空间的选项：计划确认方式、审阅计划、自动通过、最多同时几个、协调者
     if (this.run && patch.task) this.run.updateSettings(patch.task);
@@ -483,8 +529,9 @@ export class Space extends EventEmitter {
     const controller = new AbortController();
     this.distillController = controller;
     try {
+      const { access } = resolveTurnAccess({ spaceKind: this.data.kind, spaceAccess: this.data.access, role: 'distill' });
       const r = await this.track(runAgentTurn(this.registry, member, {
-        system: distillSystem(member), prompt: distillPrompt(list), cwd: this.workspacePath, access: 'read', signal: controller.signal, sink: { text: '', activities: [] },
+        system: distillSystem(member), prompt: distillPrompt(list), cwd: this.workspacePath, access, signal: controller.signal, sink: { text: '', activities: [] },
       }));
       return { text: r.text.trim(), by: member.name };
     } finally {
@@ -499,9 +546,9 @@ export class Space extends EventEmitter {
     if (this.finished) throw new Error(tr('这个任务已经结束，只能查看'));
   }
 
-  writeFile(rel, content) {
+  writeFile(rel, content, { createOnly = false } = {}) {
     this.assertWritable();
-    const changes = this.ws.write(rel, String(content ?? ''), '我');
+    const changes = this.ws.write(rel, String(content ?? ''), '我', { createOnly });
     if (changes.length) this.emitEvent({ type: 'files_changed', changes });
     return changes;
   }
@@ -580,15 +627,39 @@ export class Space extends EventEmitter {
 
   // ---------- 记忆库 ----------
   get memoryDir() { return path.join(this.dir, 'memory'); }
+  get memoryAutoEnabled() { return Space.memoryAuto && this.data.memoryAuto !== false; }
+  get memoryAskCount() {
+    if (!fs.existsSync(path.join(this.memoryDir, 'entries.jsonl'))) return 0;
+    return this.memory.active().filter((e) => e.ask === true).length;
+  }
+
+  archiveMessage(msg, { overwrite = false } = {}) {
+    if (!msg || !Number.isInteger(msg.seq) || !isArchivableMessage(msg)) return;
+    try { this.memory.archive([messageView(msg)], { overwrite }); } catch (e) { console.warn(tr('归档消息失败：'), e.message); }
+  }
+
+  archiveSnapshot() {
+    const toWrite = [], toOverwrite = [];
+    for (const m of this.data.messages) {
+      if (!Number.isInteger(m.seq) || !isArchivableMessage(m)) continue;
+      if (m.kind === 'import') toOverwrite.push(messageView(m));
+      else toWrite.push(messageView(m));
+    }
+    try {
+      if (toWrite.length) this.memory.archive(toWrite);
+      if (toOverwrite.length) this.memory.archive(toOverwrite, { overwrite: true });
+    } catch (e) { console.warn(tr('归档消息失败：'), e.message); }
+  }
 
   rollover(seq) {
     if (seq <= this.data.recapTargetSeq) return;
-    if (seq > this.data.lastCompactedSeq) {
+    if (seq > this.data.lastCompactedSeq && this.memory.compactableCount() >= Space.memoryCompactThreshold) {
       this.memory.compact();
       this.data.lastCompactedSeq = seq;
     }
     this.data.recapTargetSeq = seq;
     this.save();
+    if (this.memoryAutoEnabled) this.scheduleMemoryOrganize({ immediate: true });
   }
 
   recapView() { return { ...this.data.recap }; }
@@ -652,12 +723,17 @@ export class Space extends EventEmitter {
       let summary = '';
       const anchorSeq = this.data.messages.at(-1)?.seq || 0;
       if (state?.sessionId) {
+        const { access } = resolveTurnAccess({ spaceKind: this.data.kind, spaceAccess: this.data.access, role: 'handoff' });
         const recent = this.data.messages.filter(visible).slice(-6).map((m) => tr('消息 {0}', [m.seq]) + ' · ' + attachmentText(m).slice(0, 500)).join('\n');
         const r = await runAgentTurn(this.registry, member, { system: handoffSystem(), prompt: handoffPrompt(recent), cwd: this.workspacePath,
-          access: 'read', sessionId: state.sessionId, fork: !!state.fork, resumeAt: state.resumeAt, imported: !!state.importId, keepSession: !state.importId,
+          access, sessionId: state.sessionId, fork: !!state.fork, resumeAt: state.resumeAt, imported: !!state.importId, keepSession: !state.importId,
           readOnlyDirs: [this.memoryDir], signal: controller.signal, sink: { text: '', activities: [] } });
         controller.signal.throwIfAborted();
         summary = r.text.trim().replace(/^\[(?:无|none)\]$/i, '').slice(0, 3000);
+        if (r.usage) {
+          this.data.handoffLogs.push({ at: Date.now(), memberId: id, reason, usage: r.usage });
+          this.data.handoffLogs.splice(0, Math.max(0, this.data.handoffLogs.length - 100));
+        }
       }
       const handoff = { at: Date.now(), reason, summary };
       const history = this.data.handoffs[id] ||= [];
@@ -670,8 +746,8 @@ export class Space extends EventEmitter {
       const current = this.data.members.find((m) => m.id === id);
       if (replacing && current && this.sessionMode(current) && summary) this.data.memberState[id] = { pendingHandoff: summary };
       if (summary) {
-        this.pendingHandoffNotes.push({ memberId: id, memberName: member.name, summary, at: handoff.at, anchorSeq });
-        this.organizeMemory();
+        this.pendingHandoffNotes.push({ memberId: id, memberName: member.name, engine: member.engine || '', model: member.model || '', summary, at: handoff.at, anchorSeq });
+        if (this.memoryAutoEnabled) this.organizeMemory();
       }
       this.save();
       this.emitEvent({ type: 'handoff', memberId: id, handoff });
@@ -696,30 +772,121 @@ export class Space extends EventEmitter {
   }
 
   get memory() { return (this.memoryStore ||= openMemory(this.memoryDir)); }
-  get memoryWriter() { return this.data.members.find((m) => m.id === this.data.memoryWriterId) || this.data.members[0]; }
+
+  resolveMemoryWriter() {
+    if (this.data.memoryWriterId) {
+      const explicit = this.data.members.find((m) => m.id === this.data.memoryWriterId);
+      if (explicit) return { writer: explicit, source: 'space', error: null };
+    }
+    const settings = this.registry.settings?.get?.();
+    const org = settings?.memoryOrganizer;
+    if (org?.engine) {
+      const isMock = this.registry.list().some((e) => e.label?.startsWith('演示') || e.label?.startsWith('Demo'));
+      if (org.engine === 'gemini') {
+        if (!isMock && !settings.gemini?.apiKey) {
+          return { writer: null, source: 'global', error: tr('全局记忆整理模型（Gemini API）未配置 API key，请在设置中检查') };
+        }
+        return { writer: { id: 'global:gemini', name: 'Gemini', engine: 'gemini', model: org.model || '' }, source: 'global', error: null };
+      }
+      if (org.engine.startsWith('openai:')) {
+        const pid = org.engine.slice('openai:'.length);
+        const provider = (settings.providers || []).find((p) => p.id === pid);
+        if (!provider || (!isMock && !provider.baseUrl?.trim())) {
+          return { writer: null, source: 'global', error: tr('全局记忆整理模型指定的接口已失效，请在设置中重新选择') };
+        }
+        return { writer: { id: `global:${org.engine}`, name: provider.name || 'AI', engine: org.engine, model: org.model || provider.model || '' }, source: 'global', error: null };
+      }
+      return { writer: null, source: 'global', error: tr('全局记忆整理模型配置无效，请在设置中重新选择') };
+    }
+    const first = this.data.members[0] || null;
+    return { writer: first, source: 'first', error: null };
+  }
+
+  get memoryWriter() { return this.resolveMemoryWriter().writer; }
 
   /** 子任务通过的情况（编号 + 通过时间），用来发现新通过的子任务。 */
   approvedKey() {
     return (this.run?.data.tasks || []).filter((t) => t.status === 'approved').map((t) => `${t.id}@${t.approvedAt}`).join(',');
   }
 
+  memoryBacklog() {
+    const msgs = this.memoryHost.messages(this.memory.lastSeq).filter(isArchivableMessage);
+    let userCount = 0, chars = 0;
+    for (const m of msgs) {
+      if (m.kind === 'user') userCount++;
+      const view = messageView(m);
+      chars += view.text.length + view.changes.join(' ').length;
+    }
+    const needsRecap = this.data.recapTargetSeq > (this.data.recap?.uptoSeq || 0);
+    const hasHandoffs = this.pendingHandoffNotes.length > 0;
+    const meetsThreshold = userCount >= Space.memoryMinUserMessages || chars >= Space.memoryMinChars || msgs.length >= 40;
+    const hitsBatchCap = msgs.length >= 40 || chars >= 30000;
+    return { count: msgs.length, userCount, chars, needsRecap, hasHandoffs, meetsThreshold, hitsBatchCap };
+  }
+
+  clearMemoryTimer({ resetPendingAt = true } = {}) {
+    if (this.memoryTimer != null) Space.clock.clearTimeout(this.memoryTimer);
+    this.memoryTimer = null;
+    if (resetPendingAt) this.memoryFirstPendingAt = 0;
+  }
+
+  scheduleMemoryOrganize({ immediate = false } = {}) {
+    if (this.deleting || this.deleted || this.closing || !this.memoryAutoEnabled) {
+      this.clearMemoryTimer();
+      return;
+    }
+    const b = this.memoryBacklog();
+    if (immediate || b.needsRecap || b.hasHandoffs || b.hitsBatchCap) {
+      this.clearMemoryTimer();
+      this.organizeMemory();
+      return;
+    }
+    if (!b.meetsThreshold) return;
+    if (Space.memoryDebounceMs <= 0) {
+      this.clearMemoryTimer();
+      this.organizeMemory();
+      return;
+    }
+    const now = Space.clock.now();
+    this.memoryFirstPendingAt ||= now;
+    const elapsed = now - this.memoryFirstPendingAt;
+    const delay = Math.min(Space.memoryDebounceMs, Math.max(0, Space.memoryMaxWaitMs - elapsed));
+    if (this.memoryTimer != null) Space.clock.clearTimeout(this.memoryTimer);
+    const timer = Space.clock.setTimeout(() => {
+      if (this.memoryTimer !== timer) return;
+      this.clearMemoryTimer();
+      if (!this.deleting && !this.deleted && !this.closing && this.memoryAutoEnabled) this.organizeMemory();
+    }, delay);
+    timer?.unref?.();
+    this.memoryTimer = timer;
+  }
+
   /**
    * 空闲时把新的聊天和任务结果整理进记忆库：在后台进行，不阻塞下一轮；
    * 正在整理时又来新内容就排到下一次。整理失败只记日志（memory/organize.jsonl），不影响聊天。
    */
-  organizeMemory() {
+  organizeMemory({ manual = false } = {}) {
     if (this.deleting || this.deleted || this.closing || !this.data.members.length) return null;
+    this.clearMemoryTimer();
+    const resolved = this.resolveMemoryWriter();
+    if (!resolved.writer) {
+      const msg = resolved.error || tr('没有可用的记忆整理成员');
+      this.memory.log({ at: Date.now(), writerId: null, fromSeq: this.memory.lastSeq, toSeq: this.memory.lastSeq, added: [], rejected: [], notes: [], error: msg });
+      this.emitEvent({ type: 'notice', level: 'error', text: msg });
+      return null;
+    }
     if (this.memoryRun) { this.memoryAgain = true; return this.memoryRun; }
     this.memoryAgain = false;
     const controller = new AbortController();
     this.memoryController = controller;
+    const writer = resolved.writer;
     const work = (async () => {
       await new Promise((resolve) => setImmediate(resolve));
       let next = false;
       try {
         const recap = { ...this.data.recap, targetSeq: this.data.recapTargetSeq };
         const handoffs = this.pendingHandoffNotes.slice();
-        const r = await organize(this.memoryHost, this.memory, { writer: this.memoryWriter, signal: controller.signal, recap, handoffs });
+        const r = await organize(this.memoryHost, this.memory, { writer, signal: controller.signal, recap, handoffs });
         if (controller.signal.aborted) return;
         next = !!r.more && !r.error;
         if (!r.skipped) {
@@ -731,6 +898,9 @@ export class Space extends EventEmitter {
             this.emitEvent({ type: 'recap', recap: this.recapView() });
           } else if (r.recapText) log.note = tr('前情提要已经更新');
           this.save();
+          if (r.added.length || manual) this.emitEvent({ type: 'memory_changed' });
+        } else if (r.added.length) {
+          this.emitEvent({ type: 'memory_changed' });
         }
       } catch (e) {
         if (e.organizeRecord && !controller.signal.aborted) {
@@ -750,36 +920,192 @@ export class Space extends EventEmitter {
 
   recordOrganizerRun(record, uptoSeq) {
     const log = { at: record.at, memberId: record.writerId, fromSeq: record.fromSeq, toSeq: record.toSeq,
-      recapUptoSeq: record.recapUptoSeq ?? uptoSeq, usage: record.usage ?? null };
+      recapUptoSeq: record.recapUptoSeq ?? uptoSeq, usage: record.usage ?? null,
+      ...(record.durationMs != null ? { durationMs: record.durationMs } : {}),
+      ...(record.toolCalls != null ? { toolCalls: record.toolCalls } : {}) };
     if (record.error) log.error = record.error;
     this.data.organizeLogs.push(log);
     this.data.organizeLogs.splice(0, Math.max(0, this.data.organizeLogs.length - 100));
     return log;
   }
 
-  /** 只读查看记忆库（排查和以后的展示页用）。 */
+  /** 面板人工纠偏（程序直写，白名单校验，严守只追加与并发 409）。 */
+  applyMemoryAction(entryId, body = {}) {
+    if (this.deleting || this.deleted) throw Object.assign(new Error(tr('这个空间正在删除，请稍等')), { status: 409 });
+    if (this.finished) throw Object.assign(new Error(tr('这个任务已经结束，不能修改记忆库')), { status: 409 });
+    if (!Number.isSafeInteger(entryId) || entryId < 1) throw Object.assign(new Error(tr('条目编号不合法')), { status: 400 });
+    const action = typeof body?.action === 'string' ? body.action.trim() : '';
+    const ALLOWED_ACTIONS = new Set(['retract', 'edit', 'accept', 'reject', 'answer']);
+    const EDITABLE_TYPES = new Set(['decision', 'constraint', 'preference', 'rejected', 'fact', 'question', 'proposal', 'disagreement']);
+    const USER_ORIGIN_TYPES = new Set(['decision', 'constraint', 'preference', 'rejected']);
+    if (!ALLOWED_ACTIONS.has(action)) throw Object.assign(new Error(tr('不支持的记忆库操作')), { status: 400 });
+
+    const cleanText = (s, max) => typeof s === 'string' ? s.trim().replace(/[\r\n]+/g, ' ').slice(0, max) : '';
+    const compact = (s) => cleanText(s, 300).replace(/\s/g, '');
+    const entries = this.memory.entries();
+    const target = entries.find((e) => e.id === entryId);
+    if (!target) throw Object.assign(new Error(tr('条目 #{0} 不存在', [entryId])), { status: 404 });
+
+    if (action === 'retract') {
+      if (target.status === 'retracted') throw Object.assign(new Error(tr('这条记忆已经撤回了')), { status: 409 });
+      if (target.status !== 'active') throw Object.assign(new Error(tr('这条记忆已失效或已处理，请刷新')), { status: 409 });
+      const seqAt = this.data.messages.reduce((n, m) => Math.max(n, Number.isInteger(m.seq) ? m.seq : 0), 0);
+      const { control, entry } = this.memory.retract(entryId, { seqAt });
+      this.emitEvent({ type: 'memory_changed' });
+      return { ok: true, action, control, entry, hadSupersedes: !!(target.supersedes?.length), memory: this.memoryView() };
+    }
+
+    if (target.status !== 'active') throw Object.assign(new Error(tr('这条记忆已失效或已处理，请刷新')), { status: 409 });
+
+    const now = Date.now();
+    const baseMeta = {
+      source: structuredClone(target.source || {}),
+      topics: [...(target.topics || [])],
+      files: [...(target.files || [])],
+      related: [...(target.related || [])],
+      ...(target.task ? { task: target.task } : {}),
+    };
+    const assertNotDup = (next, excludeIds = []) => {
+      const excluded = new Set(excludeIds);
+      const dup = entries.find((e) => e.status === 'active' && !excluded.has(e.id)
+        && e.type === next.type && cleanText(e.scope, 100) === cleanText(next.scope, 100)
+        && cleanText(e.task, 100) === cleanText(next.task, 100) && compact(e.text) === compact(next.text));
+      if (dup) throw Object.assign(new Error(tr('和 #{0} 重复', [dup.id])), { status: 409 });
+    };
+
+    let record;
+    if (action === 'edit') {
+      if (target.type === 'result') throw Object.assign(new Error(tr('任务结果不支持直接编辑，如需作废请点撤回')), { status: 400 });
+      const type = body.type != null && body.type !== '' ? cleanText(body.type, 30) : target.type;
+      if (!EDITABLE_TYPES.has(type)) throw Object.assign(new Error(tr('不允许改为该条目类型')), { status: 400 });
+      const text = cleanText(body.text, 300);
+      if (!text) throw Object.assign(new Error(tr('条目内容为空')), { status: 400 });
+      const reason = body.reason !== undefined ? cleanText(body.reason, 200) : cleanText(target.reason, 200);
+      record = {
+        ...baseMeta,
+        type,
+        ...(USER_ORIGIN_TYPES.has(type) ? { origin: 'user' } : {}),
+        confirmedBy: 'user',
+        text,
+        ...(reason ? { reason } : {}),
+        scope: target.scope || '',
+        supersedes: [entryId],
+        at: now,
+      };
+      assertNotDup(record, [entryId]);
+    } else if (action === 'accept') {
+      if (!['disagreement', 'proposal'].includes(target.type)) throw Object.assign(new Error(tr('只能采纳分歧或提议')), { status: 400 });
+      if (target.type === 'disagreement') {
+        const proposed = target.proposed || {};
+        const type = body.type != null && body.type !== '' ? cleanText(body.type, 30) : (EDITABLE_TYPES.has(proposed.type) ? proposed.type : 'decision');
+        if (!EDITABLE_TYPES.has(type)) throw Object.assign(new Error(tr('不允许改为该条目类型')), { status: 400 });
+        const text = cleanText(body.text, 300) || cleanText(proposed.text, 300) || target.text;
+        if (!text) throw Object.assign(new Error(tr('条目内容为空')), { status: 400 });
+        const reason = body.reason !== undefined ? cleanText(body.reason, 200) : cleanText(proposed.reason || target.reason || '', 200);
+        const liveConflicts = (target.conflicts || []).filter((cid) => entries.find((e) => e.id === cid)?.status === 'active');
+        const firstConflict = liveConflicts.length ? entries.find((e) => e.id === liveConflicts[0]) : null;
+        const scope = firstConflict?.scope ?? target.scope ?? '';
+        record = {
+          ...baseMeta,
+          type,
+          ...(USER_ORIGIN_TYPES.has(type) ? { origin: 'user' } : {}),
+          confirmedBy: 'user',
+          text,
+          ...(reason ? { reason } : {}),
+          scope,
+          resolves: [entryId],
+          ...(liveConflicts.length ? { supersedes: liveConflicts } : {}),
+          at: now,
+        };
+        assertNotDup(record, [entryId, ...liveConflicts]);
+      } else {
+        const text = cleanText(body.text, 300) || target.text;
+        const reason = body.reason !== undefined ? cleanText(body.reason, 200) : cleanText(target.reason || '', 200);
+        record = {
+          ...baseMeta,
+          type: 'decision',
+          origin: 'user',
+          confirmedBy: 'user',
+          text,
+          ...(reason ? { reason } : {}),
+          scope: target.scope || '',
+          resolves: [entryId],
+          at: now,
+        };
+        assertNotDup(record, [entryId]);
+      }
+    } else if (action === 'reject') {
+      if (!['disagreement', 'proposal'].includes(target.type)) throw Object.assign(new Error(tr('只能驳回分歧或提议')), { status: 400 });
+      const text = cleanText(body.text, 300) || cleanText(target.proposed?.text, 300) || target.text;
+      const reason = cleanText(body.reason, 200);
+      record = {
+        ...baseMeta,
+        type: 'rejected',
+        origin: 'user',
+        confirmedBy: 'user',
+        text,
+        ...(reason ? { reason } : {}),
+        scope: target.scope || '',
+        resolves: [entryId],
+        at: now,
+      };
+      assertNotDup(record, [entryId]);
+    } else if (action === 'answer') {
+      if (target.type !== 'question') throw Object.assign(new Error(tr('只能回答问题类型的条目')), { status: 400 });
+      const text = cleanText(body.text, 300);
+      if (!text) throw Object.assign(new Error(tr('请填写回答内容')), { status: 400 });
+      const type = body.type === 'fact' ? 'fact' : 'decision';
+      const reason = cleanText(body.reason, 200);
+      record = {
+        ...baseMeta,
+        type,
+        ...(type === 'decision' ? { origin: 'user' } : {}),
+        confirmedBy: 'user',
+        text,
+        ...(reason ? { reason } : {}),
+        scope: target.scope || '',
+        resolves: [entryId],
+        at: now,
+      };
+      assertNotDup(record, [entryId]);
+    }
+
+    const [saved] = this.memory.append([record]);
+    this.emitEvent({ type: 'memory_changed' });
+    return { ok: true, action, entry: saved, memory: this.memoryView() };
+  }
+
+  /** 查看记忆库（面板与排查用）。 */
   memoryView() {
     if (this.deleting || this.deleted) throw Object.assign(new Error(tr('这个空间正在删除，请稍等')), { status: 409 });
     const mem = this.memory;
+    const resolved = this.resolveMemoryWriter();
+    const entries = mem.entries();
     return {
-      writerId: this.memoryWriter?.id || null,
+      writerId: resolved.writer?.id || null,
+      writerSource: resolved.source,
+      organizerError: resolved.error || null,
+      memoryAuto: this.data.memoryAuto !== false,
       organizing: !!this.memoryRun,
       lastSeq: mem.lastSeq,
+      latestId: mem.latestId,
       compactedAt: mem.compactedAt,
-      entries: mem.entries(),
+      askCount: entries.filter((e) => e.status === 'active' && e.ask === true).length,
+      entries,
       text: mem.render({}),
       logs: mem.logs(20),
     };
   }
 
-  /** 空间自己的事件里，哪些说明有新内容可以整理：聊天一轮结束、任务空间的回复写完、子任务通过。 */
+  /** 空间自己的事件里，哪些说明有新内容可以整理：聊天一轮结束、任务空间的回复写完、收到任务总结回传、子任务通过。 */
   memoryTrigger(ev) {
-    if (ev.type === 'round_end' || (ev.type === 'message_done' && this.isTask && !ev.message?.streaming)) return true;
-    if (ev.type !== 'run') return false;
+    if (ev.type === 'round_end' || (ev.type === 'message_done' && this.isTask && !ev.message?.streaming)
+      || (ev.type === 'message' && ev.message?.kind === 'task')) return 'debounced';
+    if (ev.type !== 'run') return null;
     const key = this.approvedKey();
     const fresh = key !== this.approvedSeen && key.split(',').some((k) => k && !this.approvedSeen.split(',').includes(k));
     this.approvedSeen = key;
-    return fresh;
+    return fresh ? 'approved' : null;
   }
 
   // ---------- 其他 ----------
@@ -794,6 +1120,7 @@ export class Space extends EventEmitter {
     this.chat.shutdown();
     if (this.run) { clearTimeout(this.run.timer); for (const c of this.run.controllers.values()) c.abort(); }
     this.importController?.abort();
+    this.clearMemoryTimer();
     this.memoryController?.abort();
     for (const c of this.handoffControllers) c.abort();
   }
@@ -828,10 +1155,19 @@ export class Space extends EventEmitter {
   }
 
   emitEvent(ev) {
-    if (ev.type === 'message' && ev.message) this.numberMessages(ev.message);
-    else if (ev.type === 'snapshot') this.numberMessages();
+    if (ev.type === 'message' && ev.message) {
+      this.numberMessages(ev.message);
+      if (!ev.message.streaming) this.archiveMessage(ev.message);
+    } else if (ev.type === 'message_done' && ev.message) {
+      this.numberMessages(ev.message);
+      this.archiveMessage(ev.message);
+    } else if (ev.type === 'snapshot') {
+      this.numberMessages();
+      this.archiveSnapshot();
+    }
     if (this.deleted || this.closing) return;
     this.emit('event', ev);
+    if (ev.type === 'state' && ev.running) this.clearMemoryTimer({ resetPendingAt: false });
     if (this.pendingRoleSync && (ev.type === 'round_end' || (ev.type === 'run' && this.isTask && !this.run?.active))) {
       const { roleLibrary, lang } = this.pendingRoleSync;
       this.pendingRoleSync = null;
@@ -839,7 +1175,15 @@ export class Space extends EventEmitter {
     }
     if (ev.type === 'files_changed' && ev.changes?.length) syncBriefs(this.importHost, ev.changes); // 主题简报被改了
     if (ev.type === 'round_end' && !ev.failed && !ev.stopped) this.autoHandoff();
-    if (this.memoryTrigger(ev) && Space.memoryAuto) this.organizeMemory();
+    const trigger = this.memoryTrigger(ev);
+    if (trigger === 'approved') {
+      try {
+        const rec = recordApprovedResults(this.memory, this.run?.data.tasks || []);
+        if (rec.added.length) this.emitEvent({ type: 'memory_changed' });
+      } catch (e) { console.warn(tr('写入任务结果到记忆库失败：'), e.message); }
+    } else if (trigger === 'debounced' && this.memoryAutoEnabled) {
+      this.scheduleMemoryOrganize();
+    }
   }
 
   save() {
@@ -868,15 +1212,13 @@ export class Space extends EventEmitter {
       this.stop();
       this.importController?.abort();
       this.distillController?.abort();
+      this.clearMemoryTimer();
       this.memoryController?.abort();
       for (const c of this.handoffControllers) c.abort();
       this.run?.stopForRemoval();
       // 等发言、任务和导入的收尾写入结束，再删文件，避免后台把空间重新保存出来。
       while (this.pendingOperations.size) await Promise.allSettled([...this.pendingOperations]);
-      await removeSpaceFiles(this.data, this.dir, {
-        // 软件建的共享文件夹还被别的空间（比如从它转出去的任务空间）用着：先留着
-        keepFiles: this.data.workspace.type === 'managed' && !!this.hooks.folderInUse?.(this.workspacePath, this.id),
-      });
+      await removeSpaceFiles(this.data, this.dir, { inUse: p => this.hooks.folderInUse?.(p, this.id) });
       this.store.remove(this.id);
       this.deleted = true;
       this.run?.removeAllListeners();
@@ -906,19 +1248,34 @@ export class Space extends EventEmitter {
 
 /**
  * 删掉一个空间的数据：任务的副本和临时分支、空间目录（含软件建的共享文件夹）。
- * 用户自己选的文件夹和里面的文件不动。keepFiles：软件建的共享文件夹还有别的空间在用，先不删它。
+ * 只清理没有被其他空间用作工作区的目录。
  */
-export async function removeSpaceFiles(data, dir, { keepFiles = false } = {}) {
-  for (const r of data.runs || []) {
-    await cleanupRunFiles(r, path.join(dir, 'runs', r.id), { keepIntegration: false }).catch(() => {});
+export async function removeSpaceFiles(data, dir, { keepFiles = false, inUse = () => false } = {}) {
+  if (path.relative(spaceDirectory(path.dirname(dir), data.id), dir) !== '') throw new Error(tr('目录超出了空间的数据范围'));
+  const runs = directChild(dir, 'runs');
+  // Validate the entire record before the first removal or git cleanup.
+  const runDirs = (data.runs ?? []).map(r => {
+    assertSpaceId(r?.id);
+    const run = directChild(runs, r.id);
+    if (r.mode === 'git') {
+      const worktrees = [r.git?.intPath, ...r.tasks.map(task => task.git?.path)].filter(Boolean);
+      for (const worktree of worktrees) {
+        const expected = directChild(run, path.basename(worktree));
+        if (!path.isAbsolute(worktree) || path.relative(expected, worktree) !== '') throw new Error(tr('目录超出了空间的数据范围'));
+      }
+    }
+    return run;
+  });
+  for (const [i, run] of runDirs.entries()) {
+    if (!inUse(run)) await cleanupRunFiles(data.runs[i], run, { keepIntegration: false });
   }
-  if (!keepFiles) {
+  if (!keepFiles && !inUse(dir)) {
     await fs.promises.rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     return;
   }
-  for (const name of await fs.promises.readdir(dir).catch(() => [])) {
-    if (name === 'files') continue;
-    await fs.promises.rm(path.join(dir, name), { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  for (const name of ['history.json', 'history.json.tmp', 'attachments', 'memory', 'runs']) {
+    const child = path.join(dir, name);
+    if (!inUse(child)) await fs.promises.rm(child, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 }
 

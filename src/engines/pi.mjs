@@ -2,9 +2,10 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { t as tr } from '../i18n.mjs';
-import { AbortedError, brief } from './proc.mjs';
+import { AbortedError, brief, IDLE_MS, stalledError } from './proc.mjs';
+import { imageError } from './image-error.mjs';
 import { contextOf, usageOf } from './usage-fields.mjs';
-import { activityOf, findShell, toolsFor } from './pi/tools.mjs';
+import { activityOf, canRunUnconfined, findShell, toolsFor } from './pi/tools.mjs';
 
 export { findShell, insideDir, toolsFor } from './pi/tools.mjs';
 
@@ -13,12 +14,12 @@ process.env.PI_SKIP_VERSION_CHECK = '1';
 process.env.PI_TELEMETRY = '0';
 
 export const meta = {
-  skills: true, mcp: true,
+  skills: true, mcp: true, readOnlyDirs: true, noTools: true,
   id: 'pi', label: 'Pi', kind: 'embedded', vendor: 'pi.dev', defaultName: 'Pi', color: '#0f766e',
   images: true, approvals: true, resume: true, sources: true, sourceRequired: true,
   get models() { return [['', tr('接口默认模型')]]; }, freeModel: true,
   efforts: ['', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
-  get capabilities() { return tr('读写共享文件、在共享文件夹内运行命令'); },
+  get capabilities() { return tr('读写共享文件。Pi 命令以当前用户权限运行，可访问共享文件夹以外的位置。「可运行命令」档每条命令和可写 MCP 调用均需逐次确认；无审批通道时禁用命令和可写 MCP。'); },
   usage: { tokens: true, context: false, quota: false },
 };
 
@@ -42,14 +43,9 @@ export function usageFrom(messages) {
   return usageOf({ ...totals, contextUsed: last && contextOf(last) });
 }
 
-function imageError(message) {
-  if (/\b(?:401|403|408|429|5\d\d)\b|authenticat|unauthori|forbidden|api.?key|network|fetch failed|timeout|timed out|ECONN|ENOTFOUND/i.test(message)) return false;
-  return /\b4\d\d\b|image|vision|multimodal|图片/i.test(message);
-}
-
 export async function runTurn({
-  system, prompt, images = [], onNoImages, model, effort, cwd, access = 'edit', readOnlyDirs = [], signal,
-  onDelta, onActivity, onRaw, onApproval, sessionId, conn, agentDir, skills = [], mcp = {}, provider,
+  system, prompt, images = [], onNoImages, model, effort, cwd, access = 'edit', readOnlyDirs = [], noTools = false, signal,
+  onDelta, onActivity, onRaw, onApproval, sessionId, conn, agentDir, skills = [], mcp = {}, readonlyMcp = [], provider, idleMs = IDLE_MS,
 }) {
   if (!agentDir) throw new Error(tr('缺少 Pi 数据目录'));
   if (signal?.aborted) throw new AbortedError();
@@ -57,22 +53,63 @@ export async function runTurn({
   if (!provider && !(model || conn.model)) throw new Error(tr('这个接口还没有指定模型（在成员设置或接口设置里填写）'));
   agentDir = path.resolve(agentDir);
   process.env.PI_CODING_AGENT_DIR = agentDir;
-  const shell = findShell();
-  const tools = toolsFor(access, shell);
-  const { createSession } = await import('./pi/sdk.mjs');
-  let session;
-  const abort = () => { void session.abort(); };
+  const shell = noTools ? null : findShell();
+  const policy = { readOnlyDirs: noTools ? [] : readOnlyDirs, onApproval: noTools ? undefined : onApproval };
+  const tools = noTools ? [] : toolsFor(access, shell, policy);
+  if (noTools) { skills = []; mcp = {}; readOnlyDirs = []; }
+  else if (!canRunUnconfined(access, policy)) mcp = Object.fromEntries(Object.entries(mcp).filter(([id]) => readonlyMcp.includes(id)));
   const name = conn?.name || 'Pi';
-  try {
+  const controller = new AbortController();
+  const stopped = Promise.withResolvers();
+  let session;
+  let timer;
+  let holds = 0;
+  let finished = false;
+  let stalledErr;
+  const abort = async () => {
+    try { await session?.abort(); } catch { /* 即使 SDK 无法中止，也要结束这轮等待 */ }
+  };
+  const stop = () => {
+    controller.abort();
+    void abort();
+    stopped.reject(stalledErr || new AbortedError());
+  };
+  const touch = () => {
+    clearTimeout(timer);
+    if (idleMs > 0 && !holds && !finished && !controller.signal.aborted) timer = setTimeout(() => {
+      stalledErr = stalledError(name, idleMs);
+      stop();
+    }, idleMs);
+  };
+  const checkStopped = () => {
+    if (stalledErr) throw stalledErr;
+    if (signal?.aborted) throw new AbortedError();
+  };
+  const approval = onApproval && (async (req) => {
+    holds++;
+    clearTimeout(timer);
+    try { return await onApproval(req); }
+    finally { holds--; touch(); }
+  });
+
+  async function execute() {
+    const { createSession } = await import('./pi/sdk.mjs');
+    checkStopped();
     ({ session } = await createSession({
-      cwd, agentDir, sessionId, model, conn, effort, provider, access, readOnlyDirs, tools, shell, system, skills, mcp, signal, onApproval,
+      cwd, agentDir, sessionId, model, conn, effort, provider, access, readOnlyDirs, tools, shell, system, skills, mcp, readonlyMcp,
+      signal: controller.signal, onApproval: approval,
     }));
-    signal?.addEventListener('abort', abort);
+    // 创建期间可能已经超时并跑完了外层 finally；迟到的会话还没有绑定扩展。
+    if (finished) { session.dispose(); return; }
+    checkStopped();
     await session.bindExtensions({});
+    checkStopped();
     let text = '';
     const messages = [];
     const emit = (s) => { text += s; onDelta?.(s); };
     session.subscribe((e) => {
+      if (finished || controller.signal.aborted) return;
+      touch();
       onRaw?.(JSON.stringify({ type: e.type, tool: e.toolName, role: e.message?.role, update: e.assistantMessageEvent?.type }));
       if (e.type === 'message_start' && e.message.role === 'assistant' && text && !text.endsWith('\n')) emit('\n\n');
       if (e.type === 'message_update' && e.assistantMessageEvent.type === 'text_delta') emit(e.assistantMessageEvent.delta);
@@ -87,16 +124,17 @@ export async function runTurn({
     })));
     let continueAfterTool = false;
     for (;;) {
-      if (signal?.aborted) throw new AbortedError();
+      checkStopped();
       try {
         if (continueAfterTool) await session.agent.continue();
         else await session.prompt(prompt, { images: attachments, expandPromptTemplates: false,
-          preflightResult: () => { if (signal?.aborted) abort(); } });
+          preflightResult: () => { if (controller.signal.aborted) void abort(); } });
+        checkStopped(); // SDK 中止时也可能带着部分文字正常返回
         const last = messages.at(-1);
         if (last?.stopReason === 'error') throw new Error(last.errorMessage || tr('请求失败'));
         break;
       } catch (err) {
-        if (signal?.aborted) throw new AbortedError();
+        checkStopped();
         if (!attachments.length || !imageError(err.message)) {
           throw new Error(tr('{0} 请求失败：{1}', [name, brief(err.message)]), { cause: err });
         }
@@ -111,17 +149,28 @@ export async function runTurn({
         attachments = [];
       }
     }
-    if (signal?.aborted) throw new AbortedError();
     if (!text.trim()) throw new Error(tr('{0} 没有返回内容', [name]));
     return { text, sessionId: session.sessionId, usage: usageFrom(messages), model: session.model.id };
-  } catch (err) {
-    if (signal?.aborted) throw new AbortedError();
-    throw err;
+  }
+
+  signal?.addEventListener('abort', stop, { once: true });
+  touch();
+  try {
+    return await Promise.race([stopped.promise, execute()]);
   } finally {
-    signal?.removeEventListener('abort', abort);
+    finished = true;
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', stop);
     if (session) {
-      try { await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); }
-      finally { session.dispose(); }
+      let shutdownTimer;
+      try {
+        await Promise.race([session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }),
+          new Promise(resolve => { shutdownTimer = setTimeout(resolve, 3000); })]);
+      } finally {
+        clearTimeout(shutdownTimer);
+        session.dispose();
+        checkStopped();
+      }
     }
   }
 }

@@ -2,8 +2,18 @@
 import { t as tr } from './i18n.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
+import { directChild } from './paths.mjs';
 
 const ID_RE = /^[a-z0-9-]{8,64}$/i;
+export function assertSpaceId(id) {
+  if (typeof id !== 'string' || !ID_RE.test(id)) throw new Error(tr('非法的讨论 id'));
+}
+
+export function spaceDirectory(spacesDir, id) {
+  assertSpaceId(id);
+  directChild(path.dirname(spacesDir), path.basename(spacesDir));
+  return directChild(spacesDir, id);
+}
 
 export class Store {
   constructor(dir) {
@@ -12,7 +22,7 @@ export class Store {
   }
 
   file(id) {
-    if (!ID_RE.test(id)) throw new Error(tr('非法的讨论 id'));
+    assertSpaceId(id);
     return path.join(this.dir, `${id}.json`);
   }
 
@@ -21,7 +31,10 @@ export class Store {
     for (const name of fs.readdirSync(this.dir)) {
       if (!name.endsWith('.json')) continue;
       try {
-        out.push(JSON.parse(fs.readFileSync(path.join(this.dir, name), 'utf8')));
+        const data = JSON.parse(fs.readFileSync(path.join(this.dir, name), 'utf8'));
+        assertSpaceId(data?.id);
+        if (name !== `${data.id}.json`) throw new Error(tr('非法的讨论 id'));
+        out.push(data);
       } catch (e) {
         console.warn(tr('跳过无法读取的记录 {0}：{1}', [name, e.message]));
       }

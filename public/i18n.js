@@ -144,6 +144,7 @@ export const en = {
   '可以阅读和修改文件': 'Read and edit files',
   '可运行命令': 'Run commands',
   '还能运行命令，每条命令先问你': 'Run commands with your approval',
+  '支持无人值守命令的引擎可在子任务中直接运行命令。Pi 子任务可用文件工具和只读 MCP。': 'Engines with unattended command support can run commands during subtasks. Pi subtasks can use file tools and read-only MCP servers.',
   '全部权限': 'Full access',
   '不受限制，可以动电脑上任何地方': 'Unrestricted access to your computer',
   '请求失败（{0}）': 'Request failed ({0})',
@@ -160,6 +161,7 @@ export const en = {
   'Ollama本地': 'Local Ollama',
   '新接口': 'New provider',
   '已保存（{0}），留空表示不变': 'Saved ({0}), leave blank to keep',
+  '地址换了，请重新填写密钥': 'The address changed. Enter the API key again.',
   '填写 API key（本地模型可留空）': 'API key (optional for local models)',
   '删除': 'Delete',
   '名字': 'Name',
@@ -176,6 +178,7 @@ export const en = {
   'OpenAI 兼容接口': 'OpenAI-compatible providers',
   '＋ 自定义': '＋ Custom',
   '重新检测': 'Check again',
+  '正在检测 AI 连接…': 'Checking AI connections…',
   '保存': 'Save',
   '自定义接口': 'Custom provider',
   '保存后清除': 'Clears on save',
@@ -218,6 +221,7 @@ export const en = {
   '删除这个空间': 'Delete this space',
   '（无）': '(none)',
   '软件建的共享文件夹及里面的文件也会一起删除。': 'The app-created shared folder and its files will also be deleted.',
+  '共享文件夹还被「{0}」使用，文件会保留。': 'This folder is still shared with {0}. Its files will be kept.',
   '你的共享文件夹及里面的文件会保留。': 'Your shared folder and its files will be kept.',
   '删除「{0}」？': 'Delete “{0}”?',
   '聊天记录、导入的对话和任务记录都会删除，无法恢复。正在进行的讨论和任务会先停止。': 'Chat history, imported conversations and task history will be permanently deleted. Active discussions and tasks will stop first.',
@@ -731,6 +735,31 @@ export const en = {
   '不自动交接': 'Disable automatic handoffs',
   '{0}%（默认）': '{0}% (default)',
   '当前服务器不支持自动交接设置': 'This server does not support automatic handoff settings.',
+  '最近一次构造的上下文估算': 'Estimated context from latest build',
+  '试过走不通': 'Tried and failed',
+  '试过走不通·{0}': 'Tried and failed · {0}',
+  '采纳': 'Accept',
+  '驳回': 'Reject',
+  '回答': 'Answer',
+  '修改': 'Edit',
+  '作废': 'Retract',
+  '确认作废': 'Confirm retract',
+  '撤回不会自动恢复旧条目，如需恢复请另行确认。': 'Retracting will not automatically restore superseded entries. Confirm again if you want to restore an earlier decision.',
+  '写下这条问题的结论或答案…': 'Write the decision or answer to this question…',
+  '原因（可选）': 'Reason (optional)',
+  '记为决定': 'Record as decision',
+  '记为项目事实': 'Record as project fact',
+  '提交回答': 'Submit answer',
+  '保存修改': 'Save changes',
+  '已被 #{0} 撤回': 'Retracted by #{0}',
+  '已撤回': 'Retracted',
+  '全局整理模型': 'Global organizer',
+  '立即整理': 'Organize now',
+  '已开始整理记忆库': 'Memory organization started',
+  '已更新记忆库': 'Memory updated',
+  '默认（使用空间整理成员）': 'Default (space organizer member)',
+  '{0}（已失效）': '{0} (unavailable)',
+  '全局记忆整理模型（推荐便宜 API）': 'Global memory organizer (cheap API recommended)',
 };
 
 export const zh = Object.fromEntries(Object.keys(en).map((key) => [key, key]));
@@ -763,7 +792,10 @@ export function localizeActivity(label) {
 export async function initLanguage() {
   let app = {};
   try {
-    const res = await fetch('/api/app', { headers: { 'X-Agenda-Languages': (navigator.languages || []).join(',') } });
+    const headers = { 'X-Agenda-Languages': (navigator.languages || []).join(',') };
+    const token = globalThis.window?.desktop?.apiToken;
+    if (token) headers['X-Agenda-Token'] = token;
+    const res = await fetch('/api/app', { headers });
     if (!res.ok) throw new Error(res.status);
     app = await res.json();
   } catch { /* Use browser preferences if the server is unavailable. */ }

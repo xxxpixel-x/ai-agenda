@@ -2,6 +2,7 @@ import path from 'node:path';
 import * as pi from '@earendil-works/pi-coding-agent';
 import { t as tr } from '../../i18n.mjs';
 import { permissionExtension } from './tools.mjs';
+import { supportsModelImages } from '../image-error.mjs';
 
 // 1.5.2 的公开入口没有导出工具的路径解析、会话目录和 MCP 凭据存储。
 // 沿用 SDK 自己的实现，保证权限检查与实际执行解析到同一文件。
@@ -20,7 +21,7 @@ async function turnModel(runtime, { provider, conn, model, effort }) {
   runtime.registerProvider(source, {
     baseUrl: conn.baseUrl.trim(), api: 'openai-completions',
     models: [{
-      id, name: id, input: conn.images === false ? ['text'] : ['text', 'image'], reasoning: !!effort && effort !== 'off',
+      id, name: id, input: supportsModelImages(conn, id) ? ['text', 'image'] : ['text'], reasoning: !!effort && effort !== 'off',
       // registerProvider 要求完整的模型描述，沿用 pi 自定义接口的默认值。
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: conn.contextWindow || 128000, maxTokens: Math.min(16384, Math.floor((conn.contextWindow || 128000) / 2)),
     }],
@@ -52,7 +53,7 @@ async function mcpExtension(mcp, agentDir) {
 }
 
 export async function createSession(options) {
-  const { cwd, agentDir, sessionId, system, shell, skills, tools, access, mcp, signal } = options;
+  const { cwd, agentDir, sessionId, system, shell, skills, tools, mcp, signal } = options;
   const sessionManager = sessionsFor(cwd, agentDir, sessionId);
   const modelRuntime = await pi.ModelRuntime.create({
     authPath: path.join(agentDir, 'auth.json'), modelsPath: null, refreshOnCreate: false, allowModelNetwork: false, signal,
@@ -62,10 +63,10 @@ export async function createSession(options) {
   const settingsManager = pi.SettingsManager.inMemory({
     shellPath: shell.shellPath, cacheWarming: 'off', enableInstallTelemetry: false,
     retry: { enabled: true, maxRetries: 2 }, // pi 只重试限流、5xx、网络这类可以重试的错误
-    images: { blockImages: !options.provider && options.conn.images === false },
+    images: { blockImages: !options.provider && !model.input.includes('image') },
   });
   const extensionFactories = [permissionExtension({ ...options, paths })];
-  const useMcp = ['run', 'full'].includes(access) && Object.keys(mcp).length > 0;
+  const useMcp = Object.keys(mcp || {}).length > 0;
   if (useMcp) extensionFactories.push(await mcpExtension(mcp, agentDir));
   const resourceLoader = new pi.DefaultResourceLoader({
     cwd, agentDir, settingsManager, extensionFactories, noExtensions: true, noSkills: true,

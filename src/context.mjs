@@ -62,50 +62,73 @@ export async function withOverflowRetry(host, member, sink, build, send, signal,
   }
 }
 
-const emptyMemory = () => ({ prefix: '', extras: '', entryIds: [] });
+const emptyMemory = () => ({ prefix: '', l1: '', l2: '', extras: '', entryIds: [], layerOneIds: [], activeLayerOneIds: [], mandatoryIds: [], truncatedMandatory: false });
 
-/** 原文和条目详情只给没有读文件工具的成员；目录里的编号不等于已经读了条目。 */
+/** 原文和条目详情给无法直读 memoryDir 的成员；优先本轮用户/对话明确点名，不把自动渲染出的引用再次当查询。 */
 function originals(memory, messages, references, hits, included) {
-  const ids = new Set(), seqs = new Set();
-  for (const match of references.matchAll(/(?:消息|message)\s*#?(\d+)/gi)) seqs.add(+match[1]);
-  for (const match of references.matchAll(/#(\d+)\b/g)) if (!included.includes(+match[1])) ids.add(+match[1]);
-  for (const entry of hits) for (const seq of entry.source.messages || []) seqs.add(seq);
+  const explicitIds = new Set(), seqs = new Set();
+  const refText = String(references || '');
+  // 分开解析「消息 N」与条目「#N」，先提取明确点名的消息编号再提取条目编号（避免「消息 #N」被当成条目 #N）。
+  const withoutMsgRefs = refText.replace(/(?:消息|message)\s*#?(\d+)/gi, (_, n) => { seqs.add(+n); return ' '; });
+  for (const match of withoutMsgRefs.matchAll(/#(\d+)\b/g)) explicitIds.add(+match[1]);
+  for (const entry of hits) for (const seq of entry.source?.messages || []) seqs.add(seq);
   let remaining = 4000;
   const parts = [], entryIds = [];
-  for (const id of [...ids].slice(0, 5)) {
+  for (const id of [...explicitIds].slice(0, 5)) {
+    const entry = memory.get(id);
+    if (!entry) continue; // 控制行或不存在的编号安全跳过
     const detail = memory.render({ layer: 3, ids: [id] });
-    if (!detail || detail.length > remaining) continue;
-    parts.push(detail);
-    entryIds.push(id);
-    remaining -= detail.length;
-    for (const seq of memory.get(id)?.source.messages || []) seqs.add(seq);
+    if (detail && detail.length <= remaining) {
+      parts.push(detail);
+      entryIds.push(id);
+      remaining -= detail.length;
+    }
+    for (const seq of entry.source?.messages || []) seqs.add(seq);
   }
   for (const seq of [...seqs].slice(0, 5)) {
     if (remaining < 30) break;
     const text = memory.readMessage(seq) || messages.find((m) => m.seq === seq)?.text;
     if (!text) continue;
-    const block = (tr('消息 {0}', [seq]) + '\n' + text).slice(0, remaining);
+    const raw = tr('消息 {0}', [seq]) + '\n' + text;
+    const block = raw.length > remaining ? raw.slice(0, Math.max(0, remaining - 1)) + '…' : raw;
     parts.push(block);
     remaining -= block.length;
   }
   return { text: join(parts), entryIds };
 }
 
-export function memoryForTurn({ memory, memoryDir, task, query = '', references = query, messages = [], sinceId, api }, { extras = true, budget } = {}) {
+export function memoryForTurn({ memory, memoryDir, task, query = '', references = query, messages = [], sinceId, api, canReadMemoryDir }, { extras = true, budget, mandatoryOnly = false } = {}) {
   if (!memory) return emptyMemory();
-  const one = memory.renderWithIds({ layer: 1, task, sinceId, query, budget });
-  const directory = extras && sinceId == null ? memory.render({ layer: 2 }) : '';
-  const hits = extras && !task ? memory.search(query, { limit: 6 }).map((r) => r.entry).filter((e) => !one.entryIds.includes(e.id)) : [];
+  const canReadDir = canReadMemoryDir === true;
+  const one = memory.renderWithIds({ layer: 1, task, sinceId, query, budget, mandatoryOnly });
+  const directory = extras && sinceId == null && !mandatoryOnly ? memory.render({ layer: 2 }) : '';
+  // 先排除已在第 1 层的条目再取前 6 条。
+  const hits = extras && !task && !mandatoryOnly
+    ? memory.search(query, { limit: 20 }).map((r) => r.entry).filter((e) => !one.entryIds.includes(e.id)).slice(0, 6)
+    : [];
   const hitIds = hits.map((e) => e.id);
   const detail = hitIds.length ? memory.render({ layer: 3, ids: hitIds }) : '';
   const included = [...one.entryIds, ...hitIds];
-  const source = extras && api ? originals(memory, messages, references + '\n' + detail, hits, included) : { text: '', entryIds: [] };
-  const hint = !api && memoryDir && (one.text || directory || detail || (extras && sinceId == null && memory.entries().length))
+  const source = extras && !canReadDir && !mandatoryOnly ? originals(memory, messages, references, hits, included) : { text: '', entryIds: [] };
+  const hint = canReadDir && memoryDir && (one.text || directory || detail || (extras && sinceId == null && memory.entries().length))
     ? tr('只读记忆库：{0}（memory.md 和 messages/<seq>.md）', [memoryDir]) : '';
-  const prefix = join([one.text, directory, hint]);
+  const l1Body = join([one.text, hint]);
+  const l1 = l1Body ? escapeTags(tr('# 空间记忆库') + '\n' + l1Body) : '';
+  const l2 = directory ? escapeTags(tr('## 记忆库目录') + '\n' + directory) : '';
+  const prefixBody = join([one.text, directory, hint]);
+  const prefix = prefixBody ? escapeTags(tr('# 空间记忆库') + '\n' + prefixBody) : '';
   const extraText = join([detail, source.text]);
-  return { prefix: prefix ? escapeTags(tr('# 空间记忆库') + '\n' + prefix) : '',
-    extras: escapeTags(api && extraText ? tr('# 相关原文') + '\n' + extraText : extraText), layerOneIds: one.entryIds, entryIds: uniqueIds([...included, ...source.entryIds]) };
+  return {
+    prefix,
+    l1,
+    l2,
+    extras: escapeTags(!canReadDir && extraText ? tr('# 相关原文') + '\n' + extraText : extraText),
+    layerOneIds: one.entryIds,
+    activeLayerOneIds: one.activeIds ?? one.entryIds,
+    mandatoryIds: one.mandatoryIds ?? [],
+    truncatedMandatory: !!one.truncatedMandatory,
+    entryIds: uniqueIds([...included, ...source.entryIds]),
+  };
 }
 
 // 只摘录可回查的资料；系统规则和任务指令必须原样送达。
@@ -126,7 +149,7 @@ function excerpt(text, tokens) {
   return sample(lo);
 }
 
-/** 先压较早的导入，再按档缩历史、按相关度缩记忆，最后缩文件。compose 负责各类提示词的布局。 */
+/** 缩减顺序：旧导入降摘要 → 历史按档往后裁 → 去 L2/extras → 缩 API 文件 → 缩非必守记忆 → 摘录导入/提要/交接/超长单条；必守约束与撤回不可静默清空。 */
 export function assembleContext({ system, tokenBudget, imports = [], lines = [], start = 0, historyChars = Infinity,
   recap = '', handoff = '', files, memory = emptyMemory, compose, lastMemoryId }) {
   let cut = start;
@@ -140,11 +163,13 @@ export function assembleContext({ system, tokenBudget, imports = [], lines = [],
     omitted: cut, recap: cut ? recapText : '', handoff: handoffText, files: fileText });
   const systemTokens = estimateTokens(system);
   const size = () => systemTokens + estimateTokens(compose(sections()));
+
+  // 1. 较早导入降为摘要
   for (let i = 0; i < imports.length && size() > tokenBudget; i++) {
     if (imports[i].summaryText.length < blocks[i].length) blocks[i] = imports[i].summaryText;
   }
+  // 2. 聊天历史按 10 条一档二分往后裁
   if (cut < lines.length - 1 && (size() > tokenBudget || history().length > historyChars)) {
-    // 二分找第一个装得下的十条档位，避免长聊天逐档重复估算。
     let lo = 1, hi = Math.ceil((lines.length - 1 - start) / HISTORY_STEP);
     while (lo < hi) {
       const mid = Math.floor((lo + hi) / 2);
@@ -154,17 +179,11 @@ export function assembleContext({ system, tokenBudget, imports = [], lines = [],
     }
     cut = Math.min(start + lo * HISTORY_STEP, lines.length - 1);
   }
+  // 3. 去掉 memory.l2 / extras
   if (size() > tokenBudget) {
     mem = memory({ extras: false });
-    if (size() > tokenBudget && mem.prefix) {
-      const chars = mem.prefix.length;
-      mem = emptyMemory();
-      const available = Math.max(0, tokenBudget - size());
-      mem = memory({ extras: false, budget: Math.min(chars, available * 4) });
-      if (size() > tokenBudget) mem = memory({ extras: false, budget: available });
-      if (size() > tokenBudget) mem = emptyMemory();
-    }
   }
+  // 4. 缩 API 附带文件（移到必守约束之前）
   if (fileText && size() > tokenBudget) {
     fileText = '';
     let chars = Math.max(0, tokenBudget - size()) * 4;
@@ -174,8 +193,23 @@ export function assembleContext({ system, tokenBudget, imports = [], lines = [],
       fileText = '';
       chars = Math.floor(chars / 2);
     } while (chars > 0);
+    if (!fileText) {
+      const sensitive = files.filter((f) => f.sensitive === true);
+      if (sensitive.length) fileText = escapeTags(filesForPrompt(sensitive));
+    }
   }
-  // 极小窗口也可能装不下一份摘要、用户编辑的提要或单条长消息。
+  // 5. 缩减非必守记忆（必守硬约束与增量撤回禁止静默置空）
+  if (size() > tokenBudget && (mem.l1 || mem.prefix)) {
+    const chars = (mem.l1 || mem.prefix).length;
+    const mandatoryMem = memory({ extras: false, mandatoryOnly: true });
+    const hasMandatory = (mandatoryMem.mandatoryIds?.length || 0) > 0;
+    mem = emptyMemory();
+    const available = Math.max(0, tokenBudget - size());
+    mem = memory({ extras: false, budget: Math.min(chars, available * 4) });
+    if (size() > tokenBudget) mem = memory({ extras: false, budget: available });
+    if (size() > tokenBudget) mem = hasMandatory ? mandatoryMem : emptyMemory();
+  }
+  // 6. 极小窗口下头尾摘录导入 / 提要 / 交接 / 超长单条消息
   for (let i = 0; i < blocks.length && size() > tokenBudget; i++) {
     const original = blocks[i];
     blocks[i] = '';
@@ -199,13 +233,16 @@ export function assembleContext({ system, tokenBudget, imports = [], lines = [],
     }
   }
   const s = sections();
-  const firstUnsent = initial.layerOneIds?.find((id) => !mem.entryIds.includes(id));
+  // 只按有效/必送 ID 计算未送达游标，防止裁剪掉已失效旧行导致 lastMemoryId 倒退。
+  const trackIds = initial.activeLayerOneIds || initial.layerOneIds;
+  const firstUnsent = trackIds?.find((id) => !mem.entryIds.includes(id));
   if (firstUnsent != null) lastMemoryId = firstUnsent - 1;
   const omitted = lines.slice(0, cut);
   let omittedSeq = 0;
   for (const line of omitted) omittedSeq = Math.max(omittedSeq, line.seq || 0);
+  const memCombined = join([mem.l1 || mem.prefix, mem.l1 ? mem.l2 : '', mem.extras]);
   return { system, prompt: compose(s), breakdown: {
-    system: measure(system), memory: { ...measure(join([mem.prefix, mem.extras])), entryIds: mem.entryIds },
+    system: measure(system), memory: { ...measure(memCombined), entryIds: mem.entryIds },
     recap: measure(join([s.recap, s.handoff])), imports: measure(s.imports), recent: { count: lines.length - cut, ...measure(s.recent) },
     omitted: { count: cut, ...measure(omitted.map((l) => l.text).join('\n\n')) }, files: measure(fileText),
   }, meta: { omittedSeq, compacted: cut > 0, usedMemoryIds: mem.entryIds, lastMemoryId } };
@@ -213,4 +250,3 @@ export function assembleContext({ system, tokenBudget, imports = [], lines = [],
 
 export const handoffSystem = () => tr('你正在为自己的下一个会话写交接说明。');
 export const handoffPrompt = (recent) => tr('只简短记录新会话从代码、记忆库和最近几轮看不到的内容：试过但走不通的做法及原因、未完成的工作、下一步要回查的消息或任务执行编号。不要重复记忆库。没有就回复 [无]。\n{0}', [escapeTags(recent)]);
-

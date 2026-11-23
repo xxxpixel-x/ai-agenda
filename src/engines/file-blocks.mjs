@@ -22,7 +22,12 @@ export function filesForPrompt(snapshot, { maxTotal = 60000, maxEach = 20000 } =
   let used = 0;
   const parts = [tr('## 共享文件夹里的文件（最新内容）')];
   const skipped = [];
+  const sensitive = [];
   for (const f of snapshot) {
+    if (f.sensitive === true) {
+      sensitive.push(f.path);
+      continue;
+    }
     if (f.content == null || f.content.length > maxEach || used + f.content.length > maxTotal) {
       skipped.push(f.path);
       continue;
@@ -30,6 +35,7 @@ export function filesForPrompt(snapshot, { maxTotal = 60000, maxEach = 20000 } =
     used += f.content.length;
     parts.push(`### ${f.path}\n\`\`\`\n${f.content}\n\`\`\``);
   }
-  if (skipped.length) parts.push(tr('（以下文件太大或太多，没有附上内容：{0}{1}）', [skipped.slice(0, 50).join('、'), skipped.length > 50 ? tr(' 等') : '']));
+  if (skipped.length) parts.push(tr('（以下文件太大或太多，没有附上内容：{0}{1}）', [skipped.slice(0, 50).join(tr('、')), skipped.length > 50 ? tr(' 等') : '']));
+  if (sensitive.length) parts.push(tr('（以下文件可能含密钥，没有附上内容：{0}{1}）', [sensitive.slice(0, 50).join(tr('、')), sensitive.length > 50 ? tr(' 等') : '']));
   return parts.join('\n\n');
 }

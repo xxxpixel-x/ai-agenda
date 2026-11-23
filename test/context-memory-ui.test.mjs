@@ -10,7 +10,7 @@ import { AUTO_HANDOFF_PRESETS, MEMORY_FILTERS, MEMORY_FILTER_LABELS, MEMORY_TYPE
   normalizeContextResponse, statelessContextTip } from '../public/js/context-memory-format.js';
 import { startServer } from '../src/app-server.mjs';
 import { openMemory } from '../src/memory/store.mjs';
-import { tempDir } from './helpers.mjs';
+import { apiRequest, tempDir } from './helpers.mjs';
 
 const asset = (file) => readFile(new URL('../public/' + file, import.meta.url), 'utf8');
 const modules = ['context-panel', 'memory-view', 'recap', 'context-memory-format'];
@@ -414,19 +414,17 @@ test('live server serves the new modules and styles and exposes searchable, stat
   const dataDir = tempDir(t);
   const server = await startServer({ port: 0, dataDir, mock: true });
   try {
-    const url = 'http://127.0.0.1:' + server.port;
     for (const file of [...modules.map((m) => 'js/' + m + '.js'), ...styles.map((m) => 'css/' + m + '.css')]) {
-      const res = await fetch(url + '/' + file);
+      const res = await fetch(server.url + '/' + file);
       assert.equal(res.status, 200, file);
       assert.match(res.headers.get('content-type'), file.endsWith('.js') ? /javascript/ : /text\/css/);
       assert.equal(await res.text(), await asset(file));
     }
-    const created = await fetch(url + '/api/spaces', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: 'Memory contract', members: [{ engine: 'codex' }], access: 'read' }) });
+    const created = await apiRequest(server, '/api/spaces', 'POST', { title: 'Memory contract', members: [{ engine: 'codex' }], access: 'read' });
     assert.equal(created.status, 201);
     const space = await created.json();
     const read = async () => {
-      const res = await fetch(url + '/api/spaces/' + space.id + '/memory');
+      const res = await apiRequest(server, '/api/spaces/' + space.id + '/memory');
       assert.equal(res.status, 200);
       return res.json();
     };

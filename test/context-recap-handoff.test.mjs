@@ -3,7 +3,7 @@ import path from 'node:path';
 import { createSettings } from '../src/settings.mjs';
 import { startServer } from '../src/app-server.mjs';
 import { runTurn as demo } from '../src/engines/mock.mjs';
-import { isHandoffCall, HANDOFF_IDLE, isMemoryCall, MEMORY_IDLE, makeSpace, tempDir, until, settleSpace, testInChinese as test } from './helpers.mjs';
+import { apiRequest, isHandoffCall, HANDOFF_IDLE, isMemoryCall, MEMORY_IDLE, makeSpace, tempDir, until, settleSpace, testInChinese as test } from './helpers.mjs';
 
 const alice = { id: 'member_a', engine: 'claude-code', name: 'Alice' };
 const bob = { id: 'member-b', engine: 'codex', name: 'Bob' };
@@ -43,9 +43,10 @@ test('rollover compacts once and combines memory with a numbered recap; a concur
   space.save();
   space.userMessage('continue');
   await started.promise;
-  assert.equal(compact.mock.callCount(), 1);
+  // 解耦 recapTargetSeq 与 compact：无足够可清理 L1 失效/撤回条目时不触发 compact
+  assert.equal(compact.mock.callCount(), 0);
   assert.equal(space.data.recapTargetSeq, 10);
-  assert.equal(space.data.lastCompactedSeq, 10);
+  assert.equal(space.data.lastCompactedSeq, 0);
   assert.match(organizer[0].prompt, /## 移出聊天记录的消息[\s\S]*消息 10/);
   assert.match(organizer[0].prompt, /<消息 1 /);
   const edit = space.updateRecap('Keep this edit', 0);
@@ -55,6 +56,15 @@ test('rollover compacts once and combines memory with a numbered recap; a concur
   await idle(space);
   assert.ok(space.data.organizeLogs[0].note);
   assert.ok(space.data.recap.text.startsWith(edit.text));
+  // 写入 ≥3 条已失效 L1 条目后再触发挪档，此时应执行 compact
+  const [d1, d2, d3] = space.memory.append([
+    { type: 'decision', origin: 'user', text: '旧规则 1', reason: '旧', source: { messages: [1] } },
+    { type: 'decision', origin: 'user', text: '旧规则 2', reason: '旧', source: { messages: [1] } },
+    { type: 'decision', origin: 'user', text: '旧规则 3', reason: '旧', source: { messages: [1] } },
+  ]);
+  space.memory.retract(d1.id, { seqAt: 1 });
+  space.memory.retract(d2.id, { seqAt: 1 });
+  space.memory.retract(d3.id, { seqAt: 1 });
   space.data.messages.push(...Array.from({ length: 10 }, () => ({ kind: 'user', text: '新'.repeat(3000) })));
   space.save();
   space.userMessage('continue again');
@@ -64,7 +74,7 @@ test('rollover compacts once and combines memory with a numbered recap; a concur
   assert.match(recap.text, /消息 20/);
   assert.equal(recap.uptoSeq, space.data.recapTargetSeq);
   assert.ok(recap.editedByUser && recap.version > edit.version && recap.updatedAt);
-  assert.ok(compact.mock.callCount() >= 2);
+  assert.equal(compact.mock.callCount(), 1);
   const [saved] = space.store.loadAll();
   assert.deepEqual(saved.recap, recap);
   assert.ok(saved.organizeLogs.some((r) => r.memberId === bob.id && r.usage.input > 0 && r.recapUptoSeq === recap.uptoSeq));
@@ -107,6 +117,8 @@ test('auto-handoff uses old session, files failed approaches, then hands three r
   assert.equal(space.data.messages.length, 10);
   const rejected = space.memory.active().find((e) => e.type === 'rejected');
   assert.match(rejected.text, /索引方案失败/);
+  assert.equal(rejected.origin, 'attempt');
+  assert.deepEqual(rejected.attempt, { memberId: alice.id, engine: alice.engine });
   assert.deepEqual(rejected.source.messages, [10]);
   usage = {};
   space.userMessage('第6题');
@@ -159,7 +171,7 @@ test('context, recap, settings and manual handoff HTTP responses have the exact 
   const server = await startServer({ port: 0, mock: true, dataDir: tempDir(t) });
   t.after(() => server.close());
   const call = async (url, method = 'GET', body) => {
-    const r = await fetch('http://127.0.0.1:' + server.port + url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const r = await apiRequest(server, url, method, body);
     return { status: r.status, data: await r.json() };
   };
   const empty = { text: '', uptoSeq: 0, version: 0, editedByUser: false, updatedAt: null };

@@ -6,8 +6,9 @@ import * as G from '../src/git.mjs';
 import { tempDir, makeSpace, until, settleSpace, beginTask, isMemoryCall, MEMORY_IDLE } from './helpers.mjs';
 
 test('all task stages receive shared imports and subsequent approved updates', async (t) => {
-  const space = makeSpace(tempDir(t));
+  const space = makeSpace(tempDir(t), { access: 'run' });
   t.after(() => settleSpace(space));
+  t.mock.method(space.registry, 'supportsApproval', () => false);
   const imported = { id: 'import-a', kind: 'import', mode: 'full', status: 'ready', title: '原讨论', sourceLabel: 'Codex', name: 'Bob', entries: [{ role: 'user', text: '导入的原文要求', acts: ['读取 README.md'] }] };
   const brief = { ...imported, id: 'topic-a', mode: 'topic', topic: '接口', brief: '主题-接口.md', briefText: '已确认的接口约束', briefVer: 1, entries: [], briefPending: { after: '尚未采用的版本', by: 'Alice' } };
   space.data.messages.push(imported, brief,
@@ -40,6 +41,8 @@ test('all task stages receive shared imports and subsequent approved updates', a
   await space.runAction('approve-task', { taskId: 'T1' });
   await until(() => space.run.data.status, (s) => s === 'done');
   assert.equal(calls.length, 5, 'Worker and summary must also run');
+  assert.deepEqual(calls.map((call) => call.access), ['read', 'read', 'read', 'run', 'read']);
+  assert.ok(calls.every((call) => call.onApproval === undefined));
   for (const { prompt } of calls.slice(3)) {
     assert.ok(prompt.includes('补导的新增要求'));
     assert.ok(prompt.includes('更新后已确认的接口约束'));

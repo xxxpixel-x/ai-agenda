@@ -168,3 +168,71 @@ test('英文渲染保留原文，翻译类型、出处、历史和目录标题',
   assert.ok(mem.render().includes('### Topics'));
   assert.ok(read(mem.dir, 'memory.md').includes('[replaced by #2]'));
 }));
+
+test('第四批存储：撤回控制行不撞号、两遍派生、压缩后增量投递、fit 保护与文件匹配', (t) => {
+  const dir = path.join(tempDir(t), 'memory');
+  const mem = openMemory(dir);
+  mem.append([
+    { ...sms, text: '旧决定 A', topics: ['登录'] },
+    { ...sms, text: '新决定 B', supersedes: [1], topics: ['登录'] },
+    { ...fact, type: 'question', text: '开放注册吗？', source: { messages: [2] } },
+    { ...sms, text: '开放注册', resolves: [3], source: { messages: [3] } },
+  ]);
+  const r1 = mem.retract(2, { seqAt: 10 });
+  assert.equal(r1.control.id, 5);
+  assert.equal(mem.latestId, 5);
+  // 控制行不出现在 entries / get / details 中
+  assert.deepEqual(mem.entries().map((e) => e.id), [1, 2, 3, 4]);
+  assert.equal(mem.get(5), undefined);
+  assert.equal(mem.render({ layer: 3, ids: [5] }), '');
+  // 撤回取代链顶层 #2 后，#1 仍保持 superseded（不复活旧 L1）
+  assert.equal(mem.get(1).status, 'superseded');
+  assert.equal(mem.get(2).status, 'retracted');
+  assert.equal(mem.get(2).retractedSeqAt, 10);
+  // 重开后再追加不撞号
+  const [next] = openMemory(dir).append([{ ...fact, text: '后续事实' }]);
+  assert.equal(next.id, 6);
+  // 撤回解决问题的答案 #4，#3 自动回到 active 且增量投递附注影响
+  const r2 = mem.retract(4, { seqAt: 12 });
+  assert.equal(r2.control.id, 7);
+  assert.equal(mem.get(3).status, 'active');
+  // 压缩后对旧会话 sinceId=4 仍能投递撤回行 #5 和 #7
+  assert.deepEqual(mem.compact(), { compactedAt: 7 });
+  const delta = mem.renderWithIds({ layer: 1, sinceId: 4 });
+  assert.match(delta.text, /#5 撤回 #2/);
+  assert.match(delta.text, /#7 撤回 #4（#3 重新待处理）/);
+  // globalRows 裁剪时切回当前有效 L1 投影，绝不发出已失效约束却丢掉更正行
+  const dir2 = path.join(tempDir(t), 'm2');
+  const m2 = openMemory(dir2);
+  m2.append([
+    { type: 'constraint', text: '禁止外网调用 旧约束关键词', reason: '安全', source: { messages: [1] } },
+    { type: 'constraint', text: '允许内网网关', reason: '已审批', supersedes: [1], source: { messages: [2] } },
+  ]);
+  const fullL1 = m2.render({ layer: 1 });
+  assert.ok(fullL1.includes('#1 [') && fullL1.includes('#2 取代 #1'));
+  const tight = m2.renderWithIds({ layer: 1, budget: fullL1.split('\n')[0].length + 5, query: '旧约束关键词' });
+  assert.ok(!tight.text.includes('#1 ['), '裁剪时不得发出失效的 #1');
+  assert.ok(tight.text.includes('#2 ['), '裁剪时应保留当前有效的 #2');
+  // workerRows 四段保底 + attempt 试错与非前置 result 路径匹配 + memory.md 文件索引
+  const dir3 = path.join(tempDir(t), 'm3');
+  const m3 = openMemory(dir3);
+  m3.append([
+    { type: 'constraint', text: '全员硬约束', reason: '底线', source: { messages: [1] } },
+    { type: 'rejected', origin: 'user', text: '不要用旧库', reason: '不安全', source: { messages: [1] } },
+    { type: 'rejected', origin: 'attempt', attempt: { engine: 'codex', model: 'gpt-5' }, text: '缓存策略失败', reason: '超时', source: { tasks: ['T1/1'], files: ['src\\login.js'] } },
+    { type: 'result', task: 'T8', text: 'T8 改了登录表单', source: { tasks: ['T8/1'], files: ['src/login.js'] } },
+    { type: 'decision', confirmedBy: 'user', origin: 'user', text: '用户面板确认决定', reason: '拍板', source: { messages: [2] } },
+    { type: 'decision', origin: 'user', scope: 'T9', text: '只属于 T9', reason: '局部', source: { tasks: ['T3/1'] } },
+  ]);
+  const wView = m3.render({ layer: 1, task: { id: 'T3', deps: [], files: ['./src/login.js'], text: '修改登录' } });
+  assert.match(wView, /### 全员都要遵守[\s\S]*#1[\s\S]*#2[\s\S]*#5/);
+  assert.match(wView, /### 相关[\s\S]*#3 \[试过走不通·gpt-5\][\s\S]*#4 \[任务结果\]/);
+  assert.ok(!wView.includes('#6'), '其他 scope 的条目不得串入 T3');
+  // 工作者超预算时优先保第 1 段硬约束，即使 query 命中第 4 段
+  const wSmall = m3.render({ layer: 1, task: { id: 'T3', deps: [], files: ['src/login.js'], text: '缓存策略失败' }, budget: 180, query: '缓存策略失败' });
+  assert.match(wSmall, /### 全员都要遵守/);
+  assert.ok(wSmall.includes('#1 ['));
+  // 文件索引只在 memory.md，不在第 2 层提示
+  assert.ok(!m3.render({ layer: 2 }).includes('### 文件'));
+  assert.ok(read(dir3, 'memory.md').includes('### 文件\n- src/login.js：#3、#4'));
+});

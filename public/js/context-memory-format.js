@@ -102,7 +102,7 @@ const active = (e) => (e.status ?? 'active') === 'active';
 export function matchesMemoryFilter(entry, filter) {
   if (!record(entry)) return false;
   if (filter === 'all') return true;
-  if (filter === 'superseded') return entry.status === 'superseded' || entry.status === 'resolved';
+  if (filter === 'superseded') return ['superseded', 'resolved', 'retracted'].includes(entry.status);
   if (!active(entry)) return false;
   if (filter === 'open') return ['proposal', 'disagreement', 'question'].includes(entry.type);
   return MEMORY_FILTERS.includes(filter) && entry.type === filter;
@@ -126,7 +126,16 @@ export function countMemoryFilters(entries) {
 }
 
 export function formatMemoryOrigin(entry, tr = t) {
-  if (entry?.origin === 'user' && ['decision', 'constraint', 'preference'].includes(entry.type)) return { kind: 'user', label: tr('你定的') };
+  if (entry?.type === 'rejected' && entry.origin === 'attempt') {
+    const tag = entry.attempt?.model || entry.attempt?.engine;
+    return { kind: 'attempt', label: tag ? tr('试过走不通·{0}', [tag]) : tr('试过走不通') };
+  }
+  if ((entry?.origin === 'user' || entry?.confirmedBy === 'user') && ['decision', 'constraint', 'preference'].includes(entry.type)) {
+    return { kind: 'user', label: tr('你定的') };
+  }
+  if (entry?.type === 'rejected' && (entry.origin === 'user' || entry.confirmedBy === 'user')) {
+    return { kind: 'user', label: tr('你定的') };
+  }
   return entry?.type === 'decision' ? { kind: 'default', label: tr('默认通过的') } : null;
 }
 

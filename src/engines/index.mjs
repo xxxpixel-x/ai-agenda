@@ -26,6 +26,7 @@ import * as openai from './openai-compat.mjs';
 import * as pi from './pi.mjs';
 import * as mock from './mock.mjs';
 import * as acp from './acp.mjs';
+import { supportsModelImages } from './image-error.mjs';
 
 /**
  * 每一项是一种接入方式：
@@ -142,7 +143,7 @@ export function createRegistry(settings, { mock: mockMode = false, extensions = 
         ...mock.meta, id: m.id, label: tr('演示 · {0}', [m.defaultName]), defaultName: m.defaultName, color: m.color, logo: m.logo, kind: m.kind, models: m.models, efforts: m.efforts,
         privateSessions: m.privateSessions, continuesImports: m.continuesImports, hideWhenMissing: m.hideWhenMissing,
         sources: m.sources, sourceRequired: m.sourceRequired, sourceChoices: m.sourceChoices,
-        skills: !!m.skills, mcp: !!m.mcp,
+        skills: !!m.skills, mcp: !!m.mcp, noTools: !!m.noTools, readOnlyDirs: !!m.readOnlyDirs,
       }));
     }
     return ENGINES.flatMap((e) => e.instances(settings.get()).map((m) => withSources(e, { ...m })));
@@ -175,24 +176,31 @@ export function createRegistry(settings, { mock: mockMode = false, extensions = 
   }
 
   const supportsExtensions = id => !!(entryOf(id)?.module.meta.skills || entryOf(id)?.module.meta.mcp);
-  function extensionOptionsFor(engineId, { skills = [], mcp, access }) {
+  function extensionOptionsFor(engineId, { skills = [], mcp, readonlyMcp = [], access = 'edit' }) {
     if (!supportsExtensions(engineId) || (!skills.length && !mcp)) return {};
     const meta = entryOf(engineId).module.meta;
     const dirs = skills.filter(v => path.isAbsolute(v) && hasSkill(v));
     const ids = skills.filter(v => !path.isAbsolute(v));
-    const resolved = (ids.length || Array.isArray(mcp)) && extensions?.resolveForMember({
-      skills: ids, mcp: Array.isArray(mcp) ? mcp : [],
-    }, { access });
+    const raw = Array.isArray(mcp) ? {} : mcp || {};
+    const servers = Array.isArray(mcp) ? mcp : Object.keys(raw);
+    const resolved = extensions?.resolveForMember({ skills: ids, mcp: servers }, { access });
+    // 有资源库时，配置和读写模式一律从库里取。直接传配置时，无模式的服务按可写处理。
+    const mounted = resolved?.mcp ?? (['run', 'full'].includes(access) ? raw
+      : Object.fromEntries(Object.entries(raw).filter(([id]) => readonlyMcp.includes(id))));
     return {
       ...(meta.skills && { skills: [...dirs, ...(resolved?.skills || [])] }),
-      ...(meta.mcp && { mcp: Array.isArray(mcp) ? resolved?.mcp || {} : mcp || {} }),
+      ...(meta.mcp && { mcp: mounted, readonlyMcp: resolved?.readonlyMcp ?? readonlyMcp.filter(id => Object.hasOwn(mounted, id)) }),
     };
   }
-  function runTurn(engineId, { source, skills, mcp, ...opts }) {
+  function runTurn(engineId, { source, skills, mcp, readonlyMcp, ...opts }) {
     const mod = moduleOf(engineId);
     if (!mod) throw new Error(tr('未知的 AI 类型：{0}', [engineId]));
     const options = optionsFor(engineId, source);
-    Object.assign(opts, extensionOptionsFor(engineId, { skills, mcp, access: opts.access }));
+    if (opts.noTools) {
+      opts.readOnlyDirs = [];
+    } else {
+      Object.assign(opts, extensionOptionsFor(engineId, { skills, mcp, readonlyMcp, access: opts.access }));
+    }
     if (mod === acp) {
       opts.onApproval = acpChatApproval?.(opts.signal, opts.onApproval) || opts.onApproval;
       opts.onUnverified = () => {
@@ -204,20 +212,21 @@ export function createRegistry(settings, { mock: mockMode = false, extensions = 
     if (!mockMode && source && !options.source && !options.conn) throw new Error(tr('这个成员的模型来源已经不能用了，在空间设置里换一个'));
     if (!opts.images?.length) return mod.runTurn({ ...options, ...opts });
     const { images, onNoImages, ...rest } = opts;
-    if (!supportsImages(engineId)) {
+    const conn = options.conn || options.source;
+    const effectiveModel = opts.model || conn?.model || '';
+    if (!supportsImages(engineId, effectiveModel, source)) {
       onNoImages?.();
       return mod.runTurn({ ...options, ...rest });
     }
     return mod.runTurn({ ...options, ...rest, images, onNoImages: () => {
       onNoImages?.();
-      const conn = options.conn || options.source;
-      if (conn?.id) settings.disableProviderImages(conn);
+      if (conn?.id) settings.disableProviderImages(conn, effectiveModel);
     } });
   }
 
   // 演示模式下 moduleOf 拿到的是演示引擎（meta 里没有 kind / resume），自然都是 false
   const isApi = (engineId) => moduleOf(engineId)?.meta?.kind === 'api';
-  const supportsImages = (engineId) => !!moduleOf(engineId)?.meta.images && optionsFor(engineId).conn?.images !== false;
+  const supportsImages = (engineId, model, source) => !!moduleOf(engineId)?.meta.images && supportsModelImages(optionsFor(engineId, source).conn, model);
   const supportsResume = (engineId) => !!moduleOf(engineId)?.meta?.resume;
   // 能不能在运行命令前停下来问你（runTurn 收到 onApproval 时）
   const supportsApproval = (engineId) => !!moduleOf(engineId)?.meta?.approvals;
@@ -225,6 +234,8 @@ export function createRegistry(settings, { mock: mockMode = false, extensions = 
   const continuesImports = (engineId) => !!entryOf(engineId)?.module.meta.continuesImports;
 
   const supportsPrivateSessions = (engineId) => !!entryOf(engineId)?.module.meta.privateSessions;
+  const supportsReadOnlyDirs = (engineId) => !!entryOf(engineId)?.module.meta.readOnlyDirs;
+  const supportsNoTools = (engineId) => !!entryOf(engineId)?.module.meta.noTools;
 
-  return { settings, list, detect, supportsPrivateSessions, detectAll, runTurn, isApi, supportsImages, supportsResume, supportsApproval, supportsExtensions, extensionOptionsFor, continuesImports, invalidate: () => cache.clear() };
+  return { settings, list, detect, supportsPrivateSessions, supportsReadOnlyDirs, supportsNoTools, detectAll, runTurn, isApi, supportsImages, supportsResume, supportsApproval, supportsExtensions, extensionOptionsFor, continuesImports, invalidate: () => cache.clear() };
 }

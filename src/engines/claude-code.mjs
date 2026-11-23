@@ -9,7 +9,7 @@ import { findOnPath, isFile, capture, runJsonl, brief, relPath } from './proc.mj
 import { usageOf, quotaOf, contextOf } from './usage-fields.mjs';
 
 export const meta = {
-  skills: true, mcp: true,
+  skills: true, mcp: true, noTools: true,
   images: true,
   id: 'claude-code',
   label: 'Claude Code',
@@ -157,7 +157,10 @@ function accessArgs(access, ask = false, mcpTools = []) {
 const refusal = (note) => tr('「我」没有同意运行这条命令{0}。按这个调整做法，不要换一种写法绕过。', [note ? tr('，理由：{0}', [note]) : '']);
 const approvalNote = (note) => tr('「我」同意了刚才那条命令，并补充：{0}', [note]);
 
-export function extensionOptions({ skills = [], mcp = {}, access = 'edit', ask = false, mcpConfigFile = '' } = {}) {
+export function extensionOptions({ skills = [], mcp = {}, access = 'edit', ask = false, mcpConfigFile = '', noTools = false } = {}) {
+  if (noTools) {
+    return { args: ['--tools', '', '--allowedTools', '', '--permission-mode', 'default', '--permission-prompts', 'none', '--safe-mode', '--strict-mcp-config'], skillPrompt: '' };
+  }
   const names = mcpConfigFile ? Object.keys(mcp) : [];
   const args = [...accessArgs(access, ask, names.map(name => `mcp__${name}__*`)), '--safe-mode', '--strict-mcp-config'];
   if (names.length) args.push('--mcp-config', mcpConfigFile);
@@ -224,13 +227,13 @@ function friendly(text, bin, source) {
  * 接续时用 --system-prompt-snapshot off，否则会一直沿用原会话第一次记下的系统提示，Agenda 的规则传不进去。
  */
 /** source / configDir：成员的模型来源（接口）和它独立的配置目录，由注册表给。 */
-export async function runTurn({ system, prompt, images = [], skills = [], mcp = {}, model, effort, cwd, access = 'edit', signal, onDelta, onActivity, onRaw, onApproval, binOverride, sessionId, fork = false, resumeAt, source, configDir, keepSession = false, sessionHome, imported = false }) {
-  const ask = access === 'run' && !!onApproval;
+export async function runTurn({ system, prompt, images = [], skills = [], mcp = {}, model, effort, cwd, access = 'edit', noTools = false, signal, onDelta, onActivity, onRaw, onApproval, binOverride, sessionId, fork = false, resumeAt, source, configDir, keepSession = false, sessionHome, imported = false }) {
+  const ask = !noTools && access === 'run' && !!onApproval;
   const bin = findBin(binOverride);
   if (!bin) throw new Error(tr('没有找到 Claude Code'));
   const sysFile = path.join(os.tmpdir(), `rt-sys-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`);
   const mcpConfigFile = sysFile + '.json';
-  const ext = extensionOptions({ skills, mcp, access, ask, mcpConfigFile });
+  const ext = extensionOptions({ skills: noTools ? [] : skills, mcp: noTools ? {} : mcp, access, ask, mcpConfigFile, noTools });
 
   const args = [
     '-p',

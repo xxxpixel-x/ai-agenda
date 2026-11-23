@@ -39,6 +39,14 @@ export function tempDir() {
   return root;
 }
 
+export function apiRequest(server, route, method = 'GET', body, headers = {}) {
+  return fetch(server.url + route, {
+    method,
+    headers: { 'X-Agenda-Token': server.token, Origin: server.url, 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify(body),
+  });
+}
+
 export function makeSpace(root, input = {}) {
   const dataDir = path.join(root, 'data');
   const registry = createRegistry(createSettings(path.join(dataDir, 'settings.json')), { mock: true });
@@ -72,10 +80,8 @@ export async function libraryHttp(t, options = {}) {
   t.after(() => server?.close());
   const libraryOpts = libraryFixture(t,options);
   server = await startServer({ port: 0, dataDir: libraryOpts.dataDir, mock: true, libraryOpts, hooks: { locales: () => ['zh-CN'] } });
-  return async (route, method = 'GET', body, expected = null) => {
-    const res = await fetch('http://127.0.0.1:' + server.port + '/api/' + route, {
-      method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body),
-    });
+  const api = async (route, method = 'GET', body, expected = null) => {
+    const res = await apiRequest(server, '/api/' + route, method, body);
     if (res.headers.get('content-type')?.includes('text/markdown')) {
       assert.match(res.headers.get('content-disposition'), /attachment; filename="/);
       return res.text();
@@ -85,6 +91,7 @@ export async function libraryHttp(t, options = {}) {
     else assert.ok(res.ok, JSON.stringify(data));
     return data;
   };
+  return { api, server };
 }
 
 /**
@@ -113,6 +120,7 @@ export async function settleSpace(space) {
   if (space.run?.controllers.size) await space.run.cancel();
   await until(() => ({ chat: space.running, calls: space.run?.controllers.size || 0 }), (s) => !s.chat && !s.calls);
   if (space.run) clearTimeout(space.run.timer);
-  // 后台整理记忆库：停掉并等它收尾（含排队的下一次）
+  // 后台整理记忆库：清掉待触发定时器、停掉并等它收尾（含排队的下一次）
+  space.clearMemoryTimer?.();
   while (space.memoryRun) { space.memoryAgain = false; space.memoryController?.abort(); await space.memoryRun; }
 }

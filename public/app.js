@@ -1,6 +1,6 @@
 // Agenda —— 界面入口：路由与启动。各部分在 public/js/ 下。
 import { leaveSpace, openSpace, showWelcome } from './js/chat.js';
-import { refreshEngines } from './js/engines.js';
+import { onEnginesChange, refreshEngines } from './js/engines.js';
 import { hidePage, pageRoute, setReturnHash, showPage } from './js/pages.js';
 import { applyTheme, refreshSpaces, refreshSpacesSoon, renderSideFoot, renderSpaceList } from './js/sidebar.js';
 import { $, load, state, store, toast, tr } from './js/util.js';
@@ -47,6 +47,7 @@ window.addEventListener('beforeunload', (e) => {
   if (v?.type === 'file' && v.draft !== v.content) { e.preventDefault(); e.returnValue = ''; }
 });
 setInterval(renderSpaceList, 60_000);
+onEnginesChange(renderSpaceList);
 // 所有空间的状态变化（发言中、等你确认、任务等你）：侧栏跟着刷新
 new EventSource('/api/events').onmessage = refreshSpacesSoon;
 // 点系统通知：打开那个空间
@@ -55,7 +56,8 @@ window.desktop?.onOpenSpace?.((id) => { location.hash = `#/space/${id}`; });
 (async () => {
   $('#mockTag').hidden = !state.app.mock;
   applyTheme(window.desktop?.getTheme ? await window.desktop.getTheme() : load('rt:theme'));
-  await Promise.all([refreshEngines(), refreshSpaces()]);
+  void refreshEngines();
+  await refreshSpaces();
   route();
   // 升级后第一次打开：旧版的空间（聊天和任务混在一起）已经删掉了
   if (state.app.removedLegacy && !load('rt:legacyNotified')) {

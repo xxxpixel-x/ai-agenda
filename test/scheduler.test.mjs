@@ -4,7 +4,7 @@ import path from 'node:path';
 import { isMemoryCall, MEMORY_IDLE } from './helpers.mjs';
 import { setImmediate as settle } from 'node:timers/promises';
 import { createScheduler, nextTime } from '../src/scheduler.mjs';
-import { tempDir, testInChinese as test } from './helpers.mjs';
+import { apiRequest, tempDir, testInChinese as test } from './helpers.mjs';
 
 const MINUTE = 60_000;
 const local = (day, hour, minute = 0) => new Date(2026, 0, day, hour, minute).getTime();
@@ -414,9 +414,7 @@ test('app-server 到点发消息和建任务空间，上一次没跑完就跳过
   const fakeTurn = async (_engine, opts) => isMemoryCall(opts) ? MEMORY_IDLE : (opts.system.includes('这次任务协作的协调者') ? plan : holdTurn(opts));
   server.registry.runTurn = fakeTurn;
   const api = async (url, method = 'GET', body) => {
-    const r = await fetch(`http://127.0.0.1:${server.port}${url}`, {
-      method, headers: method === 'GET' ? {} : { 'Content-Type': 'application/json' }, body: body && JSON.stringify(body),
-    });
+    const r = await apiRequest(server, url, method, body);
     return { status: r.status, body: await r.json() };
   };
   const members = [{ engine: 'claude-code', name: 'Alice' }, { engine: 'codex', name: 'Bob' }];
@@ -444,6 +442,7 @@ test('app-server 到点发消息和建任务空间，上一次没跑完就跳过
   await api(`/api/schedules/${msg.id}`, 'PATCH', { enabled: false });
 
   // 2. 照模板新建任务空间
+  server.allowFolder(folder);
   const template = { title: '每日整理', goal: '整理今天的资料', members, workspace: { type: 'folder', path: folder }, access: 'edit', planConfirm: 'manual', reviewPlan: false };
   const task = (await api('/api/schedules', 'POST', { spaceId: chat.id, rule: { type: 'interval', minutes: 5 }, action: { type: 'task', template } })).body;
   await clock.advance(5 * MINUTE);

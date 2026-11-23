@@ -1,6 +1,7 @@
-import { refreshEngines } from '../engines.js';
+import { onEnginesChange, refreshEngines } from '../engines.js';
 import { register } from '../slots.js';
-import { $, $$, ICON, api, engineOf, esc, markHtml, shownEngines, toast, tr } from '../util.js';
+import { $, $$, ICON, api, engineOf, esc, markHtml, shownEngines, state, toast, tr } from '../util.js';
+import { connectionOrigin, GEMINI_BASE_URL } from './connection-origin.js';
 
 // [名字, OpenAI 兼容地址, 默认模型, Anthropic 兼容地址（给 Claude Code 用）]，地址和型号按各家官方文档（2026-11-20）
 const PRESETS = [
@@ -42,16 +43,32 @@ const acpKey = (id) => `acp:${id}`;
 const isAcpDraft = (key) => key.startsWith('acp-draft:');
 const formatArgs = (args = []) => args.map((s) => s && !/[\s'"]/.test(s) ? s : '"' + s.replace(/"/g, '\\"').replace(/(\\*)$/, '"$1')).join(' ');
 
+function statusBadge(key, status) {
+  const badge = (label, style = '') => `<span class="conn-state${style && ' ' + style}">${esc(label)}</span>`;
+  if (isDraft(key) || isAcpDraft(key)) return badge(tr('未保存'), 'off');
+  if (!state.enginesLoaded) return badge(tr('正在检测 AI 连接…'));
+  if (status.ready) return badge(tr('可用'), 'ok');
+  if (key.startsWith('acp:')) return badge(tr('不可用'), status.available ? 'warn' : 'off');
+  return status.available ? badge(tr('待设置'), 'warn') : badge(tr('未安装'), 'off');
+}
+
+let unsubscribe;
+function dispose() { unsubscribe?.(); unsubscribe = null; }
 async function render(el) {
   let settings;
-  try { settings = await api('/api/settings'); }
-  catch (e) { toast(e.message, 'error'); return; }
-
   const expanded = new Set();
   const drafts = new Map();
   const acpDrafts = new Map();
   let draftNumber = 0;
   let busy = false;
+  let needsDraw = false;
+  unsubscribe = onEnginesChange(() => {
+    if (settings && !busy) draw();
+    else needsDraw = true;
+  });
+  el.textContent = tr('加载中…');
+  try { settings = await api('/api/settings'); }
+  catch (e) { toast(e.message, 'error'); el.textContent = e.message; return; }
 
   function item(key, mark, name, badge, detail) {
     const open = expanded.has(key);
@@ -65,11 +82,8 @@ async function render(el) {
   function connection(key, name, fields, action = '', hint = '') {
     const engine = engineOf(key);
     const status = engine?.status || {};
-    const [style, label] = isDraft(key) ? ['off', tr('未保存')]
-      : status.ready ? ['ok', tr('可用')] : status.available ? ['warn', tr('待设置')] : ['off', tr('未安装')];
-    const badge = `<span class="conn-state ${style}">${esc(label)}</span>`;
     const note = [status.note, status.version].filter(Boolean).join(' · ');
-    return item(key, markHtml(key, esc(engine?.color || '#7c3aed'), hint), name, badge, `
+    return item(key, markHtml(key, esc(engine?.color || '#7c3aed'), hint), name, statusBadge(key, status), `
       ${note ? `<div class="conn-note">${esc(note)}</div>` : ''}
       ${status.command ? `<code class="cmd">${esc(status.command)}</code>` : ''}
       <div class="conn-fields">${fields}</div>
@@ -87,12 +101,9 @@ async function render(el) {
 
   function acpItem(key, c) {
     const status = engineOf(key)?.status || settings.acpStatuses?.[key] || {};
-    const style = isAcpDraft(key) ? 'off' : status.ready ? 'ok' : status.available ? 'warn' : 'off';
-    const label = isAcpDraft(key) ? tr('未保存') : status.ready ? tr('可用') : tr('不可用');
-    const badge = `<span class="conn-state ${style}">${esc(label)}</span>`;
     const color = esc(c.color || '#6366f1');
     const note = [status.note, status.version].filter(Boolean).join(' · ');
-    return item(key, markHtml(key, color, c.name), c.name || tr('自定义 AI'), badge, `
+    return item(key, markHtml(key, color, c.name), c.name || tr('自定义 AI'), statusBadge(key, status), `
       ${note ? `<div class="conn-note">${esc(note)}</div>` : ''}
       <div class="conn-fields">${field('name', tr('名字'), c.name, '')}
         <label class="conn-field"><span>${tr('图标颜色')}</span><input name="color" type="color" value="${color}"></label>
@@ -103,7 +114,10 @@ async function render(el) {
   }
 
   function draw(savedKey, savedField) {
+    needsDraw = false;
     // 只恢复仍在编辑的字段；其余字段显示服务端刚返回的值。
+    const active = document.activeElement;
+    const activeRow = active?.name && el.contains(active) && active.closest('.conn-item')?.dataset.conn;
     const edits = new Map();
     for (const row of $$('.conn-item', el)) {
       const values = new Map();
@@ -117,7 +131,7 @@ async function render(el) {
       field('path', tr('程序位置'), settings.paths[e.id], e.status?.bin || tr('自动查找'), true)));
     const gem = settings.gemini;
     const gemFields = keyField(gem, tr('在 aistudio.google.com 创建'))
-      + field('baseUrl', tr('接口地址'), gem.baseUrl, 'https://generativelanguage.googleapis.com', true);
+      + field('baseUrl', tr('接口地址'), gem.baseUrl, GEMINI_BASE_URL, true);
     const gemini = connection('gemini', 'Gemini API', gemFields,
       gem.hasKey ? button('clear-key', tr('清除 key'), 'danger') : '');
     const presets = PRESETS.map(([name], i) =>
@@ -125,7 +139,7 @@ async function render(el) {
     const add = item('add', ICON.plus, tr('添加接口'), '', `<div class="preset-row">${presets}${button('preset', tr('自定义'))}</div>`);
     el.innerHTML = `<section class="set-group">
       <h3 class="set-group-title"><span>${esc(tr('本机程序'))}</span>${button('recheck', tr('重新检测'))}</h3>
-      <div class="set-list">${cli.join('')}</div></section>
+      <div class="set-list">${state.enginesLoaded ? cli.join('') : `<div class="hint" role="status">${tr('正在检测 AI 连接…')}</div>`}</div></section>
       <section class="set-group"><h3 class="set-group-title"><span>API</span></h3>
       <div class="set-list">${gemini}${settings.providers.map((p) => provider(providerKey(p.id), p)).join('')}
         ${[...drafts].map(([key, p]) => provider(key, p)).join('')}${add}</div></section>
@@ -142,6 +156,12 @@ async function render(el) {
         else input.value = values.get(input.name);
       }
       syncClaudeCode(row);
+      syncKeyHint(row);
+      if (activeRow && row.dataset.conn === activeRow) {
+        const input = $$('input', row).find((i) => i.name === active.name);
+        input?.focus({ preventScroll: true });
+        if (input && active.selectionStart != null) input.setSelectionRange(active.selectionStart, active.selectionEnd, active.selectionDirection);
+      }
     }
   }
 
@@ -149,6 +169,18 @@ async function render(el) {
     const box = $('input[name="claudeCode"]', row);
     const url = $('input[name="anthropicUrl"]', row);
     if (box && url) url.closest('label').hidden = !box.checked;
+  }
+
+  function syncKeyHint(row) {
+    const id = row.dataset.conn;
+    const saved = id === 'gemini' ? settings.gemini : settings.providers.find((p) => providerKey(p.id) === id);
+    if (!saved?.hasKey) return;
+    const key = $('input[name="apiKey"]', row);
+    const defaultUrl = id === 'gemini' ? GEMINI_BASE_URL : '';
+    // 重画时只恢复 value，defaultValue 始终是这行最近一次保存的地址。
+    const changed = $$('input[name="baseUrl"], input[name="anthropicUrl"]', row).some((input) =>
+      connectionOrigin(input.value, defaultUrl) !== connectionOrigin(input.defaultValue, defaultUrl));
+    key.placeholder = changed && !key.value.trim() ? tr('地址换了，请重新填写密钥') : tr('已保存（{0}），留空表示不变', [saved.keyHint]);
   }
 
   function addDraft(preset) {
@@ -227,6 +259,9 @@ async function render(el) {
   }
 
   draw();
+  el.oninput = ({ target }) => {
+    if (['baseUrl', 'anthropicUrl', 'apiKey'].includes(target.name)) syncKeyHint(target.closest('.conn-item'));
+  };
   el.onchange = (event) => {
     if (event.target.name === 'claudeCode') syncClaudeCode(event.target.closest('.conn-item'));
   };
@@ -282,8 +317,9 @@ async function render(el) {
     finally {
       busy = false;
       controls.forEach((control) => { control.disabled = false; });
+      if (needsDraw) draw();
     }
   };
 }
 
-register('settings', { id: 'connections', label: tr('AI 连接'), icon: ICON.plug, order: 20, render });
+register('settings', { id: 'connections', label: tr('AI 连接'), icon: ICON.plug, order: 20, render, dispose });

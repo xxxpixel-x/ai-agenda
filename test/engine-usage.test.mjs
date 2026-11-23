@@ -12,8 +12,22 @@ import * as dsh from '../src/engines/dsh.mjs';
 import * as geminiCli from '../src/engines/gemini-cli.mjs';
 import * as gemini from '../src/engines/gemini.mjs';
 import * as openai from '../src/engines/openai-compat.mjs';
+import { imageError } from '../src/engines/image-error.mjs';
 
 // 样本按 Claude Code 2.1.325、Codex 0.169 实测输出的字段写（数字是一次「回复 ok」的结果）
+
+test('only capability-related client errors qualify for image fallback', () => {
+  for (const message of ['400 unsupported image', '400 invalid content type: image_url', '404 No endpoints found that support image input',
+    '422 vision is not enabled', '400 this model is text-only', '400 image inputs are not supported', '400 messages[0].content: expected a string, got an array',
+    '400 模型不支持多模态输入', '400 仅支持文本，不接受图片']) assert.ok(imageError(message), message);
+  for (const message of ['model does not support images', '400 bad temperature', '400 invalid image data',
+    '400 unsupported image format', '400 quota exhausted for vision', '400 network error: unsupported image',
+    '400 unsupported temperature for vision-model', '400 unknown parameter for text-only-model', '400 invalid Content-Type header: application/json required',
+    '400 invalid key for unsupported image input',
+    '401 unsupported image', '403 unsupported vision', '408 unsupported image', '429 unsupported image', '500 unsupported image']) {
+    assert.equal(imageError(message), false, message);
+  }
+});
 
 test('claude code usage sums the turn, takes context from the last request and the tightest quota window', () => {
   const result = {

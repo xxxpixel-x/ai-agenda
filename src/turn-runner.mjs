@@ -3,6 +3,8 @@
 // 不关心调用方是谁：中止（signal）、会话续接的重试、事件推送都由调用方决定。
 import { t as tr } from './i18n.mjs';
 import { extractFileBlocks } from './engines/file-blocks.mjs';
+import { isSensitiveFile } from './workspace.mjs';
+import { physicalPath } from './paths.mjs';
 
 const MAX_LOG_LINE = 2000;
 
@@ -18,17 +20,17 @@ const MAX_LOG_LINE = 2000;
  * @returns 引擎的返回值，其中 text 已去掉文件块
  */
 export async function runAgentTurn(registry, member, {
-  system, prompt, cwd, access, sessionId, fork, resumeAt, keepSession, imported, readOnlyDirs, signal,
+  system, prompt, cwd, access, sessionId, fork, resumeAt, keepSession, imported, readOnlyDirs, noTools = false, signal,
   sink, ws = null, maxActivities = 60, maxLog = 600,
   onDelta, onActivity, onApproval, images = [], onNoImages,
 }) {
   sink.activities ||= [];
   const markNoImages = () => { sink.noImages = true; onNoImages?.(); };
-  const canSee = images.length && registry.supportsImages(member.engine);
+  const canSee = images.length && registry.supportsImages(member.engine, member.model, member.source);
   if (images.length && !canSee) markNoImages();
   const r = await registry.runTurn(member.engine, {
-    ...(member.skills?.length ? { skills: member.skills } : {}),
-    ...(member.mcp?.length ? { mcp: member.mcp } : {}),
+    ...(!noTools && member.skills?.length ? { skills: member.skills } : {}),
+    ...(!noTools && member.mcp?.length ? { mcp: member.mcp } : {}),
     ...(canSee ? { images, onNoImages: markNoImages } : {}),
     system,
     prompt,
@@ -39,7 +41,7 @@ export async function runAgentTurn(registry, member, {
     access,
     sessionId,
     fork,
-    resumeAt, keepSession, imported, readOnlyDirs,
+    resumeAt, keepSession, imported, readOnlyDirs: noTools ? [] : readOnlyDirs, ...(noTools ? { noTools: true } : {}),
     signal,
     onApproval,
     onDelta: (t) => { sink.text = (sink.text || '') + t; onDelta?.(t); },
@@ -75,6 +77,10 @@ function applyFileBlocks(reply, { member, ws, access, sink }) {
   }
   for (const f of files) {
     try {
+      if (isSensitiveFile(f.path) || isSensitiveFile(physicalPath(ws.resolve(f.path)))) {
+        sink.note = tr('出于安全考虑，不允许直接覆盖密钥文件 {0}。', [f.path]);
+        continue;
+      }
       ws.writeRaw(f.path, f.content);
       sink.activities.push({ kind: 'edit', label: tr('修改 {0}', [f.path]) });
     } catch (e) {

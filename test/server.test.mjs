@@ -13,13 +13,17 @@ test('local HTTP service', { timeout: 30000 }, async (t) => {
   const dataDir = path.join(root, 'data');
   const hooks = { locales: () => ['zh-CN'] };
   server = await startServer({ port: 0, dataDir, mock: true, hooks });
-  const base = `http://127.0.0.1:${server.port}`;
+  const base = server.url;
   function request(url, { method = 'GET', body, raw, headers = {} } = {}) {
     return new Promise((resolve, reject) => {
       const payload = raw ?? (body === undefined ? undefined : JSON.stringify(body));
       const req = http.request(`${base}${url}`, {
         method,
-        headers: { ...(payload !== undefined ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } : {}), ...headers },
+        family: 4,
+        headers: {
+          'X-Agenda-Token': server.token, Origin: server.url,
+          ...(payload !== undefined ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } : {}), ...headers,
+        },
       }, (res) => {
         let text = '';
         res.setEncoding('utf8');
@@ -56,7 +60,7 @@ test('local HTTP service', { timeout: 30000 }, async (t) => {
   });
 
   await t.test('rejects untrusted hosts, cross-site writes, bad content types and malformed JSON', async () => {
-    assert.equal((await request('/api/app', { headers: { Host: 'untrusted.example' } })).status, 403);
+    assert.equal((await request('/api/app', { headers: { Host: 'untrusted.example', 'X-Agenda-Token': 'invalid' } })).status, 403);
     assert.equal((await request('/api/settings', { method: 'PUT', body: {}, headers: { Origin: 'https://untrusted.example' } })).status, 403);
     assert.equal((await request('/api/settings', { method: 'PUT', raw: '{}', headers: { 'Content-Type': 'text/plain' } })).status, 415);
     assert.equal((await request('/api/settings', { method: 'PUT', raw: '{invalid' })).status, 400);
@@ -112,7 +116,9 @@ test('local HTTP service', { timeout: 30000 }, async (t) => {
   });
 
   await t.test('SSE begins with a snapshot and releases the connection on cancellation', async () => {
-    const response = await fetch(`${base}${spaceUrl}/events`, { signal: AbortSignal.timeout(5000) });
+    const response = await fetch(`${base}${spaceUrl}/events`, {
+      headers: { Cookie: `${server.cookieName}=${server.cookieToken}`, 'Sec-Fetch-Site': 'same-origin' }, signal: AbortSignal.timeout(5000),
+    });
     assert.equal(response.status, 200);
     const reader = response.body.getReader();
     try {
@@ -149,6 +155,7 @@ test('local HTTP service', { timeout: 30000 }, async (t) => {
   await t.test('deleting a space preserves an external workspace', async () => {
     const external = path.join(root, 'external');
     fs.mkdirSync(external);
+    server.allowFolder(external);
     fs.writeFileSync(path.join(external, 'keep.txt'), 'keep me');
     const r = await request('/api/spaces', { method: 'POST', body: { members, workspace: { type: 'folder', path: external } } });
     assert.equal(r.status, 201);

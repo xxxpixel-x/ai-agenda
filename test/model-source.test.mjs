@@ -10,6 +10,8 @@ import { normalizeMembers } from '../src/members.mjs';
 import { runAgentTurn } from '../src/turn-runner.mjs';
 import { supportsPrivateSessions } from '../src/engines/index.mjs';
 import { sourceEnv, meta as claudeMeta } from '../src/engines/claude-code.mjs';
+import { setFetch } from '../src/engines/http.mjs';
+import { GEMINI_BASE_URL } from '../public/js/settings/connection-origin.js';
 
 const KIMI = { name: 'Kimi', baseUrl: 'https://api.example.test/v1', model: 'kimi-fake', anthropicUrl: 'https://api.example.test/anthropic', claudeCode: true, apiKey: 'sk-fake-123' };
 const LOCAL = { name: '本地', baseUrl: 'http://127.0.0.1:9/v1', model: 'local-fake' };
@@ -60,8 +62,113 @@ test('接口的「也给 Claude Code 用」必须有 Anthropic 兼容地址，�
   const again = settings.update({ providers: view.providers.map(({ id, name, model, baseUrl }) => ({ id, name, model, baseUrl })) });
   assert.equal(again.providers[0].claudeCode, true);
   assert.equal(again.providers[0].anthropicUrl, KIMI.anthropicUrl);
+  assert.equal(settings.get().providers[0].apiKey, KIMI.apiKey);
   const reloaded = createSettings(path.join(root, 'data', 'settings.json'), { pathKeys: CLI_ENGINE_IDS });
   assert.equal(reloaded.publicView().providers[0].claudeCode, true);
+});
+
+test('接口密钥随两个地址的来源重置，路径修改和新填密钥正常保存', (t) => {
+  const { settings, root } = setup(t);
+  for (const field of ['baseUrl', 'anthropicUrl']) {
+    for (const [url, keep] of [
+      ['https://API.EXAMPLE.TEST:443/v1beta?q=1', true], ['http://api.example.test/v1', false],
+      ['https://api.example.test:8443/v1', false], ['https://other.example.test/v1', false],
+      ['api.example.test/v1', false], ['https://[', false],
+    ]) {
+      const [row] = settings.update({ providers: [KIMI] }).providers;
+      const key = keep ? {} : { apiKey: '  ' };
+      settings.update({ providers: [{ ...row, [field]: url, ...key }] });
+      assert.equal(createSettings(path.join(root, 'data', 'settings.json')).get().providers[0].apiKey, keep ? KIMI.apiKey : '', url);
+    }
+    const [row] = settings.update({ providers: [KIMI] }).providers;
+    settings.update({ providers: [{ ...row, [field]: 'https://new.example.test', apiKey: ' replacement ' }] });
+    assert.equal(settings.get().providers[0].apiKey, 'replacement');
+    settings.update({ providers: [{ ...row, [field]: 'https://different.example.test' }] });
+    assert.equal(settings.get().providers[0].apiKey, '');
+  }
+});
+
+test('Gemini 默认地址与官方地址同源，与代理互换时清空密钥', async t => {
+  const { settings } = setup(t);
+  const save = gemini => settings.update({ gemini }).gemini.hasKey;
+  assert.ok(save({ apiKey: 'fixture' }));
+  assert.ok(save({ baseUrl: GEMINI_BASE_URL + ':443/v1beta' }));
+  assert.ok(save({ baseUrl: '' }));
+  assert.equal(save({ baseUrl: 'https://proxy.example.test' }), false);
+  const registry = createRegistry(settings);
+  const probe = t.mock.fn(() => new Response('{}'));
+  setFetch(probe);
+  t.after(() => setFetch((...args) => globalThis.fetch(...args)));
+  assert.equal((await registry.detect('gemini')).ready, false);
+  assert.equal(probe.mock.callCount(), 0);
+  assert.ok(save({ apiKey: 'proxy-key' }));
+  assert.ok(save({ baseUrl: 'https://proxy.example.test/v1' }));
+  assert.equal(save({ baseUrl: '', apiKey: '  ' }), false);
+  assert.ok(save({ baseUrl: 'https://proxy.example.test', apiKey: 'new-key' }));
+  assert.equal(settings.get().gemini.apiKey, 'new-key');
+});
+
+test('换地址后可探测免密本地模型，需要认证时明确提示', async t => {
+  const { settings } = setup(t);
+  const [row] = settings.update({ providers: [KIMI] }).providers;
+  settings.update({ providers: [{ ...row, baseUrl: LOCAL.baseUrl }] });
+  const registry = createRegistry(settings);
+  const sent = [];
+  let status = 200;
+  setFetch((url, req) => {
+    sent.push([url, new Headers(req.headers).get('Authorization')]);
+    return Response.json({ data: [{ id: 'local-model' }] }, { status });
+  });
+  t.after(() => setFetch((...args) => globalThis.fetch(...args)));
+  const detect = () => registry.detect('openai:' + row.id, { refresh: true });
+  const available = await detect();
+  assert.equal(available.ready, true);
+  assert.deepEqual(available.models, ['local-model']);
+  for (status of [401, 403]) {
+    const info = await detect();
+    assert.equal(info.ready, false);
+    assert.match(info.note, /需要填写 API key/);
+  }
+  assert.deepEqual(sent, Array(3).fill([LOCAL.baseUrl + '/models', null]));
+});
+
+test('连接行随着输入和撤回地址修改切换密钥提示', async t => {
+  const { settings } = setup(t);
+  const view = settings.update({ gemini: { apiKey: 'fixture' }, providers: [KIMI] });
+  t.mock.method(globalThis, 'fetch', async url => Response.json(url === '/api/app' ? { language: 'zh' } : view));
+  const previous = globalThis.document;
+  globalThis.document = { documentElement: {}, querySelectorAll: () => [] };
+  t.after(() => { if (previous) globalThis.document = previous; else delete globalThis.document; });
+  await import('../public/js/settings/connections.js');
+  const { list } = await import('../public/js/slots.js');
+  const panel = { querySelectorAll: () => [] };
+  await list('settings').find(s => s.id === 'connections').render(panel);
+  for (const [id, saved] of [['gemini', view.gemini], ['openai:' + view.providers[0].id, view.providers[0]]]) {
+    const key = { name: 'apiKey', value: '' };
+    const urls = ['baseUrl', ...(id === 'gemini' ? [] : ['anthropicUrl'])].map(name =>
+      ({ name, value: saved[name], defaultValue: saved[name] }));
+    const row = { dataset: { conn: id }, querySelector: () => key, querySelectorAll: () => urls };
+    key.closest = () => row;
+    for (const url of urls) {
+      url.closest = () => row;
+      url.value = (url.defaultValue || GEMINI_BASE_URL) + '/v1beta';
+      panel.oninput({ target: url });
+      const original = key.placeholder;
+      assert.match(original, /已保存/);
+      url.value = 'https://changed.example.test';
+      panel.oninput({ target: url });
+      assert.equal(key.placeholder, '地址换了，请重新填写密钥');
+      key.value = 'replacement';
+      panel.oninput({ target: key });
+      assert.equal(key.placeholder, original);
+      key.value = '';
+      panel.oninput({ target: key });
+      assert.equal(key.placeholder, '地址换了，请重新填写密钥');
+      url.value = url.defaultValue;
+      panel.oninput({ target: url });
+      assert.equal(key.placeholder, original);
+    }
+  }
 });
 
 test('注册表：Claude Code 只能选给它用的接口，pi 能选全部接口', (t) => {

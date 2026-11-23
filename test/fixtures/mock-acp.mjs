@@ -39,7 +39,7 @@ const tool = (call) => update({ sessionUpdate: 'tool_call', ...call });
 
 async function ask(kind, target) {
   const edit = kind === 'edit';
-  const toolCall = { toolCallId: 'tool-' + kind, kind, title: kind, rawInput: edit ? { path: target } : { command: target } };
+  const toolCall = { toolCallId: 'tool-' + kind, kind, title: kind, rawInput: kind === 'execute' ? { command: target } : { path: target } };
   const kinds = has('no-reject') ? ['allow_once'] : edit ? ['allow_once', 'reject_once'] : ['allow_always', 'reject_once', 'allow_once'];
   const options = kinds.map((k) => ({ kind: k, optionId: 'opt-' + k, name: k }));
   if (has('announce-first')) tool(toolCall);
@@ -88,6 +88,8 @@ async function promptTurn(id, params) {
     parts.push('unknown=' + response.error?.code);
   }
   if (has('request-edit')) parts.push(await ask('edit', option('request-edit', 'note.md')));
+  if (has('request-read')) parts.push(await ask('read', 'note.md'));
+  if (has('request-other')) parts.push(await ask('other', 'item'));
   if (has('request-command')) parts.push(await ask('execute', option('request-command', 'echo hello')));
   if (has('bypass-permissions')) tool({ kind: 'edit', toolCallId: 'bypass', locations: [{ path: 'bypass.md' }] });
   if (has('crash-prompt')) {

@@ -35,11 +35,13 @@ export const DONE = '[结束]';
 
 export const newKey = () => randomBytes(4).toString('hex');
 
-export function said(key, who, text, user = false) {
+export function said(key, who, text, user = false, seq = null) {
   const speaker = user ? tr('我') : /^(me|我)$/i.test(who) ? `@${who}` : who;
   const name = String(speaker).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const body = escapeTags(text);
-  return key ? tr('<消息 来自="{0}" 标记="{1}">\n{2}\n</消息>', [name, key, body]) : tr('<消息 来自="{0}">\n{1}\n</消息>', [name, body]);
+  if (key) return tr('<消息 来自="{0}" 标记="{1}">\n{2}\n</消息>', [name, key, body]);
+  if (Number.isSafeInteger(seq) && seq > 0) return tr('<消息 {0} 来自="{1}">\n{2}\n</消息>', [seq, name, body]);
+  return tr('<消息 来自="{0}">\n{1}\n</消息>', [name, body]);
 }
 
 export const keyRule = (key) => tr('chat.keyRule', [key]);
@@ -80,9 +82,15 @@ export function systemPrompt(space, member, { api = false, access: granted = spa
   ]);
 }
 
-function clip(text) {
+function clip(text, seq, canReadMemoryDir) {
   if (text.length <= LONG_REPLY) return text;
-  return `${text.slice(0, CLIP_HEAD)}\n${tr('……（中间省略 {0} 字）……', [text.length - CLIP_HEAD - CLIP_TAIL])}\n${text.slice(-CLIP_TAIL)}`;
+  const omitted = text.length - CLIP_HEAD - CLIP_TAIL;
+  const note = Number.isSafeInteger(seq) && seq > 0
+    ? (canReadMemoryDir
+      ? tr('……（中间省略 {0} 字，完整见 messages/{1}.md）……', [omitted, seq])
+      : tr('……（中间省略 {0} 字，用户或下一位发言者提到「消息 {1}」时自动附原文）……', [omitted, seq]))
+    : tr('……（中间省略 {0} 字）……', [omitted]);
+  return `${text.slice(0, CLIP_HEAD)}\n${note}\n${text.slice(-CLIP_TAIL)}`;
 }
 
 export function attachmentText(m, root) {
@@ -93,17 +101,17 @@ export function attachmentText(m, root) {
   return lines.filter(Boolean).join('\n');
 }
 
-function line(m, full, names) {
+function line(m, full, names, canReadMemoryDir) {
   const who = m.kind === 'user' ? tr('我') : m.name;
   const parts = [];
   if (m.only && names?.has(m.only)) parts.push(tr('（只问 {0}）', [names.get(m.only)]));
   if (m.kind === 'task') parts.push(tr('（任务空间「{0}」结束了，这是协调者的总结）', [m.title]));
   if (m.interrupted) parts.push(tr('（发言被打断）'));
   const text = attachmentText(m).trim();
-  if (text) parts.push(m.kind === 'ai' && !full ? clip(text) : text);
+  if (text) parts.push(m.kind === 'ai' && !full ? clip(text, m.seq, canReadMemoryDir) : text);
   if (m.changes?.length) parts.push(tr('（修改了：{0}）', [m.changes.map((c) => c.path).join('、')]));
   if (m.actions?.length) parts.push(tr('（运行了：{0}）', [m.actions.join(tr('、'))]));
-  return said(null, who, parts.join('\n'), m.kind === 'user');
+  return said(null, who, parts.join('\n'), m.kind === 'user', m.seq);
 }
 
 export const visible = (m) => (m.kind === 'user' || m.kind === 'ai' || m.kind === 'task') && !m.passed && !m.streaming && (m.text?.trim() || m.attachments?.length || m.changes?.length || m.actions?.length);
@@ -127,12 +135,12 @@ export function turnPrompt(space, member, opts) {
 }
 
 export function buildTurnContext(space, member, opts = {}) {
-  const { reason, api = false, files, since, recent, background, system = '', importBlocks, memory, memoryDir,
-    recap = '', handoffNote = '', lastMemoryId, tokenBudget = member.engine ? budgetFor(contextWindowFor(member)) : 80000 } = opts;
+  const { reason, api = false, canReadMemoryDir = member?.engine === 'pi', files, since, recent, background, system = '', importBlocks, memory, memoryDir,
+    recap = '', recapUptoSeq = 0, handoffNote = '', lastMemoryId, tokenBudget = member.engine ? budgetFor(contextWindowFor(member)) : 80000 } = opts;
   const pool = space.messages.slice(since ?? 0).filter(visible);
   const start = since == null && recent ? space.messages.slice(0, recent).filter(visible).length : 0;
   const names = new Map((space.members || []).map((m) => [m.id, m.name]));
-  const lines = pool.map((m, i) => ({ seq: m.seq, text: line(m, recent != null && i >= start || i >= pool.length - RECENT_FULL, names) }));
+  const lines = pool.map((m, i) => ({ seq: m.seq, text: line(m, recent != null && i >= start || i >= pool.length - RECENT_FULL, names, canReadMemoryDir) }));
   const query = pool.findLast((m) => m.kind === 'user')?.text || pool.at(-1)?.text || '';
   const references = [query, ...(since != null ? pool : pool.slice(-3)).map((m) => m.text), recap, handoffNote].join('\n');
   const parts = [];
@@ -142,16 +150,18 @@ export function buildTurnContext(space, member, opts = {}) {
   else if (reason === 'mention') parts.push(tr('有人 @ 了你。现在请你（「{0}」）回应。', [member.name]));
   else parts.push(tr('现在轮到你（「{0}」）发言。没有要补充的就只回复 {1}。', [member.name, tr(PASS)]));
   const ending = parts.join('\n\n');
+  const recapTitle = recapUptoSeq > 0 ? tr('# 前情提要（截至消息 {0}）', [recapUptoSeq]) : tr('# 前情提要');
   return assembleContext({ system, tokenBudget, files: api ? files : null, lines, start, historyChars: member.engine || opts.tokenBudget != null ? Infinity : HISTORY_CHARS,
     imports: importBlocks || (background ? [{ fullText: background, summaryText: background }] : []),
     handoff: handoffNote ? tr('# 上个会话的交接说明') + '\n' + handoffNote : '',
-    recap: recap ? tr('# 前情提要') + '\n' + recap : '', lastMemoryId: memory?.entries().at(-1)?.id || 0,
-    memory: (limits) => memoryForTurn({ memory, memoryDir, query, references, messages: space.messages, sinceId: since != null ? lastMemoryId ?? 0 : undefined, api }, limits),
+    recap: recap ? recapTitle + '\n' + recap : '', lastMemoryId: memory?.latestId ?? memory?.entries().at(-1)?.id ?? 0,
+    memory: (limits) => memoryForTurn({ memory, memoryDir, query, references, messages: space.messages, sinceId: since != null ? lastMemoryId ?? 0 : undefined, api, canReadMemoryDir }, limits),
     compose: (s) => {
       const history = s.recent ? `# ${since != null ? tr('你上次发言之后的新消息') : tr('聊天记录')}${s.omitted ? tr('（更早的 {0} 条已省略）', [s.omitted]) : ''}\n${s.recent}`
         : since != null ? tr('# 你上次发言之后没有新消息') : '';
-      return [since == null && tr('# 空间：{0}', [escapeTags(space.title)]), tr('chat.rule'), s.memory.prefix, s.imports,
-        s.recap, s.handoff, history, s.memory.extras, s.files, ending].filter(Boolean).join('\n\n');
+      const tailMemory = [s.memory.l2, s.memory.extras].filter(Boolean).join('\n\n');
+      return [since == null && tr('# 空间：{0}', [escapeTags(space.title)]), tr('chat.rule'), s.imports, s.memory.l1,
+        s.recap, s.handoff, history, tailMemory, s.files, ending].filter(Boolean).join('\n\n');
     },
   });
 }

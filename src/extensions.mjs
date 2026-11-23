@@ -172,6 +172,8 @@ export function createExtensionsManager({
     if (transport === 'stdio' ? typeof fields.command !== 'string' || !fields.command.trim() || !Array.isArray(fields.args) || !fields.args.every(a => typeof a === 'string')
         : transport !== 'http' || !fields.url) invalid();
     const declared = v.secretKeys ?? [];
+    const sameTarget = old.id && old.transport === transport && (transport === 'stdio'
+      ? old.command === fields.command : new URL(old.url).origin === new URL(fields.url).origin);
     if (!Array.isArray(declared) || !declared.every(k => typeof k === 'string')) invalid();
     const envKeys = known?.envKeys ?? input.envKeys ?? [];
     if (!Array.isArray(envKeys)) invalid();
@@ -179,7 +181,7 @@ export function createExtensionsManager({
       ...Object.keys(input.headers || known?.headers || {}), ...Object.keys(input.env || {}).filter(sensitive)]);
     const maps = {};
     for (const field of ['env','headers']) {
-      const previous = old[field] || {};
+      const previous = sameTarget ? old[field] || {} : {};
       const patch = input[field] ?? (old.id ? {} : known?.[field] || {});
       if (typeof patch !== 'object' || Array.isArray(patch)) invalid();
       const entries = new Map(Object.entries(previous));
@@ -237,14 +239,16 @@ export function createExtensionsManager({
   function resolveForMember(member, { access = 'edit' } = {}) {
     const skills = member.skills?.length ? listSkills().filter(s => s.enabled && member.skills.includes(s.id)).map(s => s.dir) : [];
     const mcp = {};
+    const readonlyMcp = [];
     if (member.mcp?.length) for (const [id,s] of allMcp()) {
       if (!member.mcp.includes(id) || !s.enabled || (s.mode !== 'readonly' && !['run','full'].includes(access))) continue;
+      if (s.mode === 'readonly') readonlyMcp.push(id);
       const env = values(s,'env',false), headers = values(s,'headers',false);
       const expand = str => str.replace(/\$\{([\w]+)\}/g, (match,k) => Object.hasOwn(env,k) ? env[k] : match);
       mcp[id] = s.transport === 'http' ? { type: 'http', url: s.url, headers: Object.fromEntries(Object.entries(headers).map(([k,v]) => [k,expand(v)])) }
         : { command: s.command, args: s.args.map(expand), env };
     }
-    return { skills, mcp };
+    return { skills, mcp, readonlyMcp };
   }
   return { listExtensions: () => ({ skills: listSkills(), mcp: listMcp() }), listSkills, listMcp, installSkill, setSkillEnabled, removeSkill,
     installMcp, updateMcp, removeMcp, checkPermissionConflicts, resolveForMember,

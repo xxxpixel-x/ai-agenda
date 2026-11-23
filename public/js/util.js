@@ -18,6 +18,16 @@ export const ACCESS = {
   run: { label: tr('可运行命令'), desc: tr('还能运行命令，每条命令先问你') },
   full: { label: tr('全部权限'), desc: tr('不受限制，可以动电脑上任何地方') },
 };
+const TASK_ACCESS = {
+  edit: ACCESS.edit,
+  run: { ...ACCESS.run, desc: tr('支持无人值守命令的引擎可在子任务中直接运行命令。Pi 子任务可用文件工具和只读 MCP。') },
+  full: ACCESS.full,
+};
+export function spaceAccessOptions(selected, kind, { existing = false } = {}) {
+  const choices = kind !== 'task' ? ACCESS : existing && selected === 'read' ? { read: ACCESS.read, ...TASK_ACCESS } : TASK_ACCESS;
+  const access = typeof selected === 'string' && Object.hasOwn(choices, selected) ? selected : 'edit';
+  return { choices, access };
+}
 const svg = (d, z = 16) => `<svg viewBox="0 0 24 24" width="${z}" height="${z}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 export const ICON = {
   context: svg('<path d="m3 7 9-4 9 4-9 4zM3 12l9 4 9-4M3 17l9 4 9-4"/>'),
@@ -69,6 +79,7 @@ export const ACT_ICON = {
 export const state = {
   app: appInfo,
   engines: [],        // [{ id, label, color, models, efforts, freeModel, status }]
+  enginesLoaded: false,
   spaces: [],
   space: null,        // 当前空间（完整数据）
   es: null,
@@ -84,9 +95,12 @@ Object.defineProperty(state.files, 'view', {
 
 // ---------------- 工具 ----------------
 export async function api(path, opts = {}) {
+  const headers = { 'Content-Type': 'application/json' };
+  const token = globalThis.window?.desktop?.apiToken;
+  if (token) headers['X-Agenda-Token'] = token;
   const res = await fetch(path, {
     method: opts.method || 'GET',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
   });
   const data = await res.json().catch(() => ({}));

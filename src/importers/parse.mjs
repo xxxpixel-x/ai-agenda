@@ -158,25 +158,73 @@ function parseJson(data, fileTitle) {
 
 // ---------- zip（导出文件大多是 zip，自己解，不加依赖） ----------
 
-function unzip(buf) {
+const MAX_ZIP_OUTPUT = 32 * 1024 * 1024;
+const malformedZip = () => new Error(tr('zip 文件不完整或格式无效'));
+const zipTooLarge = () => new Error(tr('zip 解压内容超过 32 MiB 上限'));
+
+function unzip(buf, budget) {
   const out = [];
   let end = buf.length - 22;
-  while (end >= 0 && buf.readUInt32LE(end) !== 0x06054b50) end--;
-  if (end < 0) throw new Error(tr('zip 文件不完整'));
-  let p = buf.readUInt32LE(end + 16);
+  const earliest = Math.max(0, end - 0xffff);
+  while (end >= earliest && (buf.readUInt32LE(end) !== 0x06054b50 || end + 22 + buf.readUInt16LE(end + 20) !== buf.length)) end--;
+  if (end < earliest) throw malformedZip();
+  const central = buf.readUInt32LE(end + 16);
   const count = buf.readUInt16LE(end + 10);
-  for (let k = 0; k < count && buf.readUInt32LE(p) === 0x02014b50; k++) {
+  if (central + buf.readUInt32LE(end + 12) !== end || buf.readUInt32LE(end + 4) !== 0
+      || buf.readUInt16LE(end + 8) !== count) throw malformedZip();
+  let p = central;
+  for (let k = 0; k < count; k++) {
+    if (p + 46 > end || buf.readUInt32LE(p) !== 0x02014b50 || buf.readUInt16LE(p + 34) !== 0) throw malformedZip();
+    const flags = buf.readUInt16LE(p + 8);
     const method = buf.readUInt16LE(p + 10);
+    if ((flags & 1) || (method !== 0 && method !== 8)) throw new Error(tr('不支持这种 zip 压缩方式'));
+    const crc = buf.readUInt32LE(p + 16);
     const size = buf.readUInt32LE(p + 20);
+    const unpacked = buf.readUInt32LE(p + 24);
     const nameLen = buf.readUInt16LE(p + 28);
     const extra = buf.readUInt16LE(p + 30);
     const comment = buf.readUInt16LE(p + 32);
     const local = buf.readUInt32LE(p + 42);
-    const name = buf.subarray(p + 46, p + 46 + nameLen).toString('utf8');
-    const start = local + 30 + buf.readUInt16LE(local + 26) + buf.readUInt16LE(local + 28);
-    out.push({ name, read: () => (method === 0 ? buf.subarray(start, start + size) : zlib.inflateRawSync(buf.subarray(start, start + size))) });
+    if (p + 46 + nameLen + extra + comment > end || local + 30 > central
+        || buf.readUInt32LE(local) !== 0x04034b50 || buf.readUInt16LE(local + 6) !== flags
+        || buf.readUInt16LE(local + 8) !== method || buf.readUInt16LE(local + 26) !== nameLen
+        || (method === 0 && size !== unpacked)) throw malformedZip();
+    const name = buf.subarray(p + 46, p + 46 + nameLen);
+    const start = local + 30 + nameLen + buf.readUInt16LE(local + 28);
+    let next = start + size;
+    if (next > central || !name.equals(buf.subarray(local + 30, local + 30 + nameLen))) throw malformedZip();
+    if (flags & 8) {
+      // Streaming writers put CRC and sizes after the compressed data.
+      for (const [offset, expected] of [[14, crc], [18, size], [22, unpacked]]) {
+        const value = buf.readUInt32LE(local + offset);
+        if (value !== 0 && value !== expected) throw malformedZip();
+      }
+      if (next + 4 <= central && buf.readUInt32LE(next) === 0x08074b50) next += 4;
+      if (next + 12 > central || buf.readUInt32LE(next) !== crc || buf.readUInt32LE(next + 4) !== size
+          || buf.readUInt32LE(next + 8) !== unpacked) throw malformedZip();
+      next += 12;
+    } else if (buf.readUInt32LE(local + 14) !== crc || buf.readUInt32LE(local + 18) !== size
+        || buf.readUInt32LE(local + 22) !== unpacked) throw malformedZip();
+    out.push({ name: name.toString('utf8'), local, next, read() {
+      if (unpacked > budget) throw zipTooLarge();
+      const compressed = buf.subarray(start, start + size);
+      let data = compressed;
+      if (method === 8) {
+        try {
+          const result = zlib.inflateRawSync(compressed, { maxOutputLength: Math.max(1, unpacked), info: true });
+          if (result.engine.bytesWritten !== size) throw malformedZip();
+          data = result.buffer;
+        }
+        catch { throw malformedZip(); }
+      }
+      if (data.length !== unpacked || zlib.crc32(data) !== crc) throw malformedZip();
+      return data;
+    } });
     p += 46 + nameLen + extra + comment;
   }
+  if (p !== end) throw malformedZip();
+  const ranges = [...out].sort((a, b) => a.local - b.local);
+  if (ranges.some((entry, i) => i && entry.local < ranges[i - 1].next)) throw malformedZip();
   return out;
 }
 
@@ -186,17 +234,19 @@ const IN_ZIP = [/(^|\/)conversations\.json$/i, /gemini[^/]*\/[^/]*activity\.json
 // ---------- 入口 ----------
 
 export function parseImport(input, fileName = '') {
-  const fileTitle = fileName.replace(/^.*[\\/]/, '').replace(/\.[^.]+$/, '');
-  if (Buffer.isBuffer(input) && input.readUInt32LE(0) === 0x04034b50) {
-    const files = unzip(input);
-    for (const re of IN_ZIP) {
-      const hit = files.find((f) => re.test(f.name) && !f.name.startsWith('__MACOSX'));
-      if (hit) return parseImport(hit.read(), hit.name);
-    }
-    throw new Error(tr('压缩包里没有找到对话文件'));
+  let budget = MAX_ZIP_OUTPUT;
+  while (Buffer.isBuffer(input) && (/\.zip$/i.test(fileName) || (input.length >= 4 && input.readUInt32LE(0) === 0x04034b50))) {
+    const files = unzip(input, budget);
+    const hit = IN_ZIP.map(re => files.find(f => re.test(f.name) && !f.name.startsWith('__MACOSX'))).find(Boolean);
+    if (!hit) throw new Error(tr('压缩包里没有找到对话文件'));
+    input = hit.read();
+    budget -= input.length;
+    fileName = hit.name;
   }
+  const fileTitle = fileName.replace(/^.*[\\/]/, '').replace(/\.[^.]+$/, '');
   const text = (Buffer.isBuffer(input) ? input.toString('utf8') : String(input || '')).replace(/^﻿/, '');
   const t = text.trim();
+  if (!t) throw new Error(tr('这个文件里没有对话内容'));
   if (/^[[{]/.test(t)) {
     try {
       const r = parseJson(JSON.parse(t), fileTitle);

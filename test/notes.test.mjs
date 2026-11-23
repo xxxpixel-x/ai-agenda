@@ -4,7 +4,7 @@ import { isMemoryCall, MEMORY_IDLE } from './helpers.mjs';
 import { t } from '../public/i18n.js';
 import { formatNotes, lineLabel, locateNotes, notesByMember, quoteLine } from '../public/js/notes-format.js';
 import { startServer } from '../src/app-server.mjs';
-import { beginTask, makeSpace, settleSpace, tempDir, until } from './helpers.mjs';
+import { apiRequest, beginTask, makeSpace, settleSpace, tempDir, until } from './helpers.mjs';
 import { withLanguage } from '../src/i18n.mjs';
 
 const zh = (key, args) => t(key, args, 'zh');
@@ -45,9 +45,9 @@ test('posting a formatted diff comment calls its mentioned mock member next', as
   let server;
   t.after(() => server?.close());
   server = await startServer({ port: 0, dataDir: tempDir(t), mock: true });
-  const base = `http://127.0.0.1:${server.port}/api/spaces`;
+  const base = '/api/spaces';
   const post = async (url, body) => {
-    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const res = await apiRequest(server, url, 'POST', body);
     assert.equal(res.status, 201);
     return res.json();
   };
@@ -56,7 +56,7 @@ test('posting a formatted diff comment calls its mentioned mock member next', as
   const text = formatNotes([note(to.id, 'example.md', 3, 3, 'Check the units.')], en, to.name);
   const url = base + '/' + space.id;
   assert.equal((await post(url + '/messages', { text })).text, text);
-  const finished = await until(async () => (await fetch(url)).json(), (s) => !s.running && s.messages.some((m) => m.kind === 'ai'));
+  const finished = await until(async () => (await apiRequest(server, url)).json(), (s) => !s.running && s.messages.some((m) => m.kind === 'ai'));
   assert.deepEqual(finished.messages.filter((m) => m.kind === 'ai').map((m) => m.memberId), [to.id]);
 });
 

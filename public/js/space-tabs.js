@@ -17,7 +17,7 @@ register('spaceTabs', {
     el.innerHTML = `<div class="field"><label for="ssTitle">${tr('名字')}</label><input id="ssTitle" maxlength="60" value="${esc(space.title)}"></div>
       <div class="field"><div class="label">${tr('共享文件夹')}</div><span class="cmd">${esc(space.workspacePath)}</span></div>
       ${readOnlyTask ? `<p class="hint">${tr('这个任务已经结束，只能改名字。')}</p>` : `
-      <div class="field"><div class="label">${tr('AI 的权限')}</div><div class="choices">${accessChoices(space.access)}</div></div>
+      <div class="field"><div class="label">${tr('AI 的权限')}</div><div class="choices">${accessChoices(space.access, space.kind, { existing: true })}</div></div>
       ${allowed.length ? `<div class="field"><div class="label">${tr('运行前不再问的程序')}</div><div class="allowed-list" id="ssAllowed">${chips()}</div></div>` : ''}
       ${space.kind === 'task' ? '' : `<div class="field"><label for="ssTurns">${tr('每次最多来回几次')}</label>
         <input id="ssTurns" type="number" min="1" max="30" value="${esc(space.maxTurns)}" class="w-num"></div>`}`}`;

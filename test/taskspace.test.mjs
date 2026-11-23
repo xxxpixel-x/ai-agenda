@@ -7,7 +7,7 @@ import { startServer } from '../src/app-server.mjs';
 import { git } from '../src/git.mjs';
 import { parseTriage } from '../src/task-prompts.mjs';
 import { AbortedError } from '../src/engines/proc.mjs';
-import { tempDir, makeSpace, until, settleSpace, beginTask } from './helpers.mjs';
+import { apiRequest, tempDir, makeSpace, until, settleSpace, beginTask } from './helpers.mjs';
 
 const plan = (tasks) => ({ text: `计划如下。\n\`\`\`json\n${JSON.stringify({ tasks })}\n\`\`\`` });
 const triage = (reply, j) => ({ text: `${reply}\n\n\`\`\`json\n${JSON.stringify(j)}\n\`\`\`` });
@@ -169,9 +169,9 @@ test('server: legacy spaces are removed, folders lock across spaces, and summari
 
   const server = await startServer({ port: 0, dataDir, mock: true, hooks: { locales: () => ['zh-CN'] } });
   t.after(() => server.close());
-  const base = `http://127.0.0.1:${server.port}`;
+  server.allowFolder(own);
   const api = async (p, body, method = body ? 'POST' : 'GET') => {
-    const r = await fetch(base + p, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+    const r = await apiRequest(server, p, method, body);
     return { status: r.status, body: await r.json() };
   };
   const read = async (p) => (await api(p)).body;

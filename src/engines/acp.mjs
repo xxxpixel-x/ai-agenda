@@ -268,9 +268,8 @@ function activity(call, cwd) {
 
 function permissionResult(options, { allow, note }) {
   const kinds = allow ? ['allow_once', 'allow_always'] : ['reject_once', 'reject_always'];
-  const match = allow ? /allow|accept|approve/i : /reject|deny|decline/i;
   const option = kinds.map((k) => options.find((o) => o.kind === k)).find(Boolean)
-    || options.find((o) => match.test([o.kind, o.optionId, o.name].join(' '))) || (allow && options[0]);
+    || (allow && (options.find((o) => /allow|accept|approve/i.test([o.kind, o.optionId, o.name].join(' '))) || options[0]));
   const outcome = option?.optionId ? { outcome: 'selected', optionId: option.optionId } : { outcome: 'cancelled' };
   return {
     outcome,
@@ -317,10 +316,10 @@ export async function runTurn({ acp, system, prompt, model, cwd = process.cwd(),
     permissions.add(id);
     const toolCall = { ...tools.get(id), ...params.toolCall };
     const { action, command, filePath } = classifyPermission({ toolCall }, cwd);
-    let decision;
-    if (access === 'full' || action === 'read' || (access === 'run' && action === 'edit')) decision = { allow: true };
-    else if (onApproval) decision = await ctl.hold(onApproval({ command, kind: action, ...(filePath ? { path: filePath } : {}) }));
-    else decision = { allow: (access === 'edit' && action === 'edit') || (access === 'run' && action === 'command') };
+    let decision = { allow: access === 'full' || action === 'read' || (access === 'run' && action === 'edit') };
+    if ((access === 'edit' && action === 'edit') || (access === 'run' && action === 'command')) {
+      decision = onApproval ? await ctl.hold(onApproval({ command, kind: action, ...(filePath ? { path: filePath } : {}) })) : { allow: true };
+    }
     return permissionResult(options, decision);
   }
   let unverifiedPermissions = false;

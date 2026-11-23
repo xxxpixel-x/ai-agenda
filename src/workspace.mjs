@@ -4,6 +4,7 @@ import { t as tr } from './i18n.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { containsPath, physicalPath } from './paths.mjs';
 
 const SKIP_DIRS = new Set(['.git', 'node_modules', '.venv', 'venv', '__pycache__', 'dist', 'build', 'out', '.next',
   '.nuxt', 'target', '.idea', '.vs', '.vscode', '.cache', '.gradle', 'bin', 'obj', '.dsh', '.codex', '.claude']);
@@ -12,6 +13,15 @@ const MAX_FILE_BYTES = 1024 * 1024;   // 超过 1MB 的文件不跟踪
 const MAX_HISTORY = 500;
 
 const toPosix = (p) => p.split(path.sep).join('/');
+
+const SENSITIVE_NAMES = new Set(['.env', '.envrc', '.npmrc', '.pypirc', '.netrc', '.git-credentials']);
+const ENV_TEMPLATES = new Set(['.env.example', '.env.sample', '.env.template']);
+
+export function isSensitiveFile(relPath) {
+  const name = path.win32.basename(relPath).toLowerCase();
+  return SENSITIVE_NAMES.has(name) || (name.startsWith('.env.') && !ENV_TEMPLATES.has(name))
+    || /\.(pem|key|p12|pfx|jks|keystore)$/.test(name) || /^id_(rsa|ecdsa|ed25519)/.test(name);
+}
 
 function readText(abs) {
   const buf = fs.readFileSync(abs);
@@ -49,11 +59,15 @@ export class Workspace {
   }
 
   /** 把相对路径解析成文件夹内的绝对路径；越界则报错。 */
-  resolve(rel) {
+  resolve(rel, { createOnly = false } = {}) {
     const clean = String(rel || '').replace(/\\/g, '/').replace(/^\/+/, '');
     if (!clean || clean.split('/').some((s) => s === '..')) throw new Error(tr('文件路径不合法'));
     const abs = path.resolve(this.root, clean);
-    if (abs !== this.root && !abs.startsWith(this.root + path.sep)) throw new Error(tr('只能访问共享文件夹里的文件'));
+    // Exclusive creation never follows an existing final link. Still validate every parent.
+    const target = createOnly ? path.dirname(abs) : abs;
+    if (!containsPath(this.root, abs) || !containsPath(physicalPath(this.root), physicalPath(target))) {
+      throw new Error(tr('只能访问共享文件夹里的文件'));
+    }
     return abs;
   }
 
@@ -171,14 +185,20 @@ export class Workspace {
   }
 
   /** 由软件写入文件（你在编辑器里保存，或 API 型 AI 的文件块）。返回改动摘要。 */
-  write(rel, content, by, extra = {}) {
-    const abs = this.resolve(rel);
-    this.begin();
+  write(rel, content, by, { createOnly = false, ...extra } = {}) {
+    const abs = this.resolve(rel, { createOnly });
+    if (!createOnly) this.begin();
     const key = toPosix(path.relative(this.root, abs));
-    const before = this.cache.get(key)?.content ?? (fs.existsSync(abs) ? readText(abs) : null);
+    const before = createOnly ? null : this.cache.get(key)?.content ?? (fs.existsSync(abs) ? readText(abs) : null);
     fs.mkdirSync(path.dirname(abs), { recursive: true });
-    fs.writeFileSync(abs, content, 'utf8');
-    this.refresh();
+    try {
+      fs.writeFileSync(abs, content, { encoding: 'utf8', flag: createOnly ? 'wx' : 'w' });
+    } catch (e) {
+      if (createOnly && e.code === 'EEXIST') throw Object.assign(new Error(tr('文件已存在')), { status: 409, conflict: true });
+      throw e;
+    }
+    if (createOnly) this.acceptCopy(key);
+    else this.refresh();
     return this.record([{ path: key, before, after: content }], by, extra);
   }
 
@@ -219,11 +239,11 @@ export class Workspace {
     return this.record([{ path: e.path, before: current, after: e.before }], '我', { undoOf: e.id });
   }
 
-  /** 给 API 型 AI 用：当前所有文本文件的内容。 */
+  /** 给 API 型 AI 用：密钥文件只列文件名。 */
   snapshot() {
     this.begin();
-    return [...this.cache].filter(([, v]) => v.content != null)
-      .map(([p, v]) => ({ path: p, content: v.content }))
+    return [...this.cache].map(([p, v]) => isSensitiveFile(p) ? { path: p, content: null, sensitive: true } : { path: p, content: v.content })
+      .filter((f) => f.sensitive || f.content != null)
       .sort((a, b) => a.path.localeCompare(b.path, 'zh-CN'));
   }
 }

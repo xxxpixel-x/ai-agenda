@@ -9,6 +9,7 @@ import { tempDir, makeSpace } from './helpers.mjs';
 import * as workbuddy from '../src/importers/workbuddy.mjs';
 import * as geminiCli from '../src/importers/gemini-cli.mjs';
 import { parseImport } from '../src/importers/parse.mjs';
+import { withLanguage } from '../src/i18n.mjs';
 import { configureImporters, stagePasted, readSession } from '../src/importers/index.mjs';
 import { importSession, importsBackground } from '../src/imports.mjs';
 
@@ -21,6 +22,16 @@ function fakeHome(t) {
 }
 const write = (file, text) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text); };
 const jsonl = (rows) => rows.map((r) => JSON.stringify(r)).join('\n');
+
+test('a short text buffer imports and empty input reports a localized error', () => {
+  const [conversation] = parseImport(Buffer.from('ok'), 'tiny.txt');
+  assert.equal(conversation.title, 'tiny');
+  assert.deepEqual(conversation.entries.map((e) => e.text), ['ok']);
+  for (const input of [Buffer.alloc(0), Buffer.from('  \n '), '', ' \t\n', Buffer.from('\uFEFF')]) {
+    assert.throws(() => parseImport(input), { message: '这个文件里没有对话内容' });
+    withLanguage('en', () => assert.throws(() => parseImport(input), { message: 'This file contains no conversation content' }));
+  }
+});
 
 test('workbuddy: only your own words, the current branch, and short action summaries', (t) => {
   const home = fakeHome(t);
@@ -106,7 +117,6 @@ test('pasted text is split by speaker labels from common chat apps', () => {
 
   const [plain] = parseImport('只是一段笔记\n注意：没有说话人');
   assert.deepEqual(plain.entries.map((e) => e.role), ['ai']);
-  assert.deepEqual(parseImport('   '), []);
 });
 
 test('exports from ChatGPT, Claude.ai and Google Takeout, including zip files', () => {
@@ -140,15 +150,20 @@ test('exports from ChatGPT, Claude.ai and Google Takeout, including zip files', 
   assert.equal(days.length, 2);
   assert.deepEqual(days[0].entries.map((e) => e.text), ['第二天的问题', '回答&解释']);
 
-  // 手工拼一个 zip（一个压缩、一个不压缩的文件），看能不能找到 conversations.json
-  const entry = (name, data, method) => {
+  const zip = zipFixture([['chat.html', Buffer.from('<html></html>'), 0],
+    ['export/conversations.json', Buffer.from(JSON.stringify(chatgpt)), 8]]);
+  const [z] = parseImport(zip, 'chatgpt-export.zip');
+  assert.equal(z.title, '旅行计划');
+});
+
+function zipFixture(entries) {
+  const files = entries.map(([name, data, method]) => {
     const body = method ? zlib.deflateRawSync(data) : data;
     const n = Buffer.from(name);
     const local = Buffer.alloc(30); local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(method, 8); local.writeUInt32LE(zlib.crc32(data), 14);
     local.writeUInt32LE(body.length, 18); local.writeUInt32LE(data.length, 22); local.writeUInt16LE(n.length, 26);
     return { name: n, method, body, local: Buffer.concat([local, n, body]), crc: zlib.crc32(data), size: data.length };
-  };
-  const files = [entry('chat.html', Buffer.from('<html></html>'), 0), entry('export/conversations.json', Buffer.from(JSON.stringify(chatgpt)), 8)];
+  });
   let offset = 0;
   const central = files.map((f) => {
     const h = Buffer.alloc(46); h.writeUInt32LE(0x02014b50, 0); h.writeUInt16LE(f.method, 10); h.writeUInt32LE(f.crc, 16);
@@ -159,8 +174,43 @@ test('exports from ChatGPT, Claude.ai and Google Takeout, including zip files', 
   const cd = Buffer.concat(central);
   const end = Buffer.alloc(22); end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(files.length, 8); end.writeUInt16LE(files.length, 10);
   end.writeUInt32LE(cd.length, 12); end.writeUInt32LE(offset, 16);
-  const [z] = parseImport(Buffer.concat([...files.map((f) => f.local), cd, end]), 'chatgpt-export.zip');
-  assert.equal(z.title, '旅行计划');
+  return Buffer.concat([...files.map((f) => f.local), cd, end]);
+}
+
+test('ZIP rejects an oversized declaration before inflation and bounds actual output by the declared size', t => {
+  const zip = zipFixture([['notes.txt', Buffer.alloc(64, 65), 8]]);
+  const central = zip.readUInt32LE(zip.length - 6);
+  const inflate = t.mock.method(zlib, 'inflateRawSync');
+  for (const size of [32 * 1024 * 1024 + 1, 4]) {
+    zip.writeUInt32LE(size, 22);
+    zip.writeUInt32LE(size, central + 24);
+    if (size > 4) {
+      assert.throws(() => parseImport(zip), { message: 'zip 解压内容超过 32 MiB 上限' });
+      assert.equal(inflate.mock.callCount(), 0);
+    } else {
+      assert.throws(() => parseImport(zip), { message: 'zip 文件不完整或格式无效' });
+      assert.equal(inflate.mock.calls[0].arguments[1].maxOutputLength, 4);
+    }
+  }
+});
+
+test('ZIP validates local records, central directory and EOCD boundaries before extracting', () => {
+  const original = zipFixture([['notes.txt', Buffer.from('hello'), 0]]);
+  const end = original.length - 22;
+  const central = original.readUInt32LE(end + 16);
+  const malformed = [
+    [end + 16, 4, end + 1], [end + 12, 4, end], [end + 8, 2, 2], [end + 20, 2, 1],
+    [central + 42, 4, central - 1], [central + 28, 2, 0xffff], [central + 30, 2, 0xffff],
+    [0, 4, 0], [26, 2, 0], [28, 2, 0xffff], [18, 4, 0xffffffff], [22, 4, 1],
+    [central + 20, 4, central], [central + 24, 4, 0], [central + 10, 2, 12], [8, 2, 8],
+  ];
+  for (const [offset, width, value] of malformed) {
+    const changed = Buffer.from(original);
+    changed.writeUIntLE(value, offset, width);
+    assert.throws(() => parseImport(changed, 'notes.zip'), /zip/, 'offset ' + offset);
+  }
+  withLanguage('en', () => assert.throws(() => parseImport(original.subarray(0, 4)), /malformed ZIP/));
+  assert.equal(parseImport(original)[0].entries[0].text, 'hello');
 });
 
 test('a pasted conversation imports as text only, without adding a member', (t) => {

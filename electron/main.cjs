@@ -1,5 +1,6 @@
 // 桌面版入口：在本机起一个只给自己用的服务，再用一个独立窗口显示界面。
 const { app, BrowserWindow, ipcMain, dialog, shell, net, safeStorage, Menu, nativeTheme, Notification, powerSaveBlocker, Tray, nativeImage } = require('electron');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -8,6 +9,8 @@ const { execFileSync } = require('node:child_process');
 
 const ROOT = path.join(__dirname, '..');
 const MOCK = process.argv.includes('--mock');
+const apiToken = crypto.randomBytes(32).toString('hex');
+const cookieToken = crypto.randomBytes(32).toString('hex');
 // 从源码运行时数据放在项目里的 data/；安装版的程序目录是只读的，放到系统的用户数据目录
 const DATA_DIR = path.join(app.isPackaged ? app.getPath('userData') : ROOT, MOCK ? 'data-mock' : 'data');
 
@@ -42,7 +45,7 @@ let currentLanguage;
 const locales = () => app.getPreferredSystemLanguages?.()?.length ? app.getPreferredSystemLanguages() : [app.getLocale()];
 const tr = (key, vars) => i18n ? i18n.t(key, vars, currentLanguage?.() || i18n.resolveLanguage('system', locales())) : 'Agenda failed to start';
 
-function createWindow(url) {
+async function createWindow(url) {
   win = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -68,12 +71,13 @@ function createWindow(url) {
     });
   }
   // 外部链接用系统浏览器打开；窗口本身只显示本软件
+  const isAppUrl = (target) => target === url || target.startsWith(url + '/');
   win.webContents.setWindowOpenHandler(({ url: target }) => {
-    if (/^https?:\/\//i.test(target) && !target.startsWith(url)) shell.openExternal(target);
+    if (/^https?:\/\//i.test(target) && !isAppUrl(target)) shell.openExternal(target);
     return { action: 'deny' };
   });
   win.webContents.on('will-navigate', (e, target) => {
-    if (!target.startsWith(url)) { e.preventDefault(); if (/^https?:\/\//i.test(target)) shell.openExternal(target); }
+    if (!isAppUrl(target)) { e.preventDefault(); if (/^https?:\/\//i.test(target)) shell.openExternal(target); }
   });
   win.on('focus', () => win.flashFrame(false));
   // 设了定时任务：关窗口只是藏到托盘，定时任务照常运行；从托盘菜单或系统退出时才真的关
@@ -92,7 +96,8 @@ function createWindow(url) {
     if (input.key === 'F12') win.webContents.toggleDevTools();
     if ((input.control || input.meta) && input.key.toLowerCase() === 'r') win.webContents.reload();
   });
-  win.loadURL(url);
+  await win.webContents.session.cookies.set({ url, name: srv.cookieName, value: cookieToken, httpOnly: true, sameSite: 'strict', path: '/api' });
+  await win.loadURL(url);
 }
 
 const showWindow = () => {
@@ -158,6 +163,7 @@ app.whenReady().then(async () => {
     port: 0,
     dataDir: DATA_DIR,
     mock: MOCK,
+    auth: { token: apiToken, cookieToken },
     hooks: {
       desktop: true,
       locales,
@@ -191,9 +197,14 @@ app.whenReady().then(async () => {
     },
   });
 
+  ipcMain.on('get-api-token', (e) => {
+    e.returnValue = win && e.sender === win.webContents ? apiToken : '';
+  });
   ipcMain.handle('pick-folder', async () => {
     const r = await dialog.showOpenDialog(win, { title: tr('选择共享文件夹'), properties: ['openDirectory', 'createDirectory'] });
-    return r.canceled ? null : r.filePaths[0];
+    if (r.canceled || !r.filePaths[0]) return null;
+    srv.allowFolder(r.filePaths[0]);
+    return r.filePaths[0];
   });
 
   ipcMain.handle('get-theme', () => nativeTheme.themeSource);
@@ -205,7 +216,7 @@ app.whenReady().then(async () => {
   });
 
   console.log(tr('Agenda 桌面版已启动：{0}', [srv.url]));
-  createWindow(srv.url);
+  await createWindow(srv.url);
 }).catch((e) => {
   dialog.showErrorBox(tr('Agenda 启动失败'), String(e?.stack || e));
   app.quit();

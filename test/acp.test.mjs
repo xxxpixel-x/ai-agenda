@@ -11,7 +11,7 @@ import { createRegistry, CLI_ENGINE_IDS } from '../src/engines/index.mjs';
 import { createSettings } from '../src/settings.mjs';
 import { Space } from '../src/space.mjs';
 import { Store } from '../src/store.mjs';
-import { tempDir, until, settleSpace } from './helpers.mjs';
+import { apiRequest, tempDir, until, settleSpace } from './helpers.mjs';
 
 const fixture = fileURLToPath(new URL('./fixtures/mock-acp.mjs', import.meta.url));
 const config = (...args) => ({ name: 'Fixture', command: process.execPath, args: [fixture, ...args] });
@@ -163,21 +163,22 @@ for (const access of ['read', 'edit', 'run', 'full']) {
       const cwd = tempDir(t);
       const calls = [];
       const note = allow ? 'go ahead' : 'wait';
-      const reply = await turn(config('--request-edit', 'file.md', '--request-command', 'echo ok'), {
+      const reply = await turn(config('--request-edit', 'file.md', '--request-command', 'echo ok', '--request-read', '--request-other'), {
         cwd, access, onApproval(req) { calls.push(req); return { allow, note }; },
       });
-      const askEdit = access === 'read' || access === 'edit';
-      const askCommand = access !== 'full';
+      const askEdit = access === 'edit';
+      const askCommand = access === 'run';
       assert.deepEqual(calls, [
         ...(askEdit ? [{ kind: 'edit', command: 'Edit file.md', path: 'file.md' }] : []),
         ...(askCommand ? [{ kind: 'command', command: 'echo ok' }] : []),
       ]);
-      for (const [kind, ask] of [['edit', askEdit], ['execute', askCommand]]) {
-        const verdict = allow || !ask ? 'allow' : 'reject';
+      for (const [kind, ask, permitted] of [['edit', askEdit, access !== 'read'], ['execute', askCommand, ['run', 'full'].includes(access)],
+        ['read', false, true], ['other', false, access === 'full']]) {
+        const verdict = permitted && (!ask || allow) ? 'allow' : 'reject';
         assert.ok(reply.text.includes(kind + ' opt-' + verdict + '_once' + (ask ? ' ' + note : '')));
       }
       assert.equal(reply.text.split(note).length - 1, calls.length * 2);
-      assert.equal(fs.existsSync(path.join(cwd, 'file.md')), !askEdit || allow);
+      assert.equal(fs.existsSync(path.join(cwd, 'file.md')), access !== 'read' && (!askEdit || allow));
       assert.equal(reply.unverifiedPermissions, undefined);
     }
     const cwd = tempDir(t);
@@ -294,9 +295,7 @@ async function apiServer(t) {
   const server = await startServer({ dataDir, port: 0, mock: false });
   t.after(() => server.close());
   return async (url, method = 'GET', body, expected = 200) => {
-    const response = await fetch('http://127.0.0.1:' + server.port + url, {
-      method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-    });
+    const response = await apiRequest(server, url, method, body);
     const data = await response.json();
     assert.equal(response.status, expected, JSON.stringify(data));
     return data;
@@ -334,22 +333,25 @@ test('settings save and handshake endpoints probe live processes and expose thei
   assert.deepEqual(partial.customAcp, view.customAcp);
 });
 
-test('read and edit chat spaces show one-off cards for each ACP mutation', async (t) => {
+test('ACP chat approvals only show actions within the space ceiling', async (t) => {
   const api = await apiServer(t);
   const { customAcp: [c] } = await api('/api/settings', 'PUT', { customAcp: [config('--request-edit', 'change.md', '--request-command', 'echo ok')] });
   for (const access of ['read', 'edit']) {
     const space = await api('/api/spaces', 'POST', { kind: 'chat', title: 'Interactive approvals', access, members: [{ engine: 'acp:' + c.id, name: 'Agent' }] }, 201);
     const url = '/api/spaces/' + space.id;
     await api(url + '/messages', 'POST', { text: 'Check the workspace' }, 201);
-    for (const kind of ['edit', 'command']) {
+    if (access === 'edit') {
       const card = await until(async () => (await api(url)).messages.at(-1).approvals?.find((a) => a.status === 'pending'), Boolean);
-      assert.equal(card.kind, kind);
+      assert.equal(card.kind, 'edit');
       assert.deepEqual(card.programs, []);
-      await api(url + '/approvals/' + card.id, 'POST', { decision: kind === 'edit' ? 'deny' : 'allow', note: 'only this time' });
+      await api(url + '/approvals/' + card.id, 'POST', { decision: 'allow', note: 'only this time' });
     }
     const final = await until(() => api(url), (sp) => !sp.running);
-    assert.match(final.messages.at(-1).text, /edit opt-reject_once only this time.*execute opt-allow_once only this time/);
-    assert.equal(fs.existsSync(path.join(space.workspace.path, 'change.md')), false);
+    const reply = final.messages.at(-1);
+    assert.deepEqual((reply.approvals || []).map(card => card.kind), access === 'edit' ? ['edit'] : []);
+    assert.match(reply.text, access === 'edit' ? /edit opt-allow_once only this time/ : /edit opt-reject_once/);
+    assert.match(reply.text, /execute opt-reject_once/);
+    assert.equal(fs.existsSync(path.join(space.workspace.path, 'change.md')), access === 'edit');
     await until(() => api(url + '/memory'), (memory) => !memory.organizing);
   }
 });

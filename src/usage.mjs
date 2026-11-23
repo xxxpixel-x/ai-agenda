@@ -48,3 +48,23 @@ export function latest(spaceData, memberId) {
   }
   return usage;
 }
+
+/** 独立统计后台整理与会话交接的用量（不与前台成员发言混淆）。 */
+export function summarizeBackground(spaceData, { since } = {}) {
+  const sum = (items = []) => {
+    const total = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, turns: 0 };
+    for (const item of items) {
+      if (!item?.usage) continue;
+      if (since != null && (!Number.isFinite(item.at) || item.at < since)) continue;
+      for (const key of ['input', 'output', 'cacheRead', 'cacheWrite']) {
+        if (Number.isFinite(item.usage[key])) total[key] += item.usage[key];
+      }
+      total.turns++;
+    }
+    return total;
+  };
+  return {
+    organize: sum(spaceData?.organizeLogs),
+    handoff: sum(spaceData?.handoffLogs),
+  };
+}

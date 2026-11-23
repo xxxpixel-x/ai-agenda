@@ -8,7 +8,10 @@ import { fauxAssistantMessage as reply, fauxProvider, fauxText, fauxToolCall } f
 import { detect, findShell, insideDir, meta, runTurn, toolsFor, usageFrom } from '../src/engines/pi.mjs';
 import { Space } from '../src/space.mjs';
 import { Store } from '../src/store.mjs';
-import { isMemoryCall, MEMORY_IDLE, settleSpace, tempDir, testInChinese as test, until } from './helpers.mjs';
+import { createRegistry } from '../src/engines/index.mjs';
+import { createSettings } from '../src/settings.mjs';
+import { createExtensionsManager } from '../src/extensions.mjs';
+import { isMemoryCall, libraryFixture, MEMORY_IDLE, settleSpace, tempDir, testInChinese as test, until } from './helpers.mjs';
 
 const fixture = (name) => fileURLToPath(new URL('./fixtures/pi-' + name + '.mjs', import.meta.url));
 const call = (name, args) => reply(fauxToolCall(name, args), { stopReason: 'toolUse' });
@@ -42,7 +45,8 @@ test('工具表、Windows shell 探测、接口检测和配置错误', async (t)
   const edit = [...read, 'write', 'edit'];
   assert.deepEqual(toolsFor('read', 'bash'), read);
   assert.deepEqual(toolsFor('edit', 'bash'), edit);
-  assert.deepEqual(toolsFor('run', 'powershell'), [...edit, 'powershell']);
+  assert.deepEqual(toolsFor('run', 'powershell'), edit);
+  assert.deepEqual(toolsFor('run', 'powershell', { onApproval() {} }), [...edit, 'powershell']);
   assert.deepEqual(toolsFor('full', 'bash'), [...edit, 'bash']);
   const locate = (files, env = {}, platform = 'win32') => findShell({ platform, env, isFile: (p) => files.includes(p) });
   const bash = 'F:\\Git\\bin\\bash.exe';
@@ -71,8 +75,13 @@ test('工具表、Windows shell 探测、接口检测和配置错误', async (t)
 
 test('按成员或接口选择模型，运行时密钥保留字面值', async (t) => {
   const { cwd, agentDir, faux } = setup(t);
-  const { ModelRuntime } = await import('@earendil-works/pi-coding-agent');
-  let runtime, selected;
+  const { AgentSession, ModelRuntime } = await import('@earendil-works/pi-coding-agent');
+  let runtime, selected, blockImages;
+  const prompt = AgentSession.prototype.prompt;
+  t.mock.method(AgentSession.prototype, 'prompt', function (...args) {
+    blockImages = this.settingsManager.getBlockImages();
+    return prompt.apply(this, args);
+  });
   const stream = ModelRuntime.prototype.streamSimple;
   // 保留真实的模型注册和鉴权，只把最终的流式请求交给 faux。
   t.mock.method(ModelRuntime.prototype, 'streamSimple', function (model, ctx, opts) {
@@ -81,9 +90,12 @@ test('按成员或接口选择模型，运行时密钥保留字面值', async (t
     this.registerNativeProvider(faux.provider);
     return stream.call(this, faux.getModel(), ctx, opts);
   });
-  for (const apiKey of ['$AGENDA_FAKE_KEY', '!fake-key']) {
-    const override = apiKey.startsWith('!');
-    const conn = { id: 'sample', name: '模拟', model: 'default-model', baseUrl: 'https://example.invalid/v1', apiKey, images: !override };
+  for (const [apiKey, override, vision, flags] of [
+    ['$AGENDA_FAKE_KEY', false, true, { disabledImages: ['member-model'] }],
+    ['!fake-key', true, false, { disabledImages: ['member-model'] }],
+    ['legacy-key', false, false, { images: false }],
+  ]) {
+    const conn = { id: 'sample', name: '模拟', model: 'default-model', baseUrl: 'https://example.invalid/v1', apiKey, ...flags };
     faux.setResponses([reply('ok')]);
     const r = await runTurn({ cwd, agentDir, conn, model: override ? 'member-model' : '', effort: override ? 'high' : 'off', prompt: 'hello' });
     assert.equal(r.text, 'ok');
@@ -91,7 +103,8 @@ test('按成员或接口选择模型，运行时密钥保留字面值', async (t
     assert.equal(selected.api, 'openai-completions');
     assert.equal(selected.baseUrl, conn.baseUrl);
     assert.equal(selected.id, override ? 'member-model' : 'default-model');
-    assert.deepEqual(selected.input, override ? ['text'] : ['text', 'image']);
+    assert.deepEqual(selected.input, vision ? ['text', 'image'] : ['text']);
+    assert.equal(blockImages, !vision);
     assert.equal(selected.reasoning, override);
     assert.equal(runtime.getRegisteredProviderConfig('agenda-sample').apiKey, undefined);
     assert.equal((await runtime.getAuth(selected)).auth.apiKey, apiKey);
@@ -120,13 +133,13 @@ for (const access of ['read', 'edit', 'run', 'full']) {
       (ctx) => { actual = results(ctx); return reply('done'); }], { access });
     const full = access === 'full';
     assert.equal(actual.length, calls.length);
-    assert.deepEqual(actual.map((r) => !!r.isError), [false, !full, !full, !full, !full, !full, access === 'read', !['run', 'full'].includes(access)]);
+    assert.deepEqual(actual.map((r) => !!r.isError), [false, !full, !full, !full, !full, !full, access === 'read', !full]);
     assert.match(contents(actual[0]), /inside-data/);
     for (const r of actual.slice(1, 4)) assert.match(contents(r), full ? /outside-secret/ : /只能访问共享文件夹里的文件/);
     assert.equal(fs.readFileSync(file, 'utf8'), full ? 'changed' : 'outside-secret');
     assert.equal(fs.existsSync(path.join(root, 'outside-dir/new/deep.txt')), full);
     assert.equal(fs.existsSync(path.join(cwd, 'ok.txt')), access !== 'read');
-    assert.equal(fs.existsSync(path.join(cwd, 'made.txt')), ['run', 'full'].includes(access));
+    assert.equal(fs.existsSync(path.join(cwd, 'made.txt')), full);
     assert.ok(insideDir('.', cwd));
     assert.ok(insideDir('new/dir/file', cwd));
     assert.ok(!insideDir('link/missing', cwd));
@@ -149,7 +162,7 @@ test('命令审批的决定、附言、活动、逐条事件和流式分段', as
     access: 'run', onApproval: (req) => { requests.push(req); return decisions.shift(); },
     onActivity: (a) => activities.push(a), onDelta: (s) => deltas.push(s), onRaw: (line) => raw.push(JSON.parse(line)),
   });
-  assert.deepEqual(requests, commands.map((command) => ({ command })));
+  assert.deepEqual(requests, commands.map((command) => ({ command, canAlways: false })));
   assert.deepEqual(commands.map((c) => fs.existsSync(path.join(cwd, c.split(' ').at(-1)))), [true, false, true]);
   assert.match(contents(actual[1]), /没有同意.*稍后再试/);
   assert.match(contents(actual[2]), /同意了刚才那条命令，并补充：记录耗时/);
@@ -224,39 +237,50 @@ test('指定 skill、默认系统提示、思考档位和图片一起传给模�
 });
 
 test('MCP 工具的暴露、执行和逐条审批', async (t) => {
-  const { turn, root } = setup(t);
+  const { turn, root, cwd, faux } = setup(t);
   const log = path.join(root, 'calls.jsonl');
+  const command = { command: process.execPath, args: [fixture('mcp-server'), log] };
+  const manager = createExtensionsManager(libraryFixture(t));
+  manager.installMcp({ id: 'read-only', mode: 'readonly', ...command });
+  manager.installMcp({ id: 'writer', mode: 'mutating', ...command });
+  const registry = createRegistry(createSettings(path.join(root, 'settings.json')), { extensions: manager });
+  const reader = 'mcp__read_only__echo', writer = 'mcp__writer__echo';
   const tool = 'mcp__mock__echo';
-  const mcp = { mock: { command: process.execPath, args: [fixture('mcp-server'), log], cwd: root } };
+  const mcp = { mock: command };
+  const executed = [];
   for (const access of ['full', 'read', 'edit', 'run']) {
     let actual, declared;
     const asked = [];
-    const args = { text: access };
-    await turn([(ctx) => {
+    const readArgs = { text: 'read-' + access }, writeArgs = { text: 'write-' + access };
+    faux.setResponses([(ctx) => {
       declared = ctx.messages.filter((m) => m.role === 'system').flatMap((m) => m.toolsAdded || []).map((v) => v.name);
-      return call(tool, args);
-    }, (ctx) => { actual = results(ctx).at(-1); return reply('done'); }], {
-      mcp, access, onApproval: (req) => { asked.push(req); return { allow: true }; },
+      return call(reader, readArgs);
+    }, call(writer, writeArgs), (ctx) => { actual = results(ctx); return reply('done'); }]);
+    await registry.runTurn('pi', {
+      cwd, prompt: 'Hello', provider: faux.provider, mcp: ['read-only', 'writer'], access,
+      onApproval: (req) => { asked.push(req); return { allow: true }; },
     });
-    const allowed = access === 'full' || access === 'run';
-    assert.equal(declared.includes(tool), allowed, JSON.stringify({ access, declared, actual }));
+    const canWrite = access === 'full' || access === 'run';
+    assert.ok(declared.includes(reader));
+    assert.equal(declared.includes(writer), canWrite);
     assert.ok(!declared.includes('tool_search') && !declared.includes('codemode'));
-    assert.equal(!!actual.isError, !allowed);
-    if (allowed) assert.match(contents(actual), new RegExp('echo: ' + access));
-    assert.deepEqual(asked, access === 'run' ? [{ command: tool + ' ' + JSON.stringify(args) }] : []);
+    assert.deepEqual(actual.map(r => !!r.isError), [false, !canWrite]);
+    assert.match(contents(actual[0]), new RegExp('echo: ' + readArgs.text));
+    executed.push(readArgs.text);
+    if (canWrite) executed.push(writeArgs.text);
+    assert.deepEqual(asked, access === 'run' ? [{ command: writer + ' ' + JSON.stringify(writeArgs), canAlways: false }] : []);
   }
   const long = { text: 'x'.repeat(250) };
   let denied;
   await turn([call(tool, long), (ctx) => { denied = results(ctx).at(-1); return reply('done'); }], {
     access: 'run', mcp, onApproval: ({ command }) => {
-      assert.equal(command.length, 200);
-      assert.ok(command.startsWith(tool + ' {"text":"'));
+      assert.equal(command, tool + ' ' + JSON.stringify(long));
       return { allow: false, note: '稍后调用' };
     },
   });
   assert.ok(denied.isError);
   assert.match(contents(denied), /稍后调用/);
-  assert.deepEqual(fs.readFileSync(log, 'utf8').trim().split('\n').map((s) => JSON.parse(s).text), ['full', 'run']);
+  assert.deepEqual(fs.readFileSync(log, 'utf8').trim().split('\n').map((s) => JSON.parse(s).text), executed);
 });
 
 test('只累计本轮用量，续聊带上旧消息，未知会话可回退', async (t) => {
@@ -347,6 +371,102 @@ test('流式输出期间中止', async (t) => {
   assert.ok(streamed);
 });
 
+for (const imageFailure of [false, true]) {
+  test('Pi 空闲超时保留 stalled 错误：' + (imageFailure ? '带图中止后不重试' : '中止后正常返回部分文字'), async t => {
+    const { root, turn } = setup(t);
+    const { AgentSession } = await import('@earendil-works/pi-coding-agent');
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const started = Promise.withResolvers(), stopped = Promise.withResolvers();
+    let emit;
+    t.mock.method(AgentSession.prototype, 'subscribe', listener => { emit = listener; return () => {}; });
+    const abort = t.mock.method(AgentSession.prototype, 'abort', async () => stopped.resolve());
+    const prompt = t.mock.method(AgentSession.prototype, 'prompt', async (_prompt, { images }) => {
+      assert.equal(images.length, Number(imageFailure));
+      emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'partial' } });
+      started.resolve();
+      await stopped.promise;
+      if (imageFailure) throw new Error('400 unsupported image');
+      emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'aborted' } });
+    });
+    const file = path.join(root, 'pixel.png');
+    fs.writeFileSync(file, Buffer.from(png, 'base64'));
+    const delta = t.mock.fn(), fallback = t.mock.fn();
+    const running = turn([], {
+      idleMs: 40, conn: { name: '测试接口' }, images: imageFailure ? [{ path: file, type: 'image/png' }] : [],
+      onDelta: delta, onNoImages: fallback,
+    });
+    await started.promise;
+    t.mock.timers.tick(39);
+    emit({ type: 'tool_execution_update' }); // 没有文字的事件也重新计时
+    t.mock.timers.tick(39);
+    assert.equal(abort.mock.callCount(), 0);
+    t.mock.timers.tick(1);
+    await assert.rejects(running, { stalled: true, message: /测试接口.*1 分钟/ });
+    assert.equal(delta.mock.calls[0].arguments[0], 'partial');
+    assert.equal(abort.mock.callCount(), 1);
+    assert.equal(fallback.mock.callCount(), 0);
+    assert.equal(prompt.mock.callCount(), 1);
+  });
+}
+
+test('Pi 创建会话尚未完成也会空闲超时', async t => {
+  const { turn } = setup(t);
+  const { ModelRuntime } = await import('@earendil-works/pi-coding-agent');
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const started = Promise.withResolvers();
+  t.mock.method(ModelRuntime, 'create', ({ signal }) => { started.resolve(signal); return new Promise(() => {}); });
+  const running = turn([], { idleMs: 40 });
+  const signal = await started.promise;
+  t.mock.timers.tick(40);
+  await assert.rejects(running, { stalled: true });
+  assert.ok(signal.aborted);
+});
+
+test('Pi 绑定和关闭扩展都卡住时仍然释放会话', async t => {
+  const { turn } = setup(t);
+  const { AgentSession } = await import('@earendil-works/pi-coding-agent');
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const binding = Promise.withResolvers(), shuttingDown = Promise.withResolvers();
+  const dispose = t.mock.method(AgentSession.prototype, 'dispose');
+  t.mock.method(AgentSession.prototype, 'bindExtensions', function () {
+    t.mock.method(this.extensionRunner, 'emit', event => {
+      assert.equal(event.type, 'session_shutdown');
+      shuttingDown.resolve();
+      return new Promise(() => {});
+    });
+    binding.resolve();
+    return new Promise(() => {});
+  });
+  const running = turn([], { idleMs: 40 });
+  await binding.promise;
+  t.mock.timers.tick(40);
+  await shuttingDown.promise;
+  t.mock.timers.tick(3000);
+  await assert.rejects(running, { stalled: true });
+  assert.equal(dispose.mock.callCount(), 1);
+});
+
+test('Pi 审批等待暂停计时，决定后恢复计时', async t => {
+  const { turn } = setup(t);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const asked = Promise.withResolvers(), answer = Promise.withResolvers(), resumed = Promise.withResolvers();
+  const running = turn([call(findShell().tool, { command: 'echo approved' }), (_ctx, opts) => {
+    resumed.resolve(opts.signal);
+    return new Promise(resolve => opts.signal.addEventListener('abort', () => resolve(reply('stopped')), { once: true }));
+  }], {
+    idleMs: 40, access: 'run', onApproval: () => { asked.resolve(); return answer.promise; },
+  });
+  await asked.promise;
+  t.mock.timers.tick(4000);
+  answer.resolve({ allow: false });
+  const signal = await resumed.promise;
+  t.mock.timers.tick(39);
+  assert.equal(signal.aborted, false);
+  t.mock.timers.tick(1);
+  await assert.rejects(running, { stalled: true });
+  assert.ok(signal.aborted);
+});
+
 test('任务副本可读取空间记忆库，写入、编辑以及跨界联接被拒绝', async (t) => {
   const { root, turn } = setup(t);
   const memory = path.join(root, 'memory');
@@ -375,4 +495,57 @@ test('工作区内的只读目录经另一条目录联接访问仍然只读', as
     (ctx) => { actual = results(ctx); return reply('done'); }], { access: 'edit', readOnlyDirs: [memory] });
   assert.ok(actual[0].isError);
   assert.equal(fs.existsSync(path.join(memory, 'messages/new.md')), false);
+});
+
+test('带只读记忆目录时，run 有审批可逐条放行、无审批禁用，full 放行且仍拦截文件工具写入只读目录', async t => {
+  const { root, cwd, turn } = setup(t);
+  const memory = path.join(root, 'memory');
+  fs.mkdirSync(memory);
+  const memFile = path.join(memory, 'memory.md');
+  fs.writeFileSync(memFile, 'original');
+  const log = path.join(root, 'calls.jsonl');
+  const mcp = { writer: { command: process.execPath, args: [fixture('mcp-server'), log] } };
+  const shell = findShell().tool;
+
+  // run 无审批通道（如无人值守任务子任务）：禁用 shell 和可写 MCP
+  let unattended;
+  await turn([call(shell, { command: 'echo x > unattended.txt' }), call('mcp__writer__echo', { text: 'unattended' }),
+    (ctx) => { unattended = results(ctx); return reply('done'); }], { access: 'run', mcp, readOnlyDirs: [memory] });
+  assert.deepEqual(unattended.map(r => !!r.isError), [true, true]);
+  assert.equal(fs.existsSync(path.join(cwd, 'unattended.txt')), false);
+  assert.equal(fs.existsSync(log), false);
+
+  // run 有审批通道（真实聊天空间，含 readOnlyDirs）：可逐次批准命令和可写 MCP，且禁用“总是允许”
+  const asked = [];
+  let chatRun;
+  await turn([
+    call('write', { path: memFile, content: 'hacked' }),
+    call(shell, { command: 'echo x > chat-run.txt' }),
+    call('mcp__writer__echo', { text: 'chat-run' }),
+    (ctx) => { chatRun = results(ctx); return reply('done'); },
+  ], {
+    access: 'run', mcp, readOnlyDirs: [memory],
+    onApproval: (req) => { asked.push(req); return { allow: true }; },
+  });
+  assert.deepEqual(chatRun.map(r => !!r.isError), [true, false, false]);
+  assert.equal(asked.length, 2);
+  assert.ok(asked.every(req => req.canAlways === false));
+  assert.equal(fs.existsSync(path.join(cwd, 'chat-run.txt')), true);
+  assert.equal(fs.readFileSync(memFile, 'utf8'), 'original');
+
+  // full 带只读目录：放行命令、可写 MCP 和工作区外读写，但文件工具仍不能直接写只读目录
+  const outside = path.join(root, 'outside.txt');
+  let fullRun;
+  await turn([
+    call('write', { path: memFile, content: 'hacked' }),
+    call('write', { path: outside, content: 'ok' }),
+    call(shell, { command: 'echo x > full-run.txt' }),
+    call('mcp__writer__echo', { text: 'full-run' }),
+    (ctx) => { fullRun = results(ctx); return reply('done'); },
+  ], { access: 'full', mcp, readOnlyDirs: [memory] });
+  assert.deepEqual(fullRun.map(r => !!r.isError), [true, false, false, false]);
+  assert.equal(fs.readFileSync(memFile, 'utf8'), 'original');
+  assert.equal(fs.readFileSync(outside, 'utf8'), 'ok');
+  assert.equal(fs.existsSync(path.join(cwd, 'full-run.txt')), true);
+  assert.deepEqual(fs.readFileSync(log, 'utf8').trim().split('\n').map((s) => JSON.parse(s).text), ['chat-run', 'full-run']);
 });

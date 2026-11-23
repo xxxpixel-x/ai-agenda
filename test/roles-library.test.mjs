@@ -188,7 +188,7 @@ test('language sync defers until idle, applies the last request and preserves ed
 });
 
 test('library HTTP CRUD, export, import and settings language change through normal entry points', async t => {
-  const req = await libraryHttp(t);
+  const { api: req } = await libraryHttp(t);
   const api = (route,...args) => req('library/' + route,...args);
   assert.equal((await api('roles')).length,7); assert.equal((await api('teams')).length,3);
   const zh = await api('roles/qa');

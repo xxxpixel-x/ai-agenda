@@ -1,12 +1,12 @@
 // 成员编辑器：新建空间 / 空间设置共用
 import { closeStream, showWelcome } from './chat.js';
-import { refreshEngines, showModal } from './engines.js';
+import { refreshEnginesForDialog, showModal } from './engines.js';
 import { bindImportOptions, importOptionsHtml, openSessionPicker, readImportOptions, safeName, samePath, wan } from './imports.js';
 import { refreshSpaces, renderSpaceList } from './sidebar.js';
 import { list } from './slots.js';
 import { chooseMembers, mountControls, permissions } from './library/member-tools.js';
 import { lib, report } from './library/shared.js';
-import { $, $$, ACCESS, ICON, api, engineOf, esc, load, shownEngines, state, store, toast, tr } from './util.js';
+import { $, $$, ICON, api, appInfo, engineOf, esc, load, shownEngines, spaceAccessOptions, state, store, toast, tr } from './util.js';
 
 // ---------------- 成员编辑器（新建空间 / 空间设置共用） ----------------
 // 型号候选：写死的常用型号 + 检测时查到的（字符串，或 [型号, 显示名]）
@@ -56,7 +56,7 @@ export function memberEditor(container, members, onChange, { editing = false } =
       const e = engineOf(m.engine) || {};
       const models = modelChoices(e);
       const st = e.status || {};
-      m.source = sourceOf(e, m);
+      if (e.id) m.source = sourceOf(e, m);
       const src = sourceChoice(e, m.source);
       const ready = src ? st.available : st.ready; // 用接口时不需要登录这个 AI 自己的账号
       const current = choiceValue(m.engine, m.source);
@@ -78,7 +78,7 @@ export function memberEditor(container, members, onChange, { editing = false } =
           <button class="btn sm ghost" type="button" data-act="save-role">${tr('存为角色卡')}</button></details>
       </div>`;
     }).join('')}</div>
-    <button class="btn sm ghost" type="button" data-act="add-member" ${members.length >= 8 ? 'disabled' : ''}>${ICON.plus}${tr('添加成员')}</button>
+    <button class="btn sm ghost" type="button" data-act="add-member" ${members.length >= 8 || !shownEngines().length ? 'disabled' : ''}>${ICON.plus}${tr('添加成员')}</button>
     <button class="btn sm" type="button" data-act="add-role" ${members.length >= 8 ? 'disabled' : ''}>${tr('从角色卡添加')}</button>`;
     mountControls(container,members,installed);
     onChange?.();
@@ -153,9 +153,12 @@ function defaultMembers() {
   list = list.filter((e) => !builtin(e) || (!seen.has(e.defaultName) && seen.add(e.defaultName)));
   return list.slice(0, 4).map((e) => ({ engine: e.id, name: e.defaultName, model: '', effort: '', persona: '' }));
 }
-export const accessChoices = (cur) => Object.entries(ACCESS).map(([k, v]) => `
-  <label class="choice"><input type="radio" name="access" value="${k}" ${k === cur ? 'checked' : ''}>
-    <span><b>${v.label}</b><div class="d">${v.desc}</div></span></label>`).join('');
+export function accessChoices(selected, kind = 'chat', options) {
+  const { choices, access } = spaceAccessOptions(selected, kind, options);
+  return Object.entries(choices).map(([level, { label, desc }]) => `
+    <label class="choice"><input type="radio" name="access" value="${level}" ${level === access ? 'checked' : ''}>
+      <span><b>${label}</b><div class="d">${desc}</div></span></label>`).join('');
+}
 
 // 任务空间的执行选项：新建和任务空间设置共用
 const PLAN_CONFIRM = {
@@ -193,8 +196,9 @@ const copyMembers = (list) => list.map(({ engine,source,name,model,effort,person
  *  members / coordinatorName / task / access / folder：照搬的成员和设置
  */
 export async function openNewSpaceModal(opts = {}) {
-  await refreshEngines();
+  if (!await refreshEnginesForDialog(tr('新建空间'))) return;
   const members = opts.members?.length ? copyMembers(opts.members) : defaultMembers();
+  const initialAccess = opts.access || load('lastAccess');
   let kind = opts.kind === 'task' ? 'task' : 'chat';
   let imp = null; // 从一段对话开始时选中的对话
   let autoFolder = ''; // 软件自动填的共享文件夹；你自己选过别的就不再跟着变
@@ -205,7 +209,8 @@ export async function openNewSpaceModal(opts = {}) {
     if (!imp?.cwd || (f.value && f.value !== autoFolder)) return;
     const box = $('#nsImport', dlg);
     const topic = $('input[name=impMode]:checked', box)?.value === 'topic' ? safeName($('#impTopic', box).value) : '';
-    autoFolder = topic ? `${imp.cwd.replace(/[\\/]+$/, '')}\\${topic}` : imp.cwd;
+    const separator = appInfo.platform === 'win32' ? '\\' : '/';
+    autoFolder = topic ? `${imp.cwd.replace(/[\\/]+$/, '')}${separator}${topic}` : imp.cwd;
     f.value = autoFolder;
     $('input[name=ws][value=folder]', dlg).checked = true;
   };
@@ -231,7 +236,7 @@ export async function openNewSpaceModal(opts = {}) {
           <label class="choice"><input type="radio" name="ws" value="folder" ${!sharedChoice && opts.folder ? 'checked' : ''}><span><b>${tr('用电脑上已有的文件夹')}</b><div class="d">${tr('AI 会直接读写里面的文件')}</div>
             <div class="folder-row"><input id="nsFolder" placeholder="${tr('点右边按钮选择')}" readonly value="${esc(opts.folder || '')}"><button class="btn sm" type="button" data-act="pick">${tr('选择…')}</button></div></span></label>
         </div></div>
-      <div class="field"><div class="label">${tr('AI 的权限')}</div><div class="choices">${accessChoices(opts.access || (ACCESS[load('lastAccess')] ? load('lastAccess') : 'edit'))}</div></div>
+      <div class="field"><div class="label">${tr('AI 的权限')}</div><div class="choices" id="nsAccess"></div></div>
       <details class="more-opts">
         <summary>${tr('更多选项')}</summary>
         <div data-for="task">${taskOptionsHtml(opts.task)}</div>
@@ -253,6 +258,8 @@ export async function openNewSpaceModal(opts = {}) {
     $('#nsCoord', dlg).innerHTML = members.map((m, i) => `<option value="${i}" ${i === coordIndex ? 'selected' : ''}>${esc(m.name || tr('成员 {0}', [i + 1]))}</option>`).join('');
   };
   const applyKind = () => {
+    const selected = $('input[name=access]:checked', dlg)?.value || initialAccess;
+    $('#nsAccess', dlg).innerHTML = accessChoices(selected, kind);
     for (const el of $$('[data-for]', dlg)) el.hidden = el.dataset.for !== kind;
     $('#nsHead', dlg).textContent = opts.lockKind ? tr('转到新的任务空间') : tr('新建空间');
     $('#nsFromChat', dlg).hidden = kind !== 'chat';
@@ -292,8 +299,10 @@ export async function openNewSpaceModal(opts = {}) {
     if (b.dataset.act === 'team') { try { await loadTeam(); } catch (e) { report(e); } }
     if (b.dataset.act === 'close') dlg.close();
     if (b.dataset.act === 'pick') {
-      const p = await window.desktop?.pickFolder?.();
-      if (p) { $('#nsFolder', dlg).value = p; $('input[name=ws][value=folder]', dlg).checked = true; }
+      try {
+        const p = await window.desktop?.pickFolder?.();
+        if (p) { $('#nsFolder', dlg).value = p; $('input[name=ws][value=folder]', dlg).checked = true; }
+      } catch (e) { report(e); }
     }
     if (b.dataset.act === 'from-chat') {
       const s = await openSessionPicker();
@@ -381,7 +390,8 @@ export function openSimilarTask(sp) {
 export async function openSpaceSettings() {
   const sp = state.space;
   if (!sp) return;
-  await refreshEngines();
+  const title = sp.kind === 'task' ? tr('任务空间设置') : tr('空间设置');
+  if (!await refreshEnginesForDialog(title) || state.space?.id !== sp.id) return;
   const collectors = [];
   const ctx = {
     space: sp,
@@ -392,7 +402,6 @@ export async function openSpaceSettings() {
   if (!tabs.length) return;
   const remembered = load('rt:spaceTab');
   const active = tabs.find((tab) => tab.id === remembered) || tabs[0];
-  const title = sp.kind === 'task' ? tr('任务空间设置') : tr('空间设置');
   const dlg = showModal(`<div class="modal-inner">
     <div class="modal-head"><h3>${esc(title)}</h3><button class="icon-btn" type="button" data-act="close">${ICON.close}</button></div>
     ${tabs.length > 1 ? `<div class="modal-tabs" role="tablist" aria-label="${esc(title)}">
@@ -457,11 +466,15 @@ export async function openSpaceSettings() {
 
 export function openDeleteSpaceModal(sp) {
   const managed = sp.workspace.type === 'managed';
+  const sharedWith = sp.folderSharedWith || [];
+  const folderNote = !managed ? tr('你的共享文件夹及里面的文件会保留。') : sharedWith.length
+    ? tr('共享文件夹还被「{0}」使用，文件会保留。', [sharedWith.map(esc).join(tr('、'))])
+    : tr('软件建的共享文件夹及里面的文件也会一起删除。');
   const dlg = showModal(`<div class="modal-inner">
     <div class="modal-head"><h3>${tr('删除「{0}」？', [esc(sp.title)])}</h3></div>
     <div class="modal-body">
       <p>${tr('聊天记录、导入的对话和任务记录都会删除，无法恢复。正在进行的讨论和任务会先停止。')}</p>
-      <p>${managed ? tr('软件建的共享文件夹及里面的文件也会一起删除。') : tr('你的共享文件夹及里面的文件会保留。')}</p>
+      <p>${folderNote}</p>
       <span class="cmd">${esc(sp.workspacePath)}</span>
       <p class="err" data-delete-error role="alert" hidden></p>
     </div>

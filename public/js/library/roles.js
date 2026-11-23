@@ -1,8 +1,10 @@
 import { $, ICON, esc, engineOf, md, state, tr } from '../util.js';
+import { refreshEnginesForDialog } from '../engines.js';
 import { modelChoices, effortChoices } from '../space-form.js';
 import { actions, button, checks, checked, chip, choice, exportLink, field, formDialog, importMarkdown, input, lib, libraryPage, options, value } from './shared.js';
 
-function defaults(role) {
+async function defaults(role) {
+  if (!state.enginesLoaded && !await refreshEnginesForDialog(tr('我的默认'))) return;
   const pref = role.myDefault || {};
   const html = field(tr('AI'), '<select name="engine">' + options([['',tr('使用角色卡建议')], ...state.engines.map(e => [e.id,e.label])], pref.engine || '') + '</select>')
     + '<div data-settings></div>';
@@ -25,6 +27,7 @@ function defaults(role) {
 }
 
 export async function roleEditor(role = {}, member) {
+  if (!state.enginesLoaded && !await refreshEnginesForDialog(role.name || tr('新建角色卡'))) return;
   const [catalog, installed] = await Promise.all([lib('marketplace'),lib('extensions')]);
   const tools = (k, refs) => [...new Map([...(refs || []), ...catalog[k], ...installed[k]].map(x => [x.id,x])).values()];
   const fields = field(tr('名字'),input('name',role.name || member?.name,'required maxlength="100"'))

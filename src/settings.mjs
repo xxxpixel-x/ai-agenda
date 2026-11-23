@@ -5,10 +5,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { splitArgs, meta as acpMeta } from './engines/acp.mjs';
+import { connectionOrigin, GEMINI_BASE_URL } from '../public/js/settings/connection-origin.js';
 
 // paths 里有哪些键由调用方传入（命令行引擎的 id），这里不写死
 const defaults = (pathKeys) => ({
   autoHandoffPct: 50,
+  memoryOrganizer: null, // null | { engine: 'gemini' | 'openai:<providerId>', model: string }
   contextLimits: {},
   language: 'system',
   notify: true,    // AI 做完或等你处理时弹系统通知（桌面版）
@@ -22,6 +24,14 @@ const defaults = (pathKeys) => ({
 const validPct = (n) => Number.isInteger(n) && (n === 0 || (n >= 10 && n <= 95));
 const validWindow = (n) => Number.isSafeInteger(n) && n >= 1024 && n <= 4000000;
 const str = (v, max = 500) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+const parseMemoryOrganizer = (v) => {
+  if (v == null || v === '') return null;
+  if (typeof v !== 'object' || Array.isArray(v)) throw new Error(tr('全局记忆整理模型配置格式不对'));
+  const engine = str(v.engine, 100);
+  if (!engine) return null;
+  if (engine !== 'gemini' && !engine.startsWith('openai:')) throw new Error(tr('全局记忆整理模型仅支持 Gemini API 或 OpenAI 兼容接口'));
+  return { engine, model: str(v.model, 100) };
+};
 
 export function acpLaunch(c) {
   const command = str(c.command, 1000);
@@ -53,13 +63,15 @@ export function createSettings(file, { pathKeys = [], protect = (s) => ({ plain:
     const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
     data = {
       autoHandoffPct: validPct(raw.autoHandoffPct) ? raw.autoHandoffPct : 50,
+      memoryOrganizer: (() => { try { return parseMemoryOrganizer(raw.memoryOrganizer); } catch { return null; } })(),
       contextLimits: Object.fromEntries(Object.entries(raw.contextLimits || {}).filter(([, n]) => Number.isSafeInteger(n) && n > 0)),
       language: ['system', 'zh', 'en'].includes(raw.language) ? raw.language : 'system',
       notify: raw.notify !== false,
       keepAwake: raw.keepAwake !== false,
       paths: { ...DEFAULTS.paths, ...(raw.paths || {}) },
       gemini: { baseUrl: raw.gemini?.baseUrl || '', apiKey: decodeKey(raw.gemini?.apiKey) },
-      providers: (raw.providers || []).map(({ contextWindow, ...p }) => ({ ...p, apiKey: decodeKey(p.apiKey),
+      providers: (raw.providers || []).map(({ contextWindow, disabledImages, ...p }) => ({ ...p, apiKey: decodeKey(p.apiKey),
+        ...(Array.isArray(disabledImages) && { disabledImages: [...new Set(disabledImages.filter(m => typeof m === 'string' && m))] }),
         ...(validWindow(contextWindow) ? { contextWindow } : {}) })),
       customAcp: Array.isArray(raw.customAcp) ? raw.customAcp : [],
     };
@@ -68,6 +80,7 @@ export function createSettings(file, { pathKeys = [], protect = (s) => ({ plain:
   function save() {
     const out = {
       autoHandoffPct: data.autoHandoffPct,
+      memoryOrganizer: data.memoryOrganizer,
       contextLimits: { ...data.contextLimits },
       language: data.language,
       notify: data.notify,
@@ -93,15 +106,19 @@ export function createSettings(file, { pathKeys = [], protect = (s) => ({ plain:
       data.contextLimits = { ...previous, [key]: Math.min(previous[key] ?? Infinity, tokens) };
       try { save(); } catch (e) { data.contextLimits = previous; throw e; }
     },
-    disableProviderImages(conn) {
-      const current = data.providers.find((p) => p.id === conn.id && p.baseUrl === conn.baseUrl);
-      if (!current || current.images === false) return;
-      current.images = false;
-      try { save(); } catch (e) { delete current.images; throw e; }
+    disableProviderImages(conn, model) {
+      const index = data.providers.findIndex((p) => p.id === conn.id && connectionOrigin(p.baseUrl) === connectionOrigin(conn.baseUrl));
+      const current = data.providers[index];
+      const modelName = model || conn.model || '';
+      if (!current || current.images === false || current.disabledImages?.includes(modelName)) return;
+      data.providers[index] = modelName ? { ...current, disabledImages: [...(current.disabledImages || []), modelName] }
+        : { ...current, images: false };
+      try { save(); } catch (e) { data.providers[index] = current; throw e; }
     },
     /** 给界面看的版本：不回传 key 本身 */
     publicView: () => ({
       autoHandoffPct: data.autoHandoffPct,
+      memoryOrganizer: data.memoryOrganizer ? { ...data.memoryOrganizer } : null,
       contextLimits: { ...data.contextLimits },
       customAcp: structuredClone(data.customAcp),
       language: data.language,
@@ -120,6 +137,9 @@ export function createSettings(file, { pathKeys = [], protect = (s) => ({ plain:
           if (!validPct(patch.autoHandoffPct)) throw new Error(tr('自动交接阈值必须是 0（关闭）或 10 到 95 之间的整数'));
           data.autoHandoffPct = patch.autoHandoffPct;
         }
+        if ('memoryOrganizer' in patch) {
+          data.memoryOrganizer = parseMemoryOrganizer(patch.memoryOrganizer);
+        }
         if ('language' in patch) {
           if (!['system', 'zh', 'en'].includes(patch.language)) throw new Error(tr('无效的语言设置'));
           data.language = patch.language;
@@ -131,7 +151,11 @@ export function createSettings(file, { pathKeys = [], protect = (s) => ({ plain:
           }
         }
         if (patch.gemini) {
-          if ('baseUrl' in patch.gemini) data.gemini.baseUrl = str(patch.gemini.baseUrl);
+          if ('baseUrl' in patch.gemini) {
+            const baseUrl = str(patch.gemini.baseUrl);
+            if (connectionOrigin(baseUrl, GEMINI_BASE_URL) !== connectionOrigin(data.gemini.baseUrl, GEMINI_BASE_URL)) data.gemini.apiKey = '';
+            data.gemini.baseUrl = baseUrl;
+          }
           if (typeof patch.gemini.apiKey === 'string') data.gemini.apiKey = str(patch.gemini.apiKey);
         }
         if (Array.isArray(patch.providers)) {
@@ -144,18 +168,22 @@ export function createSettings(file, { pathKeys = [], protect = (s) => ({ plain:
             if (!name) throw new Error(tr('每个接口都需要一个名字'));
             // 也给 Claude Code 用：要有 Anthropic 兼容地址（没传这两项时保留原来的）
             const anthropicUrl = 'anthropicUrl' in p ? str(p.anthropicUrl) : prev.anthropicUrl || '';
+            const baseUrl = 'baseUrl' in p ? str(p.baseUrl) : prev.baseUrl || '';
+            const sameBase = connectionOrigin(baseUrl) === connectionOrigin(prev.baseUrl);
+            const sameOrigins = sameBase && connectionOrigin(anthropicUrl) === connectionOrigin(prev.anthropicUrl);
             const claudeCode = 'claudeCode' in p ? p.claudeCode === true : !!prev.claudeCode;
             if (claudeCode && !anthropicUrl) throw new Error(tr('「{0}」要给 Claude Code 用，需要填 Anthropic 兼容地址', [name]));
             return {
               id: prev.id || randomUUID().slice(0, 8),
               name,
               ...(window != null ? { contextWindow: window } : {}),
-              baseUrl: str(p.baseUrl),
-              ...(prev.images === false && prev.baseUrl === str(p.baseUrl) ? { images: false } : {}),
+              baseUrl,
+              ...(sameBase && prev.images === false ? { images: false } : {}),
+              ...(sameBase && prev.disabledImages?.length ? { disabledImages: prev.disabledImages } : {}),
               model: str(p.model, 100),
               ...(anthropicUrl ? { anthropicUrl } : {}),
               ...(claudeCode ? { claudeCode } : {}),
-              apiKey: typeof p.apiKey === 'string' ? str(p.apiKey) : prev.apiKey || '',
+              apiKey: typeof p.apiKey === 'string' ? str(p.apiKey) : (sameOrigins && prev.apiKey) || '',
             };
           });
         }

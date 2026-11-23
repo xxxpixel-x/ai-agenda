@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { startServer } from '../src/app-server.mjs';
-import { testInChinese as test, tempDir, until } from './helpers.mjs';
+import { apiRequest, testInChinese as test, tempDir, until } from './helpers.mjs';
 
 async function boot(t) {
   const notes = [];
@@ -13,9 +13,8 @@ async function boot(t) {
     hooks: { locales: () => ['zh-CN'], notify: (n) => notes.push(n), keepAwake: (on) => awake.push(on) },
   });
   t.after(() => server.close());
-  const base = `http://127.0.0.1:${server.port}`;
   const api = async (p, body, method = body ? 'POST' : 'GET') => {
-    const r = await fetch(base + p, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+    const r = await apiRequest(server, p, method, body);
     return { status: r.status, body: await r.json() };
   };
   const read = async (p) => (await api(p)).body;

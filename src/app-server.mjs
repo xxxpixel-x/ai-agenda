@@ -5,28 +5,25 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomUUID } from 'node:crypto';
-import { Store } from './store.mjs';
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { Store, spaceDirectory } from './store.mjs';
+import { assertTaskSpaceAccess } from './access.mjs';
 import { Space, KINDS, folderKey, removeSpaceFiles } from './space.mjs';
+import { containsPath, directChild, pathsOverlap, physicalPath } from './paths.mjs';
 import { acpLaunch, createSettings } from './settings.mjs';
 import { detect as detectAcp } from './engines/acp.mjs';
 import { createRegistry, CLI_ENGINE_IDS } from './engines/index.mjs';
 import { createRoleLibrary } from './roles.mjs';
 import { createExtensionsManager } from './extensions.mjs';
 import { handleLibraryRoute } from './library-routes.mjs';
-import { listSessions, configureImporters, stagePasted } from './importers/index.mjs';
+import { listSessions, readSession, configureImporters, stagePasted } from './importers/index.mjs';
 import { createScheduler } from './scheduler.mjs';
-import { summarize, latest } from './usage.mjs';
+import { summarize, latest, summarizeBackground } from './usage.mjs';
 import { sessionDetail, forkedSessionIds, importSession, checkImport, refreshImport, recompressImport, resolveBrief, topicFolder } from './imports.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PUBLIC = path.join(ROOT, 'public');
-
-function insideFolder(folder, target) {
-  // relative 按平台比较路径段；Windows 下忽略大小写，跨盘会得到绝对路径。
-  const rel = path.relative(folder, target);
-  return rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel);
-}
+const HTML_CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -37,16 +34,26 @@ const TYPES = {
   '.ico': 'image/x-icon',
 };
 
+function matchesSecret(value, expected) {
+  if (typeof value !== 'string') return false;
+  const supplied = Buffer.from(value, 'utf8');
+  const secret = Buffer.from(expected, 'utf8');
+  return supplied.length === secret.length && timingSafeEqual(supplied, secret);
+}
+
 /**
  * @param opts.port      0 表示随机端口
  * @param opts.dataDir   数据目录
  * @param opts.mock      演示模式
+ * @param opts.auth      { token, cookieToken }：未指定的令牌在本次启动时随机生成
  * @param opts.hooks     { openPath(p), revealPath(p), protect(s), unprotect(o), attention(), scheduleActive(on), desktop: true }
  *                       attention：有命令等你确认（桌面版让任务栏图标闪烁）
  *                       scheduleActive：有没有启用的定时任务变了（桌面版据此决定关窗口是缩到托盘还是退出）
  * @param opts.clock     { now, setTimer, clearTimer }：测试用假时钟换掉定时任务的时钟
  */
-export async function startServer({ port = 3210, dataDir, mock = false, hooks = {}, clock = {}, libraryOpts = {} } = {}) {
+export async function startServer({ port = 3210, dataDir, mock = false, auth = {}, hooks = {}, clock = {}, libraryOpts = {} } = {}) {
+  const apiToken = auth?.token || randomBytes(32).toString('hex');
+  const cookieToken = auth?.cookieToken || randomBytes(32).toString('hex');
   fs.mkdirSync(path.join(dataDir, 'spaces'), { recursive: true });
   const settings = createSettings(path.join(dataDir, 'settings.json'), { pathKeys: CLI_ENGINE_IDS, protect: hooks.protect, unprotect: hooks.unprotect });
   let browserLocales = [];
@@ -71,7 +78,7 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
         if (commandApproval && request.kind === 'command') return commandApproval(request);
         // One-off approval, including file edits. Chat owns settlement, notes
         // and cancellation for these cards through the normal approvals map.
-        const ap = { ...request, id: randomUUID().slice(0, 8), programs: [], status: 'pending', ts: Date.now() };
+        const ap = { ...request, id: randomUUID().slice(0, 8), programs: [], canAlways: false, status: 'pending', ts: Date.now() };
         (msg.approvals ||= []).push(ap);
         return new Promise((resolve) => {
           space.approvals.set(ap.id, { ap, msg, resolve });
@@ -84,8 +91,67 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
     },
   });
   const store = new Store(path.join(dataDir, 'spaces'));
+  const allowedFolders = new Set();
+  const dataRoot = physicalPath(dataDir);
+  const systemRoot = process.env.SystemRoot;
+  const realSystemRoot = systemRoot && physicalPath(systemRoot);
+  const folderDenied = () => Object.assign(new Error(tr('这个共享文件夹未经授权，请重新选择')), { status: 403 });
+
+  function folderPath(dir, { allowMissing = false, managedId } = {}) {
+    if (typeof dir !== 'string' || !path.isAbsolute(dir)) throw folderDenied();
+    try {
+      const real = physicalPath(dir);
+      const stat = fs.statSync(real, { throwIfNoEntry: false });
+      if (real === path.parse(real).root || !(stat ? stat.isDirectory() : allowMissing)) throw folderDenied();
+      if (systemRoot && (containsPath(realSystemRoot, real) || containsPath(systemRoot, dir))) throw folderDenied();
+      if (managedId !== undefined) {
+        const files = directChild(spaceDirectory(store.dir, managedId), 'files');
+        if (path.relative(physicalPath(files), real) !== '') throw folderDenied();
+      } else if (containsPath(dataRoot, real) || containsPath(real, dataRoot) || containsPath(dataDir, dir) || containsPath(dir, dataDir)) throw folderDenied();
+      return real;
+    } catch { /* 无法解析的路径或失效的链接不能授权 */ }
+    throw folderDenied();
+  }
+
+  function allowFolder(dir) {
+    const real = folderPath(dir);
+    allowedFolders.add(folderKey(real));
+  }
+
+  // A task may reuse exactly the workspace of its source or schedule owner.
+  // This exception never adds a data directory to the folder-picker grants.
+  function assertFolderAllowed(dir, ownerId) {
+    const owner = spaces.get(ownerId);
+    if (owner && !owner.deleting && containsPath(dataRoot, owner.workspacePath)
+        && path.relative(owner.workspacePath, physicalPath(dir)) === '') {
+      return folderPath(dir, { managedId: path.basename(path.dirname(owner.workspacePath)) });
+    }
+    const real = folderPath(dir);
+    if (!allowedFolders.has(folderKey(real))) throw folderDenied();
+    return real;
+  }
+
+  function authorizeImportFolder(dir, imp) {
+    const target = folderPath(dir, { allowMissing: true });
+    if (allowedFolders.has(folderKey(target)) && fs.existsSync(target)) return;
+    if (!imp.source || imp.source === 'pasted') throw folderDenied();
+    let session;
+    try { session = readSession(imp.source, imp.sessionId); } catch { throw folderDenied(); }
+    const cwd = folderPath(session.cwd);
+    if (folderKey(target) !== folderKey(cwd)) {
+      if (imp.mode !== 'topic' || !topicFolder(dir, cwd, target)) throw folderDenied();
+    }
+    allowedFolders.add(folderKey(target));
+    return session;
+  }
+
   // 跨空间的事都经过这里：空间之间不直接互相引用
+  const folderSharedWith = (p, exceptId) => [...spaces.values()]
+    .filter((s) => s.id !== exceptId && !s.deleting && pathsOverlap(s.workspacePath, p))
+    .map((s) => s.data.title);
+  const unopenedFolders = new Map();
   const hooks2 = {
+    assertFolderAllowed,
     /** 同一个文件夹有任务空间在“依次直接改”：聊天空间暂时只读。 */
     folderLock(space) {
       const k = folderKey(space.workspacePath);
@@ -97,12 +163,14 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
     acceptCopy(space, rel) {
       const abs = space.ws.resolve(rel);
       for (const other of spaces.values()) {
-        if (other === space || !insideFolder(other.workspacePath, abs)) continue;
+        if (other === space || !containsPath(other.workspacePath, abs)) continue;
         const key = path.relative(other.workspacePath, abs).split(path.sep).join('/');
         other.ws.acceptCopy(key);
       }
     },
-    folderInUse: (p, exceptId) => [...spaces.values()].some((s) => s.id !== exceptId && !s.deleting && folderKey(s.workspacePath) === folderKey(p)),
+    folderSharedWith,
+    folderInUse: (p, exceptId) => [...spaces.values()].some(s => s.id !== exceptId && pathsOverlap(s.workspacePath, p))
+      || [...unopenedFolders].some(([id, dir]) => id !== exceptId && pathsOverlap(dir, p)),
     spaceTitle: (id) => { const s = spaces.get(id); return s && !s.isTask ? s.data.title : null; },
     postToSpace: (id, msg) => !!spaces.get(id)?.receive(msg),
   };
@@ -151,6 +219,7 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
   };
   const seenAlerts = new Map(); // spaceId -> 上次的提醒状态
   const addSpace = (space) => {
+    if (!containsPath(dataRoot, physicalPath(space.workspacePath))) allowFolder(space.workspacePath);
     spaces.set(space.id, space);
     if (space.isTask) seenAlerts.set(space.id, new Set(taskAlerts(space).keys()));
     space.on('event', (ev) => {
@@ -180,13 +249,29 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
   let removedLegacy = 0;
   const legacy = [];
   for (const data of store.loadAll()) {
+    if (typeof data.workspace?.path === 'string' && path.isAbsolute(data.workspace.path)) unopenedFolders.set(data.id, data.workspace.path);
     if (!KINDS.includes(data.kind)) { legacy.push(data); continue; }
-    try { addSpace(new Space(data, deps)); } catch (e) { console.warn(tr('跳过无法打开的空间：'), e.message); }
+    try {
+      const dir = data.workspace.path;
+      // Restored tasks may still own a shared files directory after the original space was deleted.
+      let managedId;
+      if (data.workspace.type === 'managed') managedId = data.id;
+      else if (data.kind === 'task' && containsPath(dataRoot, physicalPath(dir))) {
+        managedId = data.workspace.managedSpaceId ?? data.source?.spaceId;
+        // Older scheduled tasks saved only the schedule ID and the exact workspace path.
+        if (!managedId && data.scheduleId) managedId = path.basename(path.dirname(dir));
+      }
+      data.workspace.path = folderPath(dir, { allowMissing: true, managedId });
+      addSpace(new Space(data, deps));
+      unopenedFolders.delete(data.id);
+    } catch (e) { console.warn(tr('跳过无法打开的空间：'), e.message); }
   }
   for (const data of legacy) {
     try {
-      await removeSpaceFiles(data, path.join(dataDir, 'spaces', data.id));
+      const dir = spaceDirectory(store.dir, data.id);
+      await removeSpaceFiles(data, dir, { inUse: p => hooks2.folderInUse(p, data.id) });
       store.remove(data.id);
+      unopenedFolders.delete(data.id);
       removedLegacy++;
     } catch (e) { console.warn(tr('删除旧空间失败：{0}', [e.message])); }
   }
@@ -197,8 +282,8 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
   // 调度器不认识空间：到点要做的事都在这里接到空间上
   const scheduledSpaces = (id) => [...spaces.values()].filter((s) => s.data.scheduleId === id && !s.deleting);
   // 新建任务空间（POST /api/spaces 和定时任务共用）：建好直接进入规划；开不了（比如文件夹出问题）就不留下这个空间
-  const createTaskSpace = async (input) => {
-    const space = addSpace(Space.create({ ...input, kind: 'task' }, deps));
+  const createTaskSpace = async (input, workspaceOwnerId) => {
+    const space = addSpace(Space.create({ ...input, kind: 'task' }, deps, workspaceOwnerId));
     try { await space.startTask(); } catch (e) {
       await space.remove().catch(() => {});
       spaces.delete(space.id);
@@ -215,7 +300,7 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
         workspace: tpl.workspace, access: tpl.access, planConfirm: tpl.planConfirm, discuss: tpl.reviewPlan,
         autoApprove: tpl.autoApprove, maxParallel: tpl.maxParallel,
         scheduleId: schedule.id, clarify: false, // 定时建的任务不做规划前澄清
-      });
+      }, schedule.spaceId);
       hub.emit('spaces');
       return space.id;
     },
@@ -252,7 +337,13 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
   const disableSchedulesOf = (spaceId) => {
     for (const s of scheduler.list()) if (s.spaceId === spaceId && s.enabled) scheduler.disable(s.id, 'space_deleted');
   };
-  for (const s of scheduler.list()) if (s.enabled && !spaces.has(s.spaceId)) scheduler.disable(s.id, 'space_deleted');
+  for (const s of scheduler.list()) {
+    const workspace = s.action?.template?.workspace;
+    if (s.action?.type === 'task' && workspace?.type === 'folder') {
+      try { allowFolder(workspace.path); } catch { /* 已移除或不安全的旧目录不进入白名单 */ }
+    }
+    if (s.enabled && !spaces.has(s.spaceId)) scheduler.disable(s.id, 'space_deleted');
+  }
   if (scheduleOn === null) { scheduleOn = scheduler.hasActive(); hooks.scheduleActive?.(scheduleOn); }
   scheduler.start();
   // 新建 / 修改定时任务：检查所属空间和动作对得上
@@ -262,12 +353,12 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
     if (def.action?.type === 'message' && space.isTask) throw new Error(tr('定时消息只能发到聊天空间'));
     if (def.action?.type === 'task') {
       const tpl = def.action.template || {};
+      assertTaskSpaceAccess(tpl.access);
+      if (tpl.workspace?.type === 'folder') tpl.workspace.path = assertFolderAllowed(tpl.workspace.path, space.id);
       if (typeof tpl.goal !== 'string' || !tpl.goal.trim()) throw new Error(tr('请写下这次要完成的目标'));
       if (!Array.isArray(tpl.members) || !tpl.members.length) throw new Error(tr('任务模板里没有成员'));
     }
   };
-
-  let actualPort = port;
 
   // ---------- 工具 ----------
   const sendJson = (res, status, body) => {
@@ -300,8 +391,20 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
   };
   const sameOrigin = (req) => {
     const o = req.headers.origin;
-    if (!o) return true;
-    try { return new URL(o).host.toLowerCase() === (req.headers.host || '').toLowerCase(); } catch { return false; }
+    if (!o) return false;
+    try {
+      const origin = new URL(o).origin.toLowerCase();
+      return origin === o.toLowerCase() && origin === `http://${req.headers.host.toLowerCase()}`;
+    } catch { return false; }
+  };
+  const hasReadCookie = (req) => {
+    const site = req.headers['sec-fetch-site'];
+    if (site && site !== 'same-origin') return false;
+    const prefix = cookieName + '=';
+    return (req.headers.cookie || '').split(';').some((part) => {
+      const cookie = part.trim();
+      return cookie.startsWith(prefix) && matchesSecret(cookie.slice(prefix.length), cookieToken);
+    });
   };
 
   function serveStatic(res, pathname) {
@@ -310,7 +413,13 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
     if (!file.startsWith(PUBLIC + path.sep)) return sendJson(res, 403, { error: tr('禁止访问') });
     fs.readFile(file, (err, buf) => {
       if (err) return sendJson(res, 404, { error: tr('未找到') });
-      res.writeHead(200, { 'Content-Type': TYPES[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
+      const ext = path.extname(file).toLowerCase();
+      const headers = { 'Content-Type': TYPES[ext] || 'application/octet-stream', 'Cache-Control': 'no-cache' };
+      if (ext === '.html') {
+        headers['Content-Security-Policy'] = HTML_CSP;
+        headers['X-Content-Type-Options'] = 'nosniff';
+      }
+      res.writeHead(200, headers);
       res.end(buf);
     });
   }
@@ -352,6 +461,9 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
     if (!p.startsWith('/api/')) {
       if (method !== 'GET') return sendJson(res, 405, { error: tr('不支持此请求方法') });
       return serveStatic(res, p);
+    }
+    if (!matchesSecret(req.headers['x-agenda-token'], apiToken) && !(method === 'GET' && hasReadCookie(req))) {
+      return sendJson(res, 401, { error: tr('未授权的请求') });
     }
     if (method !== 'GET') {
       if (!sameOrigin(req)) return sendJson(res, 403, { error: tr('拒绝跨站请求') });
@@ -399,12 +511,12 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
       const action = p === '/api/open-path' ? hooks.openPath : hooks.revealPath;
       if (!action) return sendJson(res, 400, { error: tr('当前环境不能打开文件夹') });
       const file = typeof target === 'string' && target && path.resolve(target);
-      const roots = [...spaces.values()].map((s) => s.workspacePath).filter((root) => file && insideFolder(root, file));
+      const roots = [...spaces.values()].map((s) => s.workspacePath).filter((root) => file && containsPath(root, file));
       if (!roots.length) return sendJson(res, 403, { error: tr('只能打开空间的共享文件夹') });
       if (!fs.existsSync(file)) return sendJson(res, 404, { error: tr('文件或文件夹不存在') });
       // 再检查实际位置，避免通过符号链接或目录联接跳出共享文件夹。
       const real = fs.realpathSync.native(file);
-      if (!roots.some((root) => insideFolder(fs.realpathSync.native(root), real))) return sendJson(res, 403, { error: tr('只能打开空间的共享文件夹') });
+      if (!roots.some((root) => containsPath(fs.realpathSync.native(root), real))) return sendJson(res, 403, { error: tr('只能打开空间的共享文件夹') });
       const error = await action(file);
       if (typeof error === 'string' && error) throw new Error(error);
       return sendJson(res, 200, { ok: true });
@@ -453,14 +565,25 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
 
     if (p === '/api/spaces' && method === 'POST') {
       const body = await readJson(req);
-      if (body.import?.mode === 'topic' && body.workspace?.type === 'folder') topicFolder(body.workspace.path, body.import);
+      const session = body.import && body.workspace?.type === 'folder' ? authorizeImportFolder(body.workspace.path, body.import) : undefined;
       const space = body.kind === 'task' ? await createTaskSpace(body) : addSpace(Space.create(body, deps));
       let importError;
       if (body.import) {
         // 新建空间时从一段对话开始：对应的成员已在成员列表里，取第一个同类成员
-        try { importSession(space.importHost, { ...body.import, memberId: undefined }); } catch (e) { importError = e.message; }
+        try { importSession(space.importHost, { ...body.import, memberId: undefined }, session); } catch (e) { importError = e.message; }
       }
       return sendJson(res, 201, { ...space.toJSON(), importError });
+    }
+
+    const memAction = p.match(/^\/api\/spaces\/([a-f0-9-]{36})\/memory\/entries\/(\d+)\/action$/i);
+    if (memAction && method === 'POST') {
+      const space = getSpace(memAction[1]);
+      if (space.deleting) return sendJson(res, 409, { error: tr('这个空间正在删除，请稍等') });
+      try {
+        return sendJson(res, 200, space.applyMemoryAction(Number(memAction[2]), await readJson(req)));
+      } catch (e) {
+        return sendJson(res, e.status || 400, { error: e.message });
+      }
     }
 
     const m = p.match(/^\/api\/spaces\/([a-f0-9-]{36})(\/[a-z]+)?(?:\/([a-z0-9_-]+))?(\/[a-z]+)?$/i);
@@ -501,7 +624,9 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
         for (const [id, total] of Object.entries(summarize(space.data))) {
           members[id] = { latest: latest(space.data, id), total, today: today[id] ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, turns: 0 } };
         }
-        return sendJson(res, 200, { members });
+        const bg = summarizeBackground(space.data);
+        const hasBg = bg.organize.turns > 0 || bg.handoff.turns > 0;
+        return sendJson(res, 200, hasBg ? { members, background: bg } : { members });
       }
       if (sub === '/context' && method === 'GET' && !arg) return sendJson(res, 200, space.contextView());
       try {
@@ -515,7 +640,12 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
       } catch (e) {
         return sendJson(res, e.status || 400, { error: e.message, ...(e.recap ? { recap: e.recap } : {}) });
       }
-      if (sub === '/memory' && method === 'GET' && !arg) return sendJson(res, 200, space.memoryView()); // 记忆库（只读）
+      if (sub === '/memory' && method === 'GET' && !arg) return sendJson(res, 200, space.memoryView());
+      if (sub === '/memory' && method === 'POST' && arg === 'organize' && !tail) {
+        if (space.finished) return sendJson(res, 409, { error: tr('这个任务已经结束，不能整理记忆库') });
+        space.organizeMemory({ manual: true });
+        return sendJson(res, 200, { ok: true, organizing: !!space.memoryRun, memory: space.memoryView() });
+      }
       if (sub === '/imports' && method === 'POST' && !arg) return sendJson(res, 201, importSession(space.importHost, await readJson(req)));
       if (sub === '/imports' && method === 'GET' && arg && tail === '/check') return sendJson(res, 200, checkImport(space.importHost, arg));
       if (sub === '/imports' && method === 'POST' && arg && tail === '/refresh') return sendJson(res, 200, refreshImport(space.importHost, arg));
@@ -572,7 +702,7 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
       }
       if (sub === '/file' && method === 'PUT') {
         const body = await readJson(req);
-        return sendJson(res, 200, { changes: space.writeFile(body.path, body.content) });
+        return sendJson(res, 200, { changes: space.writeFile(body.path, body.content, { createOnly: body.createOnly === true }) });
       }
       if (sub === '/history' && method === 'GET' && !arg) return sendJson(res, 200, space.ws.historyList());
       if (sub === '/history' && method === 'GET' && arg && !tail) return sendJson(res, 200, space.ws.change(arg));
@@ -606,11 +736,16 @@ export async function startServer({ port = 3210, dataDir, mock = false, hooks = 
     };
     tryListen(port);
   });
-  actualPort = server.address().port;
+  const actualPort = server.address().port;
+  const cookieName = `agenda_sid_${actualPort}`;
 
   return {
     url: `http://localhost:${actualPort}`,
     port: actualPort,
+    token: apiToken,
+    cookieToken,
+    cookieName,
+    allowFolder: (dir) => withLanguage(language, () => allowFolder(dir)),
     registry,
     language,
     stopAll() { for (const s of spaces.values()) s.stop(); },

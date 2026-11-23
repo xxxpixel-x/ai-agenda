@@ -20,9 +20,11 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { readSession, samePath } from './importers/index.mjs';
+import { physicalPath } from './paths.mjs';
 import { normalizeMembers, membersFull, uniqueName } from './members.mjs';
 import { systemPrompt } from './prompts.mjs';
 import { runAgentTurn } from './turn-runner.mjs';
+import { resolveTurnAccess } from './access.mjs';
 
 export const MODES = ['full', 'from', 'summary', 'handoff', 'topic'];
 const LIMIT = { short: 15000, long: 60000, recentSummary: 15000, recentHandoff: 10000 };
@@ -189,10 +191,10 @@ function assertIdle(host) {
  * 导入一段对话。
  * opts: { source, sessionId, mode?, fromIndex?, memberId?, writerId? }
  */
-export function importSession(host, opts = {}) {
+export function importSession(host, opts = {}, session) {
   assertIdle(host);
   host.assertChatAllowed();
-  const s = readSession(opts.source, opts.sessionId);
+  const s = session ?? readSession(opts.source, opts.sessionId);
   if (!s.entries.length) throw new Error(tr('这段对话里没有内容'));
   const mode = MODES.includes(opts.mode) ? opts.mode : autoMode(charsOf(s.entries));
   const topic = mode === 'topic' ? String(opts.topic || '').trim().slice(0, 40) : '';
@@ -234,6 +236,17 @@ export function importSession(host, opts = {}) {
   return msg;
 }
 
+function runImportTurn(host, msg, writer, { prompt, resume, state, signal }) {
+  const space = host.snapshot();
+  const { access } = resolveTurnAccess({ spaceKind: space.kind, spaceAccess: space.access, role: 'import' });
+  const system = resume
+    ? `${systemPrompt(space, writer, { api: host.registry.isApi(writer.engine), access })}\n${resumeNote(msg, host.workspacePath)}`
+    : tr('你在帮用户整理导入的对话，照要求输出整理好的文字，不要加别的话。');
+  return runAgentTurn(host.registry, writer, {
+    system, prompt, cwd: host.workspacePath, access, signal, sink: { text: '', activities: [] }, ...resumeOpts(resume, state),
+  });
+}
+
 /** 让 AI 写摘要 / handoff（后台进行，写好后更新折叠块）。 */
 async function digest(host, msg, entries, writer) {
   host.importing = true;
@@ -250,16 +263,9 @@ async function digest(host, msg, entries, writer) {
   } else {
     prompt = tr('下面是用户和 {0} 的一段对话（「我」是用户，「{1}」是 {2}）。\n\n{3}\n\n# 对话\n{4}', [msg.sourceLabel, msg.name, msg.sourceLabel, ask, entriesText(entries, msg.name)]);
   }
-  const system = resume
-    ? `${systemPrompt(host.snapshot(), writer, { api: host.registry.isApi(writer.engine) })}\n${resumeNote(msg, host.workspacePath)}`
-    : tr('你在帮用户整理导入的对话，照要求输出整理好的文字，不要加别的话。');
-  const sink = { text: '', activities: [] };
   let retry = false;
   try {
-    const r = await runAgentTurn(host.registry, writer, {
-      system, prompt, cwd: host.workspacePath, access: 'read', sink, signal: controller.signal,
-      ...resumeOpts(resume, state),
-    });
+    const r = await runImportTurn(host, msg, writer, { prompt, resume, state, signal: controller.signal });
     if (host.deleting) return;
     const text = String(r.text || '').trim();
     if (!text) throw new Error(tr('{0} 没有写出内容', [writer.name]));
@@ -355,16 +361,9 @@ async function writeTopic(host, msg, writer) {
   } else {
     prompt = tr('下面是用户和 {0} 的一段对话（「我」是用户，「{1}」是 {2}），每条前面有编号。\n\n{3}\n\n{4}\n\n# 对话\n{5}', [msg.sourceLabel, msg.name, msg.sourceLabel, topicAsk(msg.topic), quoteAsk(), numbered]);
   }
-  const system = resume
-    ? `${systemPrompt(host.snapshot(), writer, { api: host.registry.isApi(writer.engine) })}\n${resumeNote(msg, host.workspacePath)}`
-    : tr('你在帮用户整理导入的对话，照要求输出整理好的文字，不要加别的话。');
-  const sink = { text: '', activities: [] };
   let retry = false;
   try {
-    const r = await runAgentTurn(host.registry, writer, {
-      system, prompt, cwd: host.workspacePath, access: 'read', sink, signal: controller.signal,
-      ...resumeOpts(resume, state),
-    });
+    const r = await runImportTurn(host, msg, writer, { prompt, resume, state, signal: controller.signal });
     if (host.deleting) return;
     const text = String(r.text || '').trim();
     if (!text) throw new Error(tr('{0} 没有写出内容', [writer.name]));
@@ -401,11 +400,15 @@ async function writeTopic(host, msg, writer) {
   if (retry) await writeTopic(host, msg, writer); // 改成把原文交给它整理
 }
 
-/** 新建空间并按主题导入时：共享文件夹默认是原项目里的主题子文件夹，还没有就建出来。 */
-export function topicFolder(dir, imp) {
-  if (!dir || !path.isAbsolute(dir) || fs.existsSync(dir)) return;
-  const s = readSession(imp.source, imp.sessionId);
-  if (s.cwd && samePath(path.dirname(path.resolve(dir)), s.cwd)) fs.mkdirSync(dir);
+/** 只在本机会话的真实 cwd 里建一级子目录，已有的同名链接也必须指向这个位置。 */
+export function topicFolder(dir, cwd, realTarget) {
+  const target = path.resolve(dir);
+  const name = path.basename(target);
+  if (!name || name === '.' || name === '..' || /[/\\\x00-\x1f]/.test(name)) return false;
+  if (process.platform === 'win32' && (/[<>:"|?*]|[. ]$/.test(name) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name))) return false;
+  if (!samePath(physicalPath(path.dirname(target)), cwd) || !samePath(realTarget, path.join(cwd, name))) return false;
+  if (!fs.existsSync(realTarget)) fs.mkdirSync(realTarget);
+  return true;
 }
 
 const readOrNull = (host, rel) => { try { return host.ws.read(rel); } catch { return null; } };

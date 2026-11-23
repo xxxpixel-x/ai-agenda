@@ -149,8 +149,8 @@ test('只问指定成员时双方的 @ 都不会让别人接话，其他成员�
 
   const later = await sendOne(chat, '@Alice 你也说说看');
   assert.equal(later.engine, alice.engine);
-  assert.ok(later.prompt.includes(`<消息 来自="我">\n（只问 Bob）\n${question}\n</消息>`));
-  assert.ok(later.prompt.includes('<消息 来自="Bob">\n建议湖蓝色。@Alice 你觉得呢？\n</消息>'));
+  assert.ok(later.prompt.includes(`<消息 1 来自="我">\n（只问 Bob）\n${question}\n</消息>`));
+  assert.ok(later.prompt.includes('<消息 2 来自="Bob">\n建议湖蓝色。@Alice 你觉得呢？\n</消息>'));
 });
 
 test('演示引擎连续四轮单聊保留会话，只回复正文', async () => {

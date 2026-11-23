@@ -10,7 +10,7 @@ import { findOnPath, isFile, isWin, capture, runJsonl, resolveNodeShim, nodeRunn
 import { usageOf, quotaOf, uncached } from './usage-fields.mjs';
 
 export const meta = {
-  skills: true, mcp: true,
+  skills: true, mcp: true, noTools: false,
   images: true,
   id: 'codex',
   label: 'Codex',
@@ -102,6 +102,11 @@ function unwrapCommand(cmd) {
 }
 const shortCommand = (cmd) => brief(unwrapCommand(cmd).replace(/\s+/g, ' '), 70);
 
+// 审批使用完整命令，活动摘要可能省略外层 shell 或程序路径。
+export function approvalCommand({ command, commandActions }) {
+  return command || (commandActions || []).map((a) => a.command).filter(Boolean).join(' && ');
+}
+
 // 除了「全部权限」，不让 Codex 用上你账号和个人配置里的外部连接：
 // 应用连接器（Gmail、Slack、GitHub…）、插件、hooks、MCP 服务。型号、登录等其余设置照旧。
 export function isolationArgs(home, {
@@ -143,15 +148,16 @@ function runCodex(opts) {
   const entry = resolveNodeShim(opts.cmd);
   return runJsonl(entry ? { ...opts, ...nodeRunner(), args: [entry, ...opts.args] } : opts);
 }
-export async function runTurn({ system, prompt, images = [], skills = [], mcp = {}, model, effort, cwd, access = 'edit', signal, onDelta, onActivity, onRaw, onApproval, binOverride }) {
+export async function runTurn({ system, prompt, images = [], skills = [], mcp = {}, model, effort, cwd, access = 'edit', noTools = false, signal, onDelta, onActivity, onRaw, onApproval, binOverride }) {
   const bin = await findBin(binOverride);
   if (!bin) throw new Error(tr('没有找到 Codex'));
+  if (noTools) { skills = []; mcp = {}; access = 'read'; }
   system += skillPrompt(skills);
-  if (access === 'run' && onApproval) return runAsking({ bin, images, skills, mcp, input: `${system}\n\n${prompt}`, model, effort, cwd, signal, onDelta, onActivity, onRaw, onApproval });
+  if (!noTools && access === 'run' && onApproval) return runAsking({ bin, images, skills, mcp, input: `${system}\n\n${prompt}`, model, effort, cwd, signal, onDelta, onActivity, onRaw, onApproval });
 
   // Codex 的沙箱：只读档 = read-only；全部权限 = 不设沙箱；其余 = 只能写共享文件夹（它运行命令也被限制在这个沙箱里）
   const sandbox = access === 'read' ? 'read-only' : access === 'full' ? 'danger-full-access' : 'workspace-write';
-  const args = ['--search', 'exec', '--json', '--skip-git-repo-check', '--ephemeral', '-s', sandbox, '-C', cwd];
+  const args = [...(noTools ? [] : ['--search']), 'exec', '--json', '--skip-git-repo-check', '--ephemeral', '-s', sandbox, '-C', cwd];
   args.push(...(access === 'full' ? mountedServerArgs(mcp) : isolationArgs(undefined, { skills, mcp })));
   if (model) args.push('-m', model);
   if (effort) args.push('-c', `model_reasoning_effort="${effort}"`);
@@ -250,8 +256,7 @@ async function runAsking({ bin, images, skills, mcp, input, model, effort, cwd, 
     const p = m.params || {};
     const reply = (result) => ctl.send(rpc({ id: m.id, result }));
     if (m.method === 'item/commandExecution/requestApproval') {
-      const command = (p.commandActions || []).map((a) => a.command).filter(Boolean).join(' && ') || unwrapCommand(p.command);
-      const d = await ctl.hold(onApproval({ command }));
+      const d = await ctl.hold(onApproval({ command: approvalCommand(p) }));
       reply({ decision: d.allow ? 'accept' : 'decline' });
       // 附的话（同意、拒绝都可以）：用 turn/steer 插进这一轮
       if (d.note) {

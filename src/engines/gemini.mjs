@@ -1,12 +1,13 @@
 // Google Gemini API（需要 Gemini API key，在“设置”里填写）。支持 Google 搜索联网。
 import { t as tr } from '../i18n.mjs';
-import { request, errorText, readSse } from './http.mjs';
+import { request, errorText, readJson, readSse } from './http.mjs';
+import { GEMINI_BASE_URL } from '../../public/js/settings/connection-origin.js';
 import fs from 'node:fs';
-import { brief } from './proc.mjs';
+import { AbortedError, brief } from './proc.mjs';
 import { usageOf, uncached } from './usage-fields.mjs';
 
 export const meta = {
-  images: true,
+  images: true, noTools: true,
   id: 'gemini',
   label: 'Gemini API',
   vendor: 'Google',
@@ -21,17 +22,19 @@ export const meta = {
   usage: { tokens: true, context: true, quota: false }, // 按官方文档，未实测（没有 key）
 };
 
-const DEFAULT_BASE = 'https://generativelanguage.googleapis.com';
-const baseOf = (conn) => (conn?.baseUrl || DEFAULT_BASE).replace(/\/+$/, '');
+const baseOf = (conn) => (conn?.baseUrl || GEMINI_BASE_URL).replace(/\/+$/, '');
 
 let modelCache = { key: null, at: 0, list: [], limits: {} };
 
-export async function listModels(conn) {
+export async function listModels(conn, { signal } = {}) {
   if (!conn?.apiKey) return [];
+  if (signal?.aborted) throw new AbortedError();
   if (modelCache.key === conn.apiKey + baseOf(conn) && Date.now() - modelCache.at < 10 * 60_000) return modelCache.list;
-  const res = await request(`${baseOf(conn)}/v1beta/models?pageSize=200`, { headers: { 'x-goog-api-key': conn.apiKey } });
+  const res = await request(`${baseOf(conn)}/v1beta/models?pageSize=200`, {
+    headers: { 'x-goog-api-key': conn.apiKey }, idleMs: 30_000, signal, name: 'Gemini',
+  });
   if (!res.ok) throw new Error(`Gemini：${await errorText(res)}`);
-  const j = await res.json();
+  const j = await readJson(res);
   const limits = Object.fromEntries((j.models || []).filter((m) => m.inputTokenLimit).map((m) => [m.name.replace(/^models\//, ''), m.inputTokenLimit]));
   const list = (j.models || [])
     .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
@@ -64,9 +67,9 @@ export async function detect({ conn } = {}) {
   }
 }
 
-export async function runTurn({ system, prompt, images = [], model, effort, conn, signal, onDelta, onActivity }) {
+export async function runTurn({ system, prompt, images = [], model, effort, conn, noTools = false, signal, onDelta, onActivity }) {
   if (!conn?.apiKey) throw new Error(tr('还没有填写 Gemini API key（左下角“设置”）'));
-  const name = model || pickDefault(await listModels(conn));
+  const name = model || pickDefault(await listModels(conn, { signal }));
   if (!name) throw new Error(tr('Gemini：没有可用的模型'));
 
   const res = await request(`${baseOf(conn)}/v1beta/models/${encodeURIComponent(name)}:streamGenerateContent?alt=sse`, {
@@ -78,10 +81,10 @@ export async function runTurn({ system, prompt, images = [], model, effort, conn
         { text: prompt },
         ...images.map((i) => ({ inline_data: { mime_type: i.type, data: fs.readFileSync(i.path, 'base64') } })),
       ] }],
-      tools: [{ google_search: {} }],
+      ...(noTools ? {} : { tools: [{ google_search: {} }] }),
       ...(effort ? { generationConfig: { thinkingConfig: { thinkingLevel: effort.toUpperCase() } } } : {}),
     },
-    signal,
+    signal, name: 'Gemini',
   });
   if (!res.ok) throw new Error(`Gemini：${await errorText(res)}`);
 

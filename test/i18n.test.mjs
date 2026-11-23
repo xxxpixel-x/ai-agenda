@@ -13,7 +13,7 @@ import { importsBackground, resumeNote, importSession, refreshImport } from '../
 import { configureImporters, stagePasted } from '../src/importers/index.mjs';
 import { parseImport } from '../src/importers/parse.mjs';
 import { startServer } from '../src/app-server.mjs';
-import { tempDir, makeSpace, settleSpace, until, beginTask, isMemoryCall, MEMORY_IDLE } from './helpers.mjs';
+import { apiRequest, tempDir, makeSpace, settleSpace, until, beginTask, isMemoryCall, MEMORY_IDLE } from './helpers.mjs';
 
 test('locale resolution agrees in the browser and backend', () => {
   for (const resolve of [resolveLanguage, browserLanguage]) {
@@ -171,10 +171,8 @@ test('English mock tasks plan, review, execute and summarize through normal entr
 test('HTTP settings switch the next queued prompt without restarting the server', async (t) => {
   const server = await startServer({ port: 0, dataDir: tempDir(t), mock: true, hooks: { locales: () => ['zh-TW'] } });
   t.after(() => server.close());
-  // 服务器只监听 127.0.0.1；用 localhost 的话，Windows 上的 Node 22 会先连 ::1 而失败
-  const base = `http://127.0.0.1:${server.port}`;
   const request = async (url, body) => {
-    const res = await fetch(base + url, body ? { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {});
+    const res = await apiRequest(server, url, body ? 'PUT' : 'GET', body);
     assert.equal(res.status, 200);
     return res.json();
   };
@@ -191,7 +189,7 @@ test('HTTP settings switch the next queued prompt without restarting the server'
     return { text: calls.length === 1 ? '[结束]' : '[Done]' };
   };
   const post = async (url, body) => {
-    const res = await fetch(base + url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const res = await apiRequest(server, url, 'POST', body);
     assert.equal(res.status, 201);
     return res.json();
   };
@@ -205,20 +203,18 @@ test('HTTP settings switch the next queued prompt without restarting the server'
   await until(() => calls.length, (n) => n === 2);
   assert.match(calls[1].system, /You are “Birch”/);
   assert.match(calls[1].prompt, /from="Me"/);
-  const error = await fetch(base + '/api/spaces/00000000-0000-0000-0000-000000000000').then((r) => r.json());
+  const error = await apiRequest(server, '/api/spaces/00000000-0000-0000-0000-000000000000').then((r) => r.json());
   assert.equal(error.error, 'This space does not exist');
 });
 
 test('browser system locale and explicit overrides use the same server language', async (t) => {
   const server = await startServer({ port: 0, dataDir: tempDir(t), mock: true });
   t.after(() => server.close());
-  // 服务器只监听 127.0.0.1；用 localhost 的话，Windows 上的 Node 22 会先连 ::1 而失败
-  const base = `http://127.0.0.1:${server.port}`;
-  const app = async (locales) => fetch(base + '/api/app', { headers: { 'X-Agenda-Languages': locales } }).then((r) => r.json());
+  const app = (locales) => apiRequest(server, '/api/app', 'GET', undefined, { 'X-Agenda-Languages': locales }).then((r) => r.json());
   assert.equal((await app('')).resolvedLanguage, 'en');
   assert.equal((await app('zh-CN,en-US')).resolvedLanguage, 'zh');
   assert.equal((await app('ja,zh-TW')).resolvedLanguage, 'en');
-  await fetch(base + '/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ language: 'zh' }) });
+  await apiRequest(server, '/api/settings', 'PUT', { language: 'zh' });
   assert.equal((await app('fr-FR')).resolvedLanguage, 'zh');
 });
 

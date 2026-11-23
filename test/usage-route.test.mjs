@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { startServer } from '../src/app-server.mjs';
-import { tempDir } from './helpers.mjs';
+import { apiRequest, tempDir } from './helpers.mjs';
 
 const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, turns: 0 };
 
@@ -13,9 +13,7 @@ test('GET /api/spaces/:id/usage 按成员给出最近一次、合计和今天的
   let server = await startServer({ port: 0, dataDir, mock: true, hooks });
   t.after(() => server.close());
   const api = async (url, method = 'GET', body) => {
-    const r = await fetch(`http://127.0.0.1:${server.port}${url}`, {
-      method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body && JSON.stringify(body),
-    });
+    const r = await apiRequest(server, url, method, body);
     return { status: r.status, body: await r.json() };
   };
 

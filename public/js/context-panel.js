@@ -17,7 +17,7 @@ function breakdownHtml(breakdown) {
   const { rows, totalTokens, totalChars, hasData, omitted } = computeBreakdownRows(breakdown, tr);
   const figures = (tokens, chars) => tr('约 {0} tokens · {1} 字', [formatCountCompact(tokens), formatCountCompact(chars)]);
   const pct = (row) => Math.round(row.pct) + '%';
-  return `<section class="ctx-card"><header><h3>${tr('本轮送入')}</h3>${hasData ? `<small>${esc(figures(totalTokens, totalChars))}</small>` : ''}</header>
+  return `<section class="ctx-card"><header><h3>${tr('最近一次构造的上下文估算')}</h3>${hasData ? `<small>${esc(figures(totalTokens, totalChars))}</small>` : ''}</header>
     ${hasData ? `<div class="ctx-bar">${rows.filter((r) => r.pct > 0).map((r) => `<span class="seg-${r.tone}" style="width:${r.pct}%"
       title="${esc([r.label, figures(r.tokens, r.chars), pct(r)].join(' · '))}"></span>`).join('')}</div>
     <ul class="ctx-rows">${rows.map((r) => `<li><i class="seg-${r.tone}"></i><span>${esc(r.label)}</span>

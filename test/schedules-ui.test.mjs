@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { startServer } from '../src/app-server.mjs';
-import { tempDir, until } from './helpers.mjs';
+import { apiRequest, tempDir, until } from './helpers.mjs';
 
 // 定时标签照搬空间时发的模板（public/js/schedules.js 的 spaceTemplate）：成员带 id，协调者按 id 指定，
 // 托管文件夹也写成 folder，到点建出来的任务空间要用同一个协调者和同一个文件夹
@@ -11,9 +11,7 @@ test('照界面的模板格式建任务空间：协调者和文件夹都照搬',
   const server = await startServer({ port: 0, dataDir, mock: true, hooks: { locales: () => ['zh-CN'] } });
   t.after(() => server.close());
   const api = async (url, method = 'GET', body) => {
-    const r = await fetch(`http://127.0.0.1:${server.port}${url}`, {
-      method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body && JSON.stringify(body),
-    });
+    const r = await apiRequest(server, url, method, body);
     return { status: r.status, body: await r.json() };
   };
   const chat = (await api('/api/spaces', 'POST', { title: '早会', members: [{ engine: 'claude-code', name: 'Alice' }, { engine: 'codex', name: 'Bob' }] })).body;

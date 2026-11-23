@@ -6,7 +6,7 @@ import { recordPlanDecisions } from '../src/memory/organize.mjs';
 import { t as tr, withLanguage } from '../src/i18n.mjs';
 import { keyRule } from '../src/prompts.mjs';
 import { plannerSystem, plannerPrompt, reviewerPrompt, workerPrompt, summaryPrompt, triagePrompt, commitPrompt } from '../src/task-prompts.mjs';
-import { isMemoryCall, MEMORY_IDLE, testInChinese as test, tempDir, until } from './helpers.mjs';
+import { apiRequest, isMemoryCall, MEMORY_IDLE, testInChinese as test, tempDir, until } from './helpers.mjs';
 
 const members = [{ id: 'member-a', name: 'Alice', engine: 'claude-code', engineLabel: 'Claude' },
   { id: 'member-b', name: 'Bob', engine: 'codex', engineLabel: 'Codex' }];
@@ -46,6 +46,42 @@ test('worker and coordinator prompts have a stable prefix, one-session plans and
   });
 });
 
+test('已跳过前置依赖不误报为已合入，approveTask 写记忆抛错不阻断调度', async (t) => {
+  const skipped = { ...task('T1', 'Skipped dep', [], members[0].id), status: 'skipped' };
+  const mine = task('T2', 'Next', ['T1'], members[1].id);
+  const run = { tasks: [skipped, mine], mode: 'git', objective: 'Ship', status: 'executing' };
+  const prompt = workerPrompt(host, run, mine, { key: 'k1' });
+  assert.match(prompt, /该前置任务已跳过，未产生改动/);
+  assert.doesNotMatch(prompt, /这些结果已经合并进你的副本/);
+
+  const { TaskRun } = await import('../src/taskrun.mjs');
+  let ticked = false, saved = 0;
+  const fakeHost = {
+    members, access: 'edit', workspacePath: tempDir(t), workspaceType: 'managed', dir: tempDir(t),
+    messages: [], deleting: false,
+    save: () => { saved++; },
+    emit: () => {},
+    track: (p) => p,
+    recordApprovedTask: () => { throw new Error('disk full'); },
+  };
+  const trun = new TaskRun(fakeHost, {
+    id: 'run1', objective: 'Test', coordinatorId: members[0].id, mode: 'direct', status: 'executing',
+    planning: { messages: [] },
+    tasks: [
+      { id: 'T1', title: 'One', spec: 's1', assigneeId: members[0].id, deps: [], status: 'review', attempts: [{ outcome: 'done' }], feedbacks: [], notes: [], changes: [] },
+      { id: 'T2', title: 'Two', spec: 's2', assigneeId: members[1].id, deps: ['T1'], status: 'pending', attempts: [], feedbacks: [], notes: [], changes: [] },
+    ],
+  });
+  const warn = t.mock.method(console, 'warn', () => {});
+  trun.tick = () => { ticked = true; };
+  const res = await trun.approveTask('T1');
+  assert.deepEqual(res, { ok: true });
+  assert.equal(trun.task('T1').status, 'approved');
+  assert.ok(saved >= 1);
+  assert.equal(ticked, true, '写记忆抛错不得阻断 tick()');
+  assert.ok(warn.mock.callCount() >= 1);
+});
+
 test('answered, defaulted and assumed plan decisions are idempotent across replans and reopening', (t) => {
   const dir = tempDir(t);
   const run = { clarify: { resolvedAt: 123, questions: [{ id: 'a', text: 'Which? ' }, { id: 'b', text: 'Color?', default: 'Blue' },
@@ -69,7 +105,7 @@ test('auto planning records decisions before dispatch, workers and coordinators 
   const server = await startServer({ port: 0, dataDir, mock: true });
   t.after(() => server.close());
   const call = async (url, method = 'GET', body) => {
-    const r = await fetch('http://127.0.0.1:' + server.port + url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const r = await apiRequest(server, url, method, body);
     return { status: r.status, data: await r.json() };
   };
   await call('/api/settings', 'PUT', { language: 'zh' });

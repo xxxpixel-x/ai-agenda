@@ -127,37 +127,60 @@ export async function openFile(p) {
 }
 
 function renderEditor(body, v) {
-  const dirty = v.draft !== v.content;
   body.innerHTML = `<div class="editor">
     <div class="editor-head"><button class="icon-btn" type="button" data-act="back" title="${tr('返回')}">${ICON.back}</button>
-      <span class="ep" title="${esc(v.path)}">${esc(v.path)}${dirty ? ' ●' : ''}</span>
+      <span class="ep" title="${esc(v.path)}"></span>
       <button class="btn sm" type="button" data-act="toggle-preview">${v.preview ? tr('编辑') : tr('预览')}</button>
-      <button class="btn sm primary" type="button" data-act="save-file" ${dirty && !filesLocked() ? '' : 'disabled'}>${tr('保存')}</button></div>
-    ${v.stale ? `<div class="editor-warn">${ICON.alert}${tr('这个文件刚被改过了。')}<button class="btn sm" type="button" data-act="reload-file">${tr('载入最新内容')}</button>${dirty ? `<span class="hint">${tr('（会丢掉你没保存的修改）')}</span>` : ''}</div>` : ''}
+      <button class="btn sm primary" type="button" data-act="save-file">${tr('保存')}</button></div>
     ${v.preview ? `<div class="preview md">${md(v.draft)}</div>` : `<textarea spellcheck="false" id="editorText" ${filesLocked() ? 'readonly' : ''}>${esc(v.draft)}</textarea>`}
   </div>`;
+  updateEditorStatus(body, v);
   const ta = $('#editorText', body);
   ta?.addEventListener('input', () => {
     const was = v.draft !== v.content;
     v.draft = ta.value;
-    if (was !== (v.draft !== v.content)) {
-      $('.ep', body).textContent = v.path + (v.draft !== v.content ? ' ●' : '');
-      $('[data-act=save-file]', body).disabled = v.draft === v.content;
-    }
+    if (was !== (v.draft !== v.content)) updateEditorStatus(body, v);
   });
   ta?.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); saveFile(); } });
 }
 
+function updateEditorStatus(body, v) {
+  const dirty = v.draft !== v.content;
+  $('.ep', body).textContent = v.path + (dirty ? ' ●' : '');
+  $('[data-act=save-file]', body).disabled = !dirty || filesLocked();
+  const warn = $('.editor-warn', body);
+  if (!v.stale) { warn?.remove(); return; }
+  if (!warn) $('.editor-head', body).insertAdjacentHTML('afterend', `<div class="editor-warn">${ICON.alert}${tr('这个文件刚被改过了。')}
+    <button class="btn sm" type="button" data-act="reload-file">${tr('载入最新内容')}</button><span class="hint">${tr('（会丢掉你没保存的修改）')}</span></div>`);
+  $('.editor-warn .hint', body).hidden = !dirty;
+}
+
+// 同一个文件的多次显式保存按提交顺序写入，切换文件不阻塞其他保存。
+const pendingSaves = new Map();
 async function saveFile() {
   const v = state.files.view;
-  if (!v || v.type !== 'file' || v.draft === v.content) return;
+  const spaceId = state.space?.id;
+  if (!spaceId || v?.type !== 'file' || filesLocked()) return;
+  const targetPath = v.path;
+  const sent = v.draft;
+  const key = `${spaceId}/${targetPath}`;
+  const pending = pendingSaves.get(key);
+  if (sent === (pending ? pending.sent : v.content)) return;
+  const write = () => api(`/api/spaces/${spaceId}/file`, { method: 'PUT', body: { path: targetPath, content: sent } });
+  const request = pending ? pending.request.then(write, write) : write();
+  pendingSaves.set(key, { sent, request });
   try {
-    await api(`/api/spaces/${state.space.id}/file`, { method: 'PUT', body: { path: v.path, content: v.draft } });
-    v.content = v.draft;
-    v.stale = false;
+    await request;
+    if (v.path === targetPath) { v.content = sent; v.stale = false; }
+    const cur = state.files.views.files;
+    if (state.space?.id !== spaceId || cur?.type !== 'file' || cur.path !== targetPath) return;
+    cur.content = sent;
+    cur.stale = false;
+    if (currentPanel() !== 'files') return;
+    updateEditorStatus($('#filesBody'), cur);
     toast(tr('已保存'));
-    renderFilesBody();
   } catch (e) { toast(e.message, 'error'); }
+  finally { if (pendingSaves.get(key)?.request === request) pendingSaves.delete(key); }
 }
 
 export async function openChange(id) {
@@ -197,15 +220,37 @@ async function undoChange(c) {
   openChange(c.id);
 }
 
-export function onFilesChanged(changes) {
+export async function onFilesChanged(changes) {
+  const spaceId = state.space?.id;
+  if (!spaceId) return;
   for (const c of changes) if (!c.deleted) { revealFile(c.path); state.files.flash.add(c.path); }
   loadFiles();
   loadHistory();
   const v = state.files.views.files;
-  if (v?.type === 'file' && changes.some((c) => c.path === v.path)) {
-    if (v.draft === v.content) openFile(v.path); // 没有未保存的修改：直接刷新
-    else { v.stale = true; if (currentPanel() === 'files') renderFilesBody(); }
+  if (v?.type !== 'file') return;
+  const change = changes.findLast((c) => c.path === v.path);
+  if (!change) return;
+  // 自己的保存也会发 files_changed，可能比 PUT 先到或后到。只应用仍属于当前视图的磁盘变化。
+  const before = v.content;
+  v.lastChange = change;
+  const current = () => state.space?.id === spaceId && state.files.views.files === v &&
+    v.path === change.path && v.lastChange === change && v.content === before;
+  try {
+    const { content } = await api(`/api/spaces/${spaceId}/file?path=${encodeURIComponent(v.path)}`);
+    const pending = pendingSaves.get(`${spaceId}/${change.path}`);
+    if (!current() || content === before || content === pending?.sent) return;
+    if (v.draft === before && !pending) {
+      v.content = v.draft = content;
+      v.stale = false;
+      if (currentPanel() === 'files') renderFilesBody();
+      return;
+    }
+  } catch (e) {
+    if (!current()) return;
+    if (v.draft === before) toast(e.message, 'error');
   }
+  v.stale = true;
+  if (currentPanel() === 'files') updateEditorStatus($('#filesBody'), v);
 }
 
 // 剪贴板接口被拒绝时（有的浏览器不给本机页面写权限），退回到选中文字再复制
@@ -350,11 +395,17 @@ $('#filesBody').addEventListener('click', async (e) => {
     }
   }
 });
-async function createFile(name) {
-  const p = name.trim();
+export async function createFile(name) {
+  const spaceId = state.space.id;
+  const p = name.trim().replaceAll('\\', '/').split('/').filter(part => part && part !== '.').join('/');
   if (!p) { renderFilesBody(); return; }
-  if (state.files.list.some((f) => f.path === p)) { openFile(p); return; }
-  try { await api(`/api/spaces/${state.space.id}/file`, { method: 'PUT', body: { path: p, content: '' } }); openFile(p); } catch (err) { toast(err.message, 'error'); renderFilesBody(); }
+  try {
+    await api(`/api/spaces/${spaceId}/file`, { method: 'PUT', body: { path: p, content: '', createOnly: true } });
+  } catch (err) {
+    if (state.space?.id !== spaceId) return;
+    if (err.status !== 409 || !err.conflict) { toast(err.message, 'error'); renderFilesBody(); return; }
+  }
+  if (state.space?.id === spaceId) { renderFilesBody(); await openFile(p); }
 }
 
 // 两个面板放在最后注册（注册会立刻触发一次右侧栏重画，上面的变量要先定义好）

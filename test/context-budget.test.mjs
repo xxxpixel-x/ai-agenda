@@ -61,12 +61,22 @@ test('old imports condense individually before stepped history, memory, then fil
   assert.equal(history.breakdown.files.tokens, full.breakdown.files.tokens);
   const minimal = build(950);
   assert.equal(minimal.breakdown.recent.count, 1);
-  assert.deepEqual(minimal.breakdown.memory.entryIds, []);
-  assert.equal(minimal.breakdown.files.chars, full.breakdown.files.chars);
+  // 第四批调整裁剪顺序：先缩 API 文件，再缩非必守记忆。
+  assert.doesNotMatch(minimal.prompt, /附{500}/);
+  assert.ok(size(minimal) <= 950);
   const tiny = build(520);
   assert.doesNotMatch(tiny.prompt, /附{500}/);
   assert.match(tiny.prompt, /第12/);
   assert.ok(size(tiny) <= 520);
+});
+
+test('a tight API context keeps the secret-file notice when ordinary file contents no longer fit', () => {
+  const space = chat([{ kind: 'user', seq: 1, text: '字'.repeat(4000) }]);
+  const files = [{ path: 'notes.md', content: 'public fixture' }, { path: '.env', content: null, sensitive: true }];
+  const ctx = buildTurnContext(space, member, { api: true, system: 'rules', tokenBudget: 400, files });
+  assert.ok(estimateTokens(ctx.prompt) + estimateTokens(ctx.system) <= 400);
+  assert.match(ctx.prompt, /（以下文件可能含密钥，没有附上内容：\.env）/);
+  assert.doesNotMatch(ctx.prompt, /public fixture/);
 });
 
 test('API original lookup uses both archived and live messages, while file readers get a directory hint', (t) => {
@@ -83,10 +93,13 @@ test('API original lookup uses both archived and live messages, while file reade
   assert.match(api.prompt, /Which branch/);
   assert.deepEqual(api.breakdown.memory.entryIds, [1, 2, 3]);
   assert.ok(!api.system.includes('Widget'));
-  const cli = buildTurnContext(space, member, { ...opts, api: false });
+  const cli = buildTurnContext(space, { ...member, engine: 'pi' }, { ...opts, api: false, canReadMemoryDir: true });
   assert.ok(cli.prompt.includes(memory.dir));
   assert.doesNotMatch(cli.prompt, /archived original/);
   assert.match(cli.prompt, /messages\/<seq>\.md/);
+  const noDirCli = buildTurnContext(space, member, { ...opts, api: false, canReadMemoryDir: false });
+  assert.ok(!noDirCli.prompt.includes(memory.dir));
+  assert.match(noDirCli.prompt, /archived original/);
   memory.append([{ type: 'decision', text: 'Use the new branch', supersedes: [1], source: {} }]);
   const resumed = buildTurnContext(space, member, { ...opts, since: 2, lastMemoryId: 3 });
   assert.doesNotMatch(resumed.prompt, /Always test/);
@@ -100,8 +113,45 @@ test('an oversized recap or single message stays within budget with a valid spea
   const ctx = buildTurnContext(space, member, { tokenBudget: 500, system: 'rules', recap: '前情'.repeat(3000) });
   assert.ok(estimateTokens(ctx.prompt) + estimateTokens(ctx.system) <= 500);
   assert.equal(ctx.breakdown.recent.count, 1);
-  assert.match(ctx.prompt, /<消息 来自="我">\nfirst[\s\S]*last\n<\/消息>/);
+  assert.match(ctx.prompt, /<消息 2 来自="我">\nfirst[\s\S]*last\n<\/消息>/);
   assert.equal(ctx.meta.omittedSeq, 1);
+});
+
+test('第四批上下文：Prompt 顺序保公共前缀、必守约束不可静默置空、游标不倒退与 C2 分流截断提示', (t) => {
+  const memory = openMemory(path.join(tempDir(t), 'memory'));
+  memory.append([
+    { type: 'constraint', text: '禁止外部依赖', reason: '安全', source: { messages: [1] } },
+    { type: 'fact', text: '旧事实', topics: ['架构'], source: { messages: [1] } },
+  ]);
+  const space = chat([
+    { kind: 'user', seq: 1, text: '开始讨论' },
+    { kind: 'ai', seq: 2, name: 'Bob', text: '长'.repeat(9000) },
+    ...Array.from({ length: 7 }, (_, i) => ({ kind: 'user', seq: i + 3, text: '后续消息 ' + i })),
+  ]);
+  const imports = [{ fullText: '完整导入背景'.repeat(100), summaryText: '导入摘要' }];
+  const before = buildTurnContext(space, member, { system: 'sys', memory, importBlocks: imports, recap: '提要内容', recapUptoSeq: 1 });
+  // 顺序：imports 在 L1 前，L2 在 history 后
+  assert.ok(before.prompt.indexOf('完整导入背景') < before.prompt.indexOf('# 空间记忆库'));
+  assert.ok(before.prompt.indexOf('# 空间记忆库') < before.prompt.indexOf('# 聊天记录'));
+  assert.ok(before.prompt.indexOf('# 聊天记录') < before.prompt.indexOf('## 记忆库目录'));
+  // 非 L1 新增 fact 不打断 imports + L1 + history 公共前缀
+  memory.append([{ type: 'fact', text: '新事实', topics: ['测试'], source: { messages: [3] } }]);
+  const after = buildTurnContext(space, member, { system: 'sys', memory, importBlocks: imports, recap: '提要内容', recapUptoSeq: 1 });
+  const histIdx = before.prompt.indexOf('## 记忆库目录');
+  assert.equal(after.prompt.slice(0, histIdx), before.prompt.slice(0, histIdx));
+  // C2 截断提示按 readOnlyDirs 分流
+  assert.match(before.prompt, /用户或下一位发言者提到「消息 2」时自动附原文/);
+  const piCtx = buildTurnContext(space, { ...member, engine: 'pi' }, { system: 'sys', memory, canReadMemoryDir: true });
+  assert.match(piCtx.prompt, /完整见 messages\/2\.md/);
+  // 引用撤回控制行 #N 查 originals 不崩溃
+  const r = memory.retract(2, { seqAt: 5 });
+  const refControl = buildTurnContext(chat([{ kind: 'user', seq: 10, text: `看看 #${r.control.id}` }]), member, { memory, canReadMemoryDir: false });
+  assert.ok(refControl.prompt.includes('禁止外部依赖'));
+  assert.equal(refControl.meta.lastMemoryId, memory.latestId);
+  // 必守硬约束在小预算下绝不静默清空（让上层 withOverflowRetry 触发预算不足报错）
+  const tiny = buildTurnContext(chat([{ kind: 'user', seq: 10, text: '问一句' }]), member, { system: 'sys', memory, tokenBudget: 20 });
+  assert.ok(tiny.prompt.includes('禁止外部依赖'), '必守约束不可静默清空');
+  assert.ok(estimateTokens(tiny.system) + estimateTokens(tiny.prompt) > 20);
 });
 
 test('overflow rebuilds once, discards partial output and persists the reduced model window', async (t) => {

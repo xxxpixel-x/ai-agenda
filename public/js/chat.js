@@ -1,6 +1,7 @@
 // 空间视图：消息、成员标签、命令审批、输入框。聊天空间和任务空间共用，任务空间另有顶部的计划条（tasks.js）
 import { attachmentDraft, renderAttachments, messageAttachments } from './attachments.js';
 import { formatActionSummary } from './context-memory-format.js';
+import { onEnginesChange } from './engines.js';
 import { resetRecap, syncRecapSlot } from './recap.js';
 import { loadFiles, loadHistory, onFilesChanged, openChange, renderFilesBody, renderFilesPanel, resetViews } from './files.js';
 import { checkImports, importHtml, openImportModal, replaceImport } from './imports.js';
@@ -149,16 +150,12 @@ function handleEvent(ev) {
       if (!sp) return;
       sp.members = ev.members;
       if (state.files.view?.type === 'change') renderFilesBody();
-      renderMembersBar();
-      if (!$('#memberPop').hidden) renderMemberPop();
+      refreshMemberViews();
       break;
     case 'acp_warning': {
       const engine = engineOf(ev.engineId);
       if (engine) engine.unverifiedPermissions = true;
-      if (sp) {
-        renderMembersBar();
-        if (!$('#memberPop').hidden) renderMemberPop();
-      }
+      refreshMemberViews();
       break;
     }
     case 'notice':
@@ -264,11 +261,20 @@ export function renderHeader() {
 
 }
 
-// 「可运行命令」档下，没法在运行前先问你的命令行 AI 只能改文件
-const cannotRun = (m) => { const e = engineOf(m.engine); return state.space?.access === 'run' && e?.kind === 'cli' && !e.approvals; };
+// 聊天的「可运行命令」档下，没法在运行前先问你的命令行 AI 只能改文件
+const cannotRun = (m) => { const e = engineOf(m.engine); return state.space?.kind !== 'task' && state.space?.access === 'run' && e?.kind === 'cli' && !e.approvals; };
 const unverifiedPerms = (m) => { const e = engineOf(m.engine); return !!(e?.status?.unverifiedPermissions || e?.unverifiedPermissions); };
 
-const noExtensions = m => (m.skills?.length || m.mcp?.length) && !engineOf(m.engine)?.skills;
+const noExtensions = (m) => {
+  const e = engineOf(m.engine);
+  return !!e && (m.skills?.length || m.mcp?.length) && !e.skills;
+};
+function refreshMemberViews() {
+  if (!state.space) return;
+  renderMembersBar();
+  if (!$('#memberPop').hidden) renderMemberPop();
+}
+onEnginesChange(refreshMemberViews);
 export function renderMembersBar() {
   const sp = state.space;
   const speaking = sp.speaking && findMsg(sp.speaking);
@@ -279,7 +285,7 @@ export function renderMembersBar() {
     const e = engineOf(m.engine);
     const ok = !e || (m.source ? e.status?.available !== false : e.status?.ready !== false);
     const warning = unverifiedPerms(m) ? tr('这个 AI 的权限无法保证') : '';
-    const title = `${(m.source && m.engineLabel) || e?.label || m.engineLabel}${m.model ? ` · ${m.model}` : ''}${ok ? '' : `\n${e.status?.note || ''}`}${noExtensions(m) ? '\n' + tr('不支持 skill/MCP') : ''}${warning ? `\n${warning}` : ''}`;
+    const title = `${(m.source && m.engineLabel) || e?.label || m.engineLabel || m.engine}${m.model ? ` · ${m.model}` : ''}${ok ? '' : `\n${e.status?.note || ''}`}${noExtensions(m) ? '\n' + tr('不支持 skill/MCP') : ''}${warning ? `\n${warning}` : ''}`;
     return `<button type="button" class="person ${speaking?.memberId === m.id || busy.has(m.id) ? 'speaking' : ''} ${ok ? '' : 'off'}" style="--c:${m.color}" data-id="${m.id}" data-title="${esc(title)}" title="${esc(title)}">
       <span class="pa">${avatarHtml(m.engine, m.name, m.model)}</span>${esc(m.name)}${m.id === coord ? `<small>${tr('协调者')}</small>` : ''}${cannotRun(m) ? `<small>${tr('不能运行命令')}</small>` : ''}${noExtensions(m) ? `<small>${tr('不支持 skill/MCP')}</small>` : ''}${warning ? `<small class="warn-tag">${esc(warning)}</small>` : ''}</button>`;
   }).join('');
@@ -338,9 +344,9 @@ function renderMemberPop() {
     ${cannotRun(m) ? `<div class="hint">${tr('它没法在运行命令前先问你，所以这一档只能读写文件。')}</div>` : ''}
     ${noExtensions(m) ? `<div class="hint">${tr('这个 AI 暂不支持 skill 和 MCP，卡上配置的工具不会生效。')}</div>` : ''}
     ${['skills','mcp'].filter(k => m[k]?.length).map(k => `<div class="hint" data-tool-names="${k}">${k === 'skills' ? 'Skills' : 'MCP'} · ${esc(m[k].join(', '))}</div>`).join('')}
-    <select data-k="model" title="${tr('型号')}"><option value="">${esc(st.defaultModel ? tr('默认（{0}）', [st.defaultModel]) : tr('默认型号'))}</option>
+    ${!state.enginesLoaded ? `<div class="hint" role="status">${tr('正在检测 AI 连接…')}</div>` : `<select data-k="model" title="${tr('型号')}"><option value="">${esc(st.defaultModel ? tr('默认（{0}）', [st.defaultModel]) : tr('默认型号'))}</option>
       ${models.map(([v, l]) => `<option value="${esc(v)}" ${v === m.model ? 'selected' : ''}>${esc(l || v)}</option>`).join('')}</select>
-    ${effortSelect(e, m)}
+    ${effortSelect(e, m)}`}
     ${state.space.kind === 'task' || isSolo(state.space) ? '' : `<button class="btn sm block" type="button" data-act="only">${tr('只问 {0}', [esc(m.name)])}</button>
       <button class="btn sm block" type="button" data-act="ask">${tr('让 {0} 现在发言', [esc(m.name)])}</button>`}`;
   const tools = $('#memberPop').querySelectorAll('[data-tool-names]');
@@ -385,7 +391,7 @@ function approvalHtml(a) {
     <pre class="ap-cmd">${esc(a.command)}</pre>
     <input class="ap-note" data-apr maxlength="500" placeholder="${tr('附一句话（可不填）')}" value="${esc(noteDrafts.get(a.id) || '')}">
     <div class="ap-actions"><button class="btn sm primary" type="button" data-apd="allow">${tr('允许')}</button>
-      ${a.kind !== 'edit' && a.programs?.length ? `<button class="btn sm" type="button" data-apd="always">${tr('一直允许 {0}', [esc(a.programs.join('、'))])}</button>` : ''}
+      ${a.kind !== 'edit' && a.programs?.length && a.canAlways !== false ? `<button class="btn sm" type="button" data-apd="always">${tr('一直允许 {0}', [esc(a.programs.join(tr('、')))])}</button>` : ''}
       <button class="btn sm" type="button" data-apd="deny">${tr('拒绝')}</button></div>
   </div>`;
 }

@@ -1,14 +1,20 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import { t as tr } from '../../i18n.mjs';
+import { containsPath, insideDir, physicalPath } from '../../paths.mjs';
 import { AbortedError, brief, isFile, relPath } from '../proc.mjs';
+
+export { insideDir };
 
 const readTools = ['read', 'grep', 'find', 'ls'];
 const fileTools = [...readTools, 'write', 'edit'];
 
-export function toolsFor(access, shell = 'bash') {
-  if (access === 'full' || access === 'run') return [...fileTools, shell.tool || shell];
-  return [...(access === 'edit' ? fileTools : readTools)];
+export function canRunUnconfined(access, { onApproval } = {}) {
+  return access === 'full' || (access === 'run' && typeof onApproval === 'function');
+}
+
+export function toolsFor(access, shell = 'bash', policy = {}) {
+  if (canRunUnconfined(access, policy)) return [...fileTools, shell.tool || shell];
+  return [...(['edit', 'run', 'full'].includes(access) ? fileTools : readTools)];
 }
 
 let cachedShell;
@@ -36,35 +42,16 @@ export function findShell(options) {
   return shellPath ? { tool: 'bash', shellPath } : { tool: 'powershell' };
 }
 
-function contains(root, target) {
-  const rel = path.relative(root, target);
-  return rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel);
-}
-
-// 新文件可能缺好几层目录。先解析存在的祖先，再补回尚未创建的路径。
-function physicalPath(target) {
-  const absolute = path.resolve(target);
-  let parent = absolute;
-  while (!fs.lstatSync(parent, { throwIfNoEntry: false })) {
-    const next = path.dirname(parent);
-    if (next === parent) throw new Error(tr('只能访问共享文件夹里的文件'));
-    parent = next;
-  }
-  return path.resolve(fs.realpathSync.native(parent), path.relative(parent, absolute));
-}
-
-export function insideDir(target, cwd) {
-  const p = path.resolve(cwd, target || '.');
-  try { return contains(cwd, p) && contains(fs.realpathSync.native(cwd), physicalPath(p)); }
-  catch { return false; }
+function inReadOnly(target, readOnlyDirs) {
+  if (!readOnlyDirs.length) return false;
+  try {
+    const real = physicalPath(target);
+    return readOnlyDirs.some((dir) => containsPath(dir, target) || containsPath(physicalPath(dir), real));
+  } catch { return true; }
 }
 
 function canWrite(target, cwd, readOnlyDirs) {
-  if (!insideDir(target, cwd)) return false;
-  try {
-    const real = physicalPath(target);
-    return !readOnlyDirs.some((dir) => contains(dir, target) || contains(physicalPath(dir), real));
-  } catch { return false; }
+  return insideDir(target, cwd) && !inReadOnly(target, readOnlyDirs);
 }
 
 export function activityOf({ toolName, args }, cwd) {
@@ -81,23 +68,30 @@ export function activityOf({ toolName, args }, cwd) {
 
 async function approvalFor(command, onApproval, signal) {
   if (signal?.aborted) throw new AbortedError();
-  if (!signal) return onApproval({ command });
+  const request = { command, canAlways: false };
+  if (!signal) return onApproval(request);
   let stop;
   const stopped = new Promise((_, reject) => { stop = () => reject(new AbortedError()); });
   signal.addEventListener('abort', stop, { once: true });
   try {
-    return await Promise.race([stopped, onApproval({ command })]);
+    return await Promise.race([stopped, onApproval(request)]);
   } finally {
     signal.removeEventListener('abort', stop);
   }
 }
 
-export function permissionExtension({ access, cwd, tools, onApproval, signal, paths, readOnlyDirs = [] }) {
+export function permissionExtension({ access, cwd, tools, onApproval, signal, paths, readOnlyDirs = [], mcp = {}, readonlyMcp = [] }) {
   const notes = new Map();
   return (api) => {
     api.on('tool_call', async ({ toolName, toolCallId, input }) => {
-      const mcp = toolName.startsWith('mcp__');
-      if (!tools.includes(toolName) && !(mcp && ['run', 'full'].includes(access))) {
+      const isMcp = toolName.startsWith('mcp__');
+      // SDK 会转义、截短工具名，namespace 的别名才是挂载时的原始服务名。
+      const server = isMcp && api.getAllTools().find(tool => tool.name === toolName)?.namespace?.aliases?.[0];
+      if (isMcp ? !server || !Object.hasOwn(mcp, server) : !tools.includes(toolName)) {
+        return { block: true, reason: tr('超出了当前权限。') };
+      }
+      const unconfined = isMcp ? !readonlyMcp.includes(server) : !fileTools.includes(toolName);
+      if (unconfined && !canRunUnconfined(access, { onApproval })) {
         return { block: true, reason: tr('超出了当前权限。') };
       }
       if (access === 'full' && !readOnlyDirs.length) return;
@@ -106,16 +100,17 @@ export function permissionExtension({ access, cwd, tools, onApproval, signal, pa
         const target = paths.resolveToCwd(input.path || '.', cwd);
         const reading = readTools.includes(toolName);
         const allowed = (p) => {
-          if (reading) return [cwd, ...readOnlyDirs].some((dir) => insideDir(p, dir));
-          return canWrite(p, cwd, readOnlyDirs);
+          if (reading) return access === 'full' || [cwd, ...readOnlyDirs].some((dir) => insideDir(p, dir));
+          if (access === 'full') return !inReadOnly(p, readOnlyDirs);
+          return ['edit', 'run'].includes(access) && canWrite(p, cwd, readOnlyDirs);
         };
         if (!allowed(target) || (toolName === 'read' && !allowed(paths.resolveReadPath(input.path || '.', cwd)))) {
           return { block: true, reason: tr('只能访问共享文件夹里的文件') };
         }
-      } else if (access === 'run' && onApproval) {
-        const command = mcp ? brief(`${toolName} ${JSON.stringify(input)}`, 199) : input.command;
-        const { allow, note } = await approvalFor(command, onApproval, signal);
-        if (!allow || signal?.aborted) {
+      } else if (access === 'run' && unconfined) {
+        const command = isMcp ? `${toolName} ${JSON.stringify(input)}` : input.command;
+        const { allow, note } = await approvalFor(command, onApproval, signal) || {};
+        if (allow !== true || signal?.aborted) {
           const reason = note ? tr('，理由：{0}', [note]) : '';
           return { block: true, reason: tr('「我」没有同意运行这条命令{0}。按这个调整做法，不要换一种写法绕过。', [reason]) };
         }

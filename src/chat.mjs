@@ -15,6 +15,7 @@ import { t as tr } from './i18n.mjs';
 import { randomUUID } from 'node:crypto';
 import { systemPrompt, buildTurnContext, parseMarkers, mentionsIn, recentStart } from './prompts.mjs';
 import { runAgentTurn } from './turn-runner.mjs';
+import { resolveTurnAccess } from './access.mjs';
 import { importBlocks, briefVersions, resumeNote, resumeOpts } from './imports.mjs';
 import { isPreapproved, parseCommand, normalizeAllowed } from './approvals.mjs';
 
@@ -182,19 +183,27 @@ export class Chat {
     return this.host.registry.supportsResume(member.engine) || (this.solo && !!this.host.registry.supportsPrivateSessions?.(member.engine));
   }
 
-  buildContext(member, { reason, resume, tokenBudget, state = this.host.memberState[member.id] || {}, access, asks, space = this.host.promptView() } = {}) {
+  turnAccess(member, isApi) {
+    const h = this.host;
+    return resolveTurnAccess({
+      spaceKind: 'chat', spaceAccess: h.access, role: 'chat', isApi,
+      supportsApproval: h.registry.supportsApproval(member.engine), folderLocked: !!h.readOnly,
+    });
+  }
+
+  buildContext(member, { reason, resume, tokenBudget, state = this.host.memberState[member.id] || {}, turnAccess, space = this.host.promptView() } = {}) {
     const h = this.host, api = h.registry.isApi(member.engine);
-    asks ??= h.access === 'run' && !api && h.registry.supportsApproval(member.engine);
-    access ??= h.access === 'run' && !api && !asks ? 'edit' : h.access;
+    const { access, asks } = turnAccess ?? this.turnAccess(member, api);
     const long = this.longSession(member);
     resume ??= !!state.sessionId && state.seen != null && (!!state.importId || (long && state.sig === sessionSig(member, this.solo, access, asks)));
     const system = systemPrompt(space, member, { api, access, approvals: asks, solo: this.solo }) + (resume && state.importId
       ? `\n${resumeNote(space.messages.find((m) => m.id === state.importId) || { sourceLabel: member.engineLabel }, h.workspacePath)}\n` : '');
     return buildTurnContext(space, member, {
-      system, reason: this.solo ? 'solo' : reason, api, files: api ? h.ws.snapshot() : null,
+      system, reason: this.solo ? 'solo' : reason, api, canReadMemoryDir: h.registry.supportsReadOnlyDirs?.(member.engine) ?? false,
+      files: api ? h.ws.snapshot() : null,
       since: resume ? state.seen : null, recent: !resume && long && !state.importId ? recentStart(space.messages, RECENT_ROUNDS) : null,
       importBlocks: importBlocks(space.messages, { from: resume ? state.seen : 0, excludeId: resume ? state.importId : null, briefs: resume ? state.briefs || {} : null }),
-      memory: h.memory, memoryDir: h.memoryDir, recap: h.recap?.text, lastMemoryId: state.lastMemoryId,
+      memory: h.memory, memoryDir: h.memoryDir, recap: h.recap?.text, recapUptoSeq: h.recap?.uptoSeq || 0, lastMemoryId: state.lastMemoryId,
       handoffNote: !resume && long ? state.pendingHandoff : '', tokenBudget,
     });
   }
@@ -210,9 +219,8 @@ export class Chat {
     const canResume = longSession || !!imported;
     const outside = h.ws.begin();
     if (outside.length) h.emit({ type: 'files_changed', changes: outside });
-    // 「可运行命令」档：能先问的 AI 每条命令先问你；问不了的只能改文件（API 型本来就不能运行命令，不受影响）
-    const asks = h.access === 'run' && !api && h.registry.supportsApproval(member.engine);
-    const access = h.access === 'run' && !api && !asks ? 'edit' : h.access;
+    const turnAccess = this.turnAccess(member, api);
+    const { access, asks } = turnAccess;
     const sig = sessionSig(member, solo, access, asks);
     const stale = !imported && state.sig !== sig; // 设定变了：换新会话
 
@@ -232,11 +240,7 @@ export class Chat {
     const started = Date.now();
     const result = { passed: false, done: false, mentions: [], error: false };
     const call = (resume) => {
-      const build = (budget) => {
-        const ctx = this.buildContext(member, { reason, resume, tokenBudget: budget, state, access, asks, space });
-        if (!resume && ctx.meta.omittedSeq) h.rollover?.(ctx.meta.omittedSeq);
-        return ctx;
-      };
+      const build = (budget) => this.buildContext(member, { reason, resume, tokenBudget: budget, state, turnAccess, space });
       return withOverflowRetry(h, member, msg, build, ({ system, prompt }) => runAgentTurn(h.registry, member, {
         system, prompt, cwd: h.workspacePath, access, ...resumeOpts(resume, state),
         keepSession: longSession && !imported, imported: !!imported, readOnlyDirs: h.memoryDir ? [h.memoryDir] : [],
@@ -261,7 +265,9 @@ export class Chat {
         fellBack = true;
         outcome = await call(false);
       }
-      const { result: r, meta: { lastMemoryId } } = outcome;
+      const { result: r, meta: { lastMemoryId, omittedSeq } } = outcome;
+      // 挪档副作用后置：仅在非续接调用成功返回后触发 rollover，防止溢出重试或失败污染全局状态。
+      if ((!resume || fellBack) && omittedSeq) h.rollover?.(omittedSeq);
       const mk = parseMarkers(r.text, { markers: !solo });
       msg.text = mk.text;
       msg.passed = mk.passed;
@@ -316,11 +322,13 @@ export class Chat {
 
   // ---------- 命令审批 ----------
   /** AI 想运行命令：放行过的程序直接允许，否则在它的发言里出一张卡片，等你决定。 */
-  requestApproval(msg, { command }, signal) {
+  requestApproval(msg, { command, kind = 'command', canAlways: remember = true }, signal) {
     command = String(command || '').trim();
-    if (isPreapproved(command, this.host.allowedPrograms)) return Promise.resolve({ allow: true });
+    const opts = { cwd: this.host.workspacePath };
+    if (remember && kind === 'command' && isPreapproved(command, this.host.allowedPrograms, opts)) return Promise.resolve({ allow: true });
     if (signal?.aborted) return Promise.resolve({ allow: false });
-    const ap = { id: randomUUID().slice(0, 8), command, programs: parseCommand(command).programs, status: 'pending', ts: Date.now() };
+    const { programs, canAlways } = parseCommand(command, opts);
+    const ap = { id: randomUUID().slice(0, 8), kind, command, programs, canAlways: remember && kind === 'command' && canAlways, status: 'pending', ts: Date.now() };
     (msg.approvals ||= []).push(ap);
     return new Promise((resolve) => {
       this.approvals.set(ap.id, { ap, msg, resolve });
@@ -334,6 +342,7 @@ export class Chat {
     const p = this.approvals.get(id);
     if (!p) throw new Error(tr('这条请求已经处理过了'));
     if (!['allow', 'always', 'deny'].includes(decision)) throw new Error(tr('未知的决定'));
+    if (decision === 'always' && p.ap.canAlways === false) decision = 'allow';
     if (decision === 'always') this.host.allowedPrograms = normalizeAllowed([...this.host.allowedPrograms, ...p.ap.programs]);
     const status = { allow: 'allowed', always: 'always', deny: 'denied' }[decision];
     this.settleApproval(id, status, str(note, 500));

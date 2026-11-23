@@ -115,8 +115,12 @@ export function workerPrompt(space, run, task, { files = null, conflict = null, 
   fixed.push(tr('# 你的子任务 {0}：{1}\n{2}', [task.id, task.title, task.spec]));
   const deps = run.tasks.filter((t) => task.deps.includes(t.id));
   if (deps.length) {
+    const mergedAny = run.mode === 'git' && deps.some((d) => d.status === 'approved');
     fixed.push(tr('# 前置任务的结果\n{0}{1}', [deps.map((d) => {
       const who = space.members.find((m) => m.id === d.assigneeId)?.name || '?';
+      if (d.status === 'skipped') {
+        return `## ${d.id} ${d.title}（${who}，${STATUS_TEXT.skipped}）\n${tr('（该前置任务已跳过，未产生改动）')}`;
+      }
       const attempts = d.attempts || [];
       let i = attempts.findLastIndex((a) => !a.error && !['failed', 'question', 'cancelled', 'stopped'].includes(a.outcome));
       if (i < 0) i = attempts.length - 1;
@@ -124,7 +128,7 @@ export function workerPrompt(space, run, task, { files = null, conflict = null, 
       if (rep.length > maxDepReport) rep = rep.slice(0, Math.min(maxDepReport, 400)) + tr('……（完整记录见任务 {0} 第 {1} 次执行）', [d.id, i + 1]);
       if (i > 0) rep += '\n' + tr('（最新验收通过的第 {0} 版；更早的 {1} 个版本已被取代，如需回查原因见记忆库或任务记录）', [i + 1, i]);
       return `## ${d.id} ${d.title}（${who}）\n${rep}${d.changes?.length ? tr('\n改动的文件：{0}', [d.changes.map((c) => c.path).join('、')]) : ''}`;
-    }).join('\n\n'), run.mode === 'git' ? tr('\n（这些结果已经合并进你的副本。）') : '']));
+    }).join('\n\n'), mergedAny ? tr('\n（这些结果已经合并进你的副本。）') : '']));
   }
   if (fileText || files) fixed.push(fileText || filesForPrompt(files));
   const parts = [...fixed.map(escapeTags), objective(run, key), decisionsText(run, key)];

@@ -1,5 +1,5 @@
 import { register } from './slots.js';
-import { $, $$, ICON, api, clock, emptyHtml, esc, getLanguage, state, toast, tr } from './util.js';
+import { $, $$, ICON, api, clock, emptyHtml, esc, getLanguage, spaceAccessOptions, state, toast, tr } from './util.js';
 
 const schedulesUrl = '/api/schedules';
 const clockIcon = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l2.5 2.5"/></svg>';
@@ -142,6 +142,7 @@ function createEditor(space, schedule, close, saved) {
   const action = schedule?.action;
   const taskOnly = space.kind === 'task';
   const template = action?.template || spaceTemplate(space);
+  const { choices, access } = spaceAccessOptions(template.access, 'task');
   const selected = {
     rule: rule?.type || 'once',
     action: taskOnly ? 'task' : action?.type || 'message',
@@ -176,6 +177,7 @@ function createEditor(space, schedule, close, saved) {
       <div data-pane="message"><label>${esc(tr('消息'))}<textarea name="message" rows="3" maxlength="8000" required>${esc(action?.text)}</textarea></label></div>
       <div data-pane="task"><label>${esc(tr('目标'))}<textarea name="goal" rows="3" required>${esc(template.goal ?? space.run?.objective)}</textarea></label>
         ${hint ? `<div class="hint schedule-clip" title="${esc(hint)}">${esc(hint)}</div>` : ''}
+        <div class="hint">${esc(tr('AI 的权限'))} · ${esc(choices[access].desc)}</div>
         <div class="schedule-plan"><span>${esc(tr('计划'))}</span>
           ${segment('plan', '计划', [['manual', '等我确认'], ['auto', '自动开始']])}</div></div></div>
     <div class="schedule-actions">${schedule ? `<button type="button" class="btn sm danger" data-remove>${esc(tr('删除'))}</button>` : ''}
@@ -223,7 +225,7 @@ function createEditor(space, schedule, close, saved) {
       if (remove) await api(path, { method: 'DELETE' });
       else {
         const action = selected.action === 'message' ? { type: 'message', text: fields.message.value.trim() }
-          : { type: 'task', template: { ...template, goal: fields.goal.value.trim(), planConfirm: selected.plan } };
+          : { type: 'task', template: { ...template, access, goal: fields.goal.value.trim(), planConfirm: selected.plan } };
         const body = { rule: readRule(), action };
         if (!schedule) body.spaceId = space.id;
         await api(path, { method: schedule ? 'PATCH' : 'POST', body });

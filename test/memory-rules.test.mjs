@@ -162,3 +162,79 @@ test('读取整段 JSON 和 JSON 围栏，无法解析或缺少操作数组时�
   }
   for (const value of ['', '坏 JSON', '{}', 'null', '{"ops":{}}', null]) assert.equal(normalizeOps(value), null);
 });
+
+test('第四批规则：confirmedBy 硬保护、inBatch 与交接隔离、rejected 分源与冲突提案', () => {
+  const richCtx = {
+    messages: new Map([
+      [1, { kind: 'user', ts: 10, inBatch: false }],
+      [2, { kind: 'user', ts: 20, inBatch: true }],
+      [3, { kind: 'ai', ts: 30, changes: true, inBatch: true }],
+      [4, { kind: 'user', ts: 40, inBatch: true }],
+    ]),
+    handoffSeqs: new Set([4]),
+    handoffs: new Map([[4, { memberId: 'm1', engine: 'claude-code', model: 'sonnet' }]]),
+    knownFiles: new Set(['src/login.js']),
+    tasks: new Map([['T1', { status: 'review', attempts: [{ n: 1, endedAt: 25, error: 'boom', memberId: 'm2', engine: 'codex', model: 'gpt-5' }] }]]),
+  };
+  // 非本批旧用户消息不能刷 proof.user
+  const staleUser = check({ ...decision, source: messages(1) }, [], richCtx);
+  assert.equal(staleUser.entry.type, 'proposal');
+  // 强鉴证目标即使本批有用户消息也一律转分歧，并保存 conflicts + proposed
+  const confirmed = { ...old, id: 12, confirmedBy: 'user', at: 10 };
+  const conflict = check({ ...change, source: messages(2) }, [confirmed], richCtx);
+  assert.equal(conflict.entry.type, 'disagreement');
+  assert.equal(conflict.entry.ask, true);
+  assert.deepEqual(conflict.entry.conflicts, [12]);
+  assert.deepEqual(conflict.entry.proposed, { type: 'decision', text: '登录改用邮箱', reason: '已有企业邮箱' });
+  // 交接锚点虽是用户消息，rejected 仍归为 origin:'attempt' 并带交接成员快照
+  const handoffRej = check({ op: 'reject', text: '索引方案走不通', reason: '目录只读', source: messages(4) }, [], richCtx);
+  assert.equal(handoffRej.entry.origin, 'attempt');
+  assert.deepEqual(handoffRej.entry.attempt, { memberId: 'm1', engine: 'claude-code', model: 'sonnet' });
+  // 任务试错带 attempt 快照；用户否决受保护，试错可被新理由推翻
+  const taskRej = check({ op: 'reject', text: '方案 A 不行', reason: '报错', topics: ['登录'], source: tasks('T1/1') }, [], richCtx);
+  assert.equal(taskRej.entry.origin, 'attempt');
+  assert.deepEqual(taskRej.entry.attempt, { memberId: 'm2', engine: 'codex', model: 'gpt-5' });
+  const userRej = { id: 20, type: 'rejected', origin: 'user', text: '不用邮箱', reason: '没人用', topics: ['登录'], scope: '', at: 10, status: 'active' };
+  const aiOverrideUserRej = check({ type: 'decision', text: '改用邮箱', reason: '新需求', answers: '有了', topics: ['登录'], op: 'supersede', target: 20, source: messages(3) }, [userRej], richCtx);
+  assert.equal(aiOverrideUserRej.entry.type, 'disagreement');
+  const attemptRej = { ...userRej, id: 21, origin: 'attempt' };
+  const aiOverrideAttempt = check({ type: 'decision', text: '改用邮箱', reason: '换引擎可行', answers: '已验证', topics: ['登录'], op: 'supersede', target: 21, source: messages(3) }, [attemptRej], richCtx);
+  assert.equal(aiOverrideAttempt.entry.type, 'decision');
+  assert.deepEqual(aiOverrideAttempt.entry.supersedes, [21]);
+  // fact 核对 knownFiles
+  assert.equal(check({ type: 'fact', text: '假文件', source: { files: ['fake.js'] } }, [], richCtx).ok, false);
+  assert.equal(check({ type: 'fact', text: '真文件', source: { files: ['src\\login.js'] } }, [], richCtx).ok, true);
+});
+
+test('第四批规则：先找链头再比时间、resolve 范围与时间校验、跨 scope 共存与 seqAt 撤回防重', () => {
+  const a = { ...old, id: 1, at: 10, status: 'superseded', by: 2 };
+  const b = { ...old, id: 2, at: 30, origin: 'user', status: 'active' };
+  // 链中补导（at=20 指向已被 #2(at=30) 取代的 #1）应归入 #2 历史
+  const mid = check({ ...change, target: 1, source: messages(2) }, [a, b], ctx);
+  assert.equal(mid.entry.supersededBy, 2);
+  // 较新操作指向旧 #1，必须按链头 #2 的保护规则校验
+  const newerAi = check({ ...change, target: 1, source: messages(3) }, [a, { ...b, at: 25 }], ctx);
+  assert.equal(newerAi.entry.type, 'disagreement');
+  assert.deepEqual(newerAi.entry.conflicts, [2]);
+  // 混合历史和冲突目标必须拆开
+  const c = { ...old, id: 3, at: 10, origin: 'user', status: 'active' };
+  const mixed = check({ ...change, target: undefined, supersedes: [2, 3], source: messages(3) }, [b, c], {
+    ...ctx, messages: new Map([[3, { kind: 'ai', ts: 20, changes: true }]]),
+  });
+  assert.equal(mixed.ok, false);
+  assert.match(mixed.reason, /拆分/);
+  // resolve 校验 scope 与时间
+  const q = { id: 9, type: 'question', text: '用啥库？', scope: 'T1', at: 20, status: 'active', source: messages(2) };
+  assert.equal(check({ type: 'fact', text: '用 sqlite', scope: '', resolves: [9], source: messages(3) }, [q], ctx).ok, false);
+  assert.equal(check({ type: 'fact', text: '用 sqlite', scope: 'T1', resolves: [9], source: messages(1) }, [q], ctx).ok, false);
+  assert.equal(check({ type: 'fact', text: '用 sqlite', scope: 'T1', resolves: [9], source: messages(3) }, [q], ctx).ok, true);
+  // 跨 scope 同文共存 & 同文取代改理由不撞去重
+  const scoped = { ...old, id: 12, scope: 'T1' };
+  assert.equal(check({ ...decision, scope: 'T2' }, [scoped], ctx).ok, true);
+  assert.equal(check({ ...decision, scope: 'T1', reason: '补充新理由', answers: '更清晰', op: 'supersede', target: 12 }, [scoped], ctx).ok, true);
+  // 撤回防重按 seqAt
+  const retracted = { ...old, id: 12, status: 'retracted', by: 13, retractedSeqAt: 2, retractedAt: 25 };
+  assert.equal(check({ ...decision, source: messages(1) }, [retracted], ctx).ok, false);
+  const freshCtx = { ...ctx, messages: new Map([...ctx.messages, [6, { kind: 'user', ts: 60, inBatch: true }]]) };
+  assert.equal(check({ ...decision, source: messages(6) }, [retracted], freshCtx).ok, true);
+});

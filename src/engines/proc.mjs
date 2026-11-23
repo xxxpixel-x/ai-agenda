@@ -101,10 +101,19 @@ export function nodeRunner() {
   return { cmd: process.execPath, env: process.versions.electron ? { ELECTRON_RUN_AS_NODE: '1' } : {} };
 }
 
-// CLI 这么久没有任何输出就算卡死。跑很久的命令（构建、测试）期间 CLI 也可能不出声，所以给得宽一些；
-// 环境变量 RT_IDLE_MINUTES 可以改，0 表示不限
-const idleMinutes = Number(process.env.RT_IDLE_MINUTES);
-export const IDLE_MS = (Number.isFinite(idleMinutes) && idleMinutes >= 0 ? idleMinutes : 20) * 60_000;
+// CLI / Pi 执行构建、测试时也可能不出声，默认比 API 等得久。显式配置对所有引擎生效。
+function idleMs(defaultMinutes) {
+  const value = process.env.RT_IDLE_MINUTES;
+  const minutes = value?.trim() ? Number(value) : NaN;
+  return (Number.isFinite(minutes) && minutes >= 0 ? minutes : defaultMinutes) * 60_000;
+}
+export const IDLE_MS = idleMs(20);
+export const API_IDLE_MS = idleMs(10);
+
+export function stalledError(name, ms) {
+  return Object.assign(new Error(tr('{0} 已经 {1} 分钟没有任何动静，停下了。可以重试。',
+    [name || 'AI', Math.max(1, Math.round(ms / 60_000))])), { stalled: true });
+}
 
 export class AbortedError extends Error {
   constructor() { super(tr('已中止')); this.aborted = true; }
@@ -153,7 +162,7 @@ export function runJsonl({ cmd, args, env, cwd, input = '', inputDelay = 0, keep
 
     const onIdle = () => {
       killTree(child);
-      settle(Object.assign(new Error(tr('{0} 已经 {1} 分钟没有任何动静，停下了。可以重试。', [path.basename(cmd), Math.round(idleMs / 60000)])), { stalled: true }));
+      settle(stalledError(path.basename(cmd), idleMs));
     };
     const touch = () => {
       clearTimeout(idleTimer);
